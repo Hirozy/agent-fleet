@@ -37,9 +37,8 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'herdr-protocol)
 (require 'herdr-model)
-
-(declare-function herdr--log "herdr-protocol" (level format-string &rest args))
 
 
 ;;; --- Subscription type catalog ------------------------------------

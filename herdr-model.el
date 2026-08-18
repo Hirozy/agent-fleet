@@ -301,7 +301,12 @@ DATA is the decoded event payload plist.  Returns a descriptor plist
      (let* ((pn (plist-get data :pane))
             (id (plist-get pn :pane_id))
             (prev (plist-get data :previous_pane_id)))
-       (when prev (remhash prev (herdr-session-panes session)))
+       ;; A move may change the workspace-qualified pane id; drop the
+       ;; stale entries from BOTH the panes and agents tables so we do
+       ;; not leave an orphaned agent keyed by the old id.
+       (when prev
+         (remhash prev (herdr-session-panes session))
+         (remhash prev (herdr-session-agents session)))
        (herdr-model--upsert-pane session pn)
        (herdr-model--maybe-upsert-agent-from-pane session pn)
        `(:event ,kind :what :pane-updated :id ,id)))
@@ -333,14 +338,14 @@ DATA is the decoded event payload plist.  Returns a descriptor plist
     ("pane_agent_status_changed"
      (let* ((pid (plist-get data :pane_id))
             (ag (plist-get data :agent))
-            (status (plist-get data :agent_status)))
+            (status (plist-get data :agent_status))
+            (pn (herdr-model-find-pane session pid)))
        (when ag
          (puthash pid (herdr-model--parse-agent ag)
                   (herdr-session-agents session)))
-       (let ((pn (herdr-model-find-pane session pid)))
-         (when pn
-           (setf (herdr-pane-agent pn) (plist-get ag :agent))
-           (setf (herdr-pane-agent-status pn) status)))
+       (when (and ag pn)
+         (setf (herdr-pane-agent pn) (plist-get ag :agent))
+         (setf (herdr-pane-agent-status pn) status))
        `(:event ,kind :what :agent-status :id ,pid :status ,status)))
     ("layout_updated"
      `(:event ,kind :what :layout :id nil))
