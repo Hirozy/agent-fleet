@@ -108,7 +108,9 @@ events.subscribe.  Returns t on success; signals a `herdr-error'
 condition on failure.  Reconnecting an already-live connection first
 disconnects."
   (interactive)
-  (when (and herdr--conn (herdr--connection-connected herdr--conn))
+  (when herdr--conn
+    ;; Always tear down any prior connection (even a half-connected one
+    ;; with a pending reconnect timer) before building a new one.
     (herdr-disconnect))
   (let* ((path (or socket-path (herdr-protocol-socket-path)))
          (pong (herdr-protocol-ping))
@@ -137,23 +139,38 @@ disconnects."
                     :required herdr-required-protocol-version)))))
 
 (defun herdr--start-subscription (conn)
-  "Open the long-lived subscription stream for CONN."
+  "Open the long-lived subscription stream for CONN.
+Unsubscribes any previously-live subscription on CONN first (so a
+reconnect never leaves a second live stream pushing duplicate events).
+Returns the new subscription process (which may be nil if the socket
+could not be opened)."
+  (let ((old (herdr--connection-subscription-proc conn)))
+    (when (herdr-protocol-subscription-alive-p old)
+      (herdr-protocol-unsubscribe old)))
   (let ((subs (herdr-events-subscriptions-for (herdr-model-cache))))
     (let ((proc (herdr-protocol-subscribe
                  subs
                  #'herdr--on-event
                  #'herdr--on-subscription-lost)))
-      (setf (herdr--connection-subscription-proc conn) proc))))
+      (setf (herdr--connection-subscription-proc conn) proc)
+      proc)))
+
+(defvar herdr--resubscribe-pending nil
+  "Non-nil while a deferred resubscribe is queued, to coalesce bursts.")
 
 (defun herdr--on-event (kind data)
   "Event callback for the fleet subscription: dispatch + maybe resubscribe."
   (let ((descriptor (herdr-events-dispatch kind data)))
     (when (herdr-events-rebuild-needed-p descriptor)
-      ;; Defer teardown: we are inside the subscription process filter.
-      (run-at-time 0 nil #'herdr--resubscribe))))
+      ;; Defer + coalesce: a burst of pane-set changes triggers a single
+      ;; teardown/resubscribe rather than one per event.
+      (unless herdr--resubscribe-pending
+        (setq herdr--resubscribe-pending t)
+        (run-at-time 0 nil #'herdr--resubscribe)))))
 
 (defun herdr--resubscribe ()
   "Tear down and re-establish the subscription with a fresh per-pane set."
+  (setq herdr--resubscribe-pending nil)
   (let ((conn herdr--conn))
     (when (and conn (herdr--connection-connected conn))
       (let ((old (herdr--connection-subscription-proc conn)))
@@ -168,25 +185,36 @@ disconnects."
 
 (defun herdr--on-subscription-lost (errdata)
   "Error callback: mark disconnected and schedule a reconnect.
-ERRDATA is the plist from `herdr-protocol-subscribe'."
+ERRDATA is the plist from `herdr-protocol-subscribe'.
+Idempotent: a no-op if we are already disconnected (e.g. the close
+sentinel firing after the send-failed/rejected path already reported),
+preventing duplicate reconnect timers."
   (let ((conn herdr--conn))
-    (when conn
+    (when (and conn (herdr--connection-connected conn))
       (setf (herdr--connection-connected conn) nil)
       (setf (herdr--connection-subscription-proc conn) nil)
       (herdr--log 'warn "subscription lost: %S" errdata)
       (herdr--schedule-reconnect))))
 
 (defun herdr--schedule-reconnect ()
-  "Schedule a reconnect attempt with exponential backoff."
+  "Schedule a reconnect attempt with exponential backoff.
+Cancels any previously-pending reconnect timer first (idempotent under
+double error-callbacks), so one loss never schedules two timers."
   (let ((conn herdr--conn))
     (when conn
+      (when-let* ((old (herdr--connection-reconnect-timer conn)))
+        (cancel-timer old)
+        (setf (herdr--connection-reconnect-timer conn) nil))
       (let ((n (1+ (herdr--connection-reconnect-attempts conn))))
         (setf (herdr--connection-reconnect-attempts conn) n)
         (let ((max herdr-reconnect-max-attempts))
           (if (> n max)
               (progn
                 (herdr--log 'error "giving up after %d reconnect attempts" n)
-                (setq herdr--conn nil))
+                (setq herdr--conn nil)
+                ;; Drop the stale cache so herdr-session returns nil as
+                ;; documented rather than reporting dead state.
+                (herdr-model-clear-cache))
             (let* ((base herdr-reconnect-delay)
                    (raw (* base (expt 2 (1- n))))
                    (delay (min raw herdr-reconnect-max-delay)))
@@ -195,7 +223,11 @@ ERRDATA is the plist from `herdr-protocol-subscribe'."
                     (run-at-time delay nil #'herdr--reconnect)))))))))
 
 (defun herdr--reconnect ()
-  "Attempt to re-establish the connection (ping -> snapshot -> resubscribe)."
+  "Attempt to re-establish the connection (ping -> snapshot -> resubscribe).
+On success marks connected and resets the backoff; on any failure
+(including a subscribe that did not produce a live process) schedules
+another attempt WITHOUT resetting the backoff, so a persistently-failing
+server still reaches `herdr-reconnect-max-attempts' and gives up."
   (let ((conn herdr--conn))
     (when conn
       (condition-case err
@@ -209,12 +241,18 @@ ERRDATA is the plist from `herdr-protocol-subscribe'."
             (let* ((snap (herdr-protocol-request "session.snapshot" nil))
                    (session (herdr-model-parse-snapshot snap)))
               (herdr-model-set-cache session))
-            (herdr--start-subscription conn)
-            (setf (herdr--connection-connected conn) t)
-            (setf (herdr--connection-reconnect-attempts conn) 0)
-            (setf (herdr--connection-reconnect-timer conn) nil)
-            (herdr--log 'info "reconnected to Herdr")
-            t)
+            (let ((proc (herdr--start-subscription conn)))
+              (if (herdr-protocol-subscription-alive-p proc)
+                  (progn
+                    (setf (herdr--connection-connected conn) t)
+                    (setf (herdr--connection-reconnect-attempts conn) 0)
+                    (setf (herdr--connection-reconnect-timer conn) nil)
+                    (herdr--log 'info "reconnected to Herdr")
+                    t)
+                ;; ping+snapshot worked but the subscription did not land;
+                ;; do not advertise connected, do not reset the backoff.
+                (herdr--log 'warn "reconnect: subscription not live")
+                (herdr--schedule-reconnect))))
         (error
          (herdr--log 'warn "reconnect failed: %s" (error-message-string err))
          (herdr--schedule-reconnect))))))

@@ -110,6 +110,71 @@ the server is stopped and any live herdr connection is torn down."
                   :type 'herdr-timeout-error)))
 
 
+;;; --- Async request path ------------------------------------------
+
+(ert-deftest herdr-protocol-async-success ()
+  "An async request delivers the result to the callback exactly once."
+  (with-herdr-mock path srv
+    (let ((calls 0) result)
+      (herdr-protocol-request-async "ping" nil
+        (lambda (r &optional _err)
+          (cl-incf calls)
+          (setq result r))
+        :timeout 2.0)
+      (herdr-protocol-test--drain 1.0)
+      (should (= calls 1))
+      (should (equal (plist-get result :type) "pong"))
+      (should (equal (plist-get result :protocol) 19)))))
+
+(ert-deftest herdr-protocol-async-server-error ()
+  "An async server error delivers (error ERRDATA) with :type/:code once."
+  (with-herdr-mock path srv
+    (herdr-mock-set-handlers
+     srv '(("test.fail" . (lambda (_p) (list 'error "nope" "bad")))))
+    (let ((calls 0) errdata)
+      (herdr-protocol-request-async "test.fail" nil
+        (lambda (r &optional err)
+          (cl-incf calls)
+          (when (eq r 'error)
+            (setq errdata err)))
+        :timeout 2.0)
+      (herdr-protocol-test--drain 1.0)
+      (should (= calls 1))
+      (should (eq (plist-get errdata :type) 'request))
+      (should (equal (plist-get errdata :code) "nope"))
+      (should (equal (plist-get errdata :message) "bad")))))
+
+(ert-deftest herdr-protocol-async-connection-refused ()
+  "A bad socket delivers a :connection error synchronously, returns nil."
+  (let ((herdr-socket-path "/tmp/herdr-definitely-does-not-exist-sock")
+        (calls 0) errdata ret)
+    (setq ret (herdr-protocol-request-async "ping" nil
+                (lambda (r &optional err)
+                  (cl-incf calls)
+                  (when (eq r 'error)
+                    (setq errdata err)))
+                :timeout 2.0))
+    (should (null ret))                  ; make-socket failed -> nil
+    (should (= calls 1))
+    (should (eq (plist-get errdata :type) 'connection))))
+
+
+;;; --- Partial-frame reassembly (direct filter test) ----------------
+
+(ert-deftest herdr-protocol-req-filter-buffers-partial-frames ()
+  "The request filter buffers bytes until the terminating newline."
+  (let ((state (list :pending "" :response nil :error nil :id "x"
+                     :method "test" :callback nil :delivered nil
+                     :timer nil :proc nil)))
+    (herdr-protocol--req-filter nil "{\"id\":\"x\",\"result\":7" state)
+    (should-not (plist-get state :response))
+    (should (equal (plist-get state :pending) "{\"id\":\"x\",\"result\":7"))
+    (herdr-protocol--req-filter nil "}\n" state)
+    (should (plist-get state :response))
+    (should (equal (plist-get (plist-get state :response) :result) 7))
+    (should (equal (plist-get state :pending) ""))))
+
+
 ;;; --- Subscription stream -----------------------------------------
 
 (ert-deftest herdr-protocol-subscribe-receives-pushed-events ()

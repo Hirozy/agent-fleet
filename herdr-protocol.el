@@ -253,6 +253,18 @@ immediate connect failure."
          (herdr--log 'error "connect failed: %S" data)
          (signal 'herdr-connection-error data))))))
 
+(defun herdr-protocol--close-socket (proc)
+  "Delete PROC and kill its process buffer (if any).
+Emacs does not auto-kill a process's buffer on `delete-process', so
+without this one-shot requests and closed subscriptions would leak a
+buffer per connection over a long-running session."
+  (when (processp proc)
+    (let ((buf (process-buffer proc)))
+      (when (process-live-p proc)
+        (delete-process proc))
+      (when (and buf (buffer-live-p buf))
+        (kill-buffer buf)))))
+
 
 ;;; --- One-shot requests ----------------------------------------------
 
@@ -349,7 +361,7 @@ the server's error CODE)."
         (setq proc (herdr-protocol--make-socket "herdr-req"))
       (herdr-connection-error
        (signal 'herdr-connection-error
-               (list :method method :detail (cadr conn-err)))))
+               (list :method method :detail (cdr conn-err)))))
     (plist-put state :proc proc)
     (unwind-protect
         (progn
@@ -363,8 +375,7 @@ the server's error CODE)."
              (plist-put state :error (list :reason 'send-failed))))
           (herdr-protocol--pump state proc timeout)
           (herdr-protocol--finish-request state method))
-      (when (and proc (process-live-p proc))
-        (delete-process proc)))))
+      (herdr-protocol--close-socket proc))))
 
 (cl-defun herdr-protocol-request-async (method params callback &key (timeout herdr-protocol-request-timeout))
   "Send a one-shot Herdr request asynchronously.
@@ -386,7 +397,7 @@ still invoked with an :connection error in that case)."
       (herdr-connection-error
        (funcall callback 'error
                 (list :type 'connection :method method
-                      :detail (cadr conn-err)))
+                      :detail (cdr conn-err)))
        (cl-return-from herdr-protocol-request-async nil)))
     (plist-put state :proc proc)
     (set-process-filter proc
@@ -428,9 +439,7 @@ still invoked with an :connection error in that case)."
     (when-let* ((timer (plist-get state :timer)))
       (cancel-timer timer)
       (plist-put state :timer nil))
-    (let ((proc (plist-get state :proc)))
-      (when (and proc (process-live-p proc))
-        (delete-process proc)))
+    (herdr-protocol--close-socket (plist-get state :proc))
     (cond
      (err
       (let ((type (pcase (plist-get err :reason)
@@ -464,7 +473,7 @@ The result looks like (:type \"pong\" :version \"0.8.0\" :protocol 19
 
 ;;; --- Subscriptions -------------------------------------------------
 
-(defun herdr-protocol-subscribe (subscriptions event-callback &optional error-callback)
+(cl-defun herdr-protocol-subscribe (subscriptions event-callback &optional error-callback)
   "Open a long-lived Herdr subscription connection.
 SUBSCRIPTIONS is a list of subscription objects (alists with a \"type\"
 key, e.g. ((\"type\" . \"workspace.created\"))).  EVENT-CALLBACK is
@@ -491,7 +500,7 @@ connection could not be opened (ERROR-CALLBACK is still invoked)."
        (when error-callback
          (funcall error-callback
                   (list :type 'closed :reason 'connect-failed
-                        :detail (cadr conn-err))))
+                        :detail (cdr conn-err))))
        (cl-return-from herdr-protocol-subscribe nil)))
     (herdr-protocol--put-process-state proc state)
     (set-process-filter proc
@@ -501,9 +510,15 @@ connection could not be opened (ERROR-CALLBACK is still invoked)."
     (condition-case nil
         (process-send-string proc payload)
       (file-error
+       ;; Mark dead so the close sentinel does not re-fire the callback;
+       ;; clean up the process+buffer and return nil so callers observe
+       ;; the failure rather than storing a dead process.
+       (plist-put state :dead t)
        (plist-put state :error (list :type 'closed :reason 'send-failed))
        (when error-callback
-         (funcall error-callback (plist-get state :error)))))
+         (funcall error-callback (plist-get state :error)))
+       (herdr-protocol--close-socket proc)
+       (cl-return-from herdr-protocol-subscribe nil)))
     proc))
 
 (defun herdr-protocol--sub-filter (_proc string state)
@@ -536,6 +551,8 @@ connection could not be opened (ERROR-CALLBACK is still invoked)."
      ;; The subscribe ack: has :result (ok) or :error (rejected) and :id.
      ((plist-get msg :error)
       (let ((e (plist-get msg :error)))
+        ;; Mark dead so the close sentinel does not re-fire the callback.
+        (plist-put state :dead t)
         (plist-put state :error
                    (list :type 'rejected :code (plist-get e :code)
                          :message (plist-get e :message)))
@@ -564,8 +581,7 @@ connection could not be opened (ERROR-CALLBACK is still invoked)."
 Does not invoke the error callback (this is a user-initiated close)."
   (when-let* ((state (herdr-protocol--get-process-state proc)))
     (plist-put state :closing t))
-  (when (process-live-p proc)
-    (delete-process proc)))
+  (herdr-protocol--close-socket proc))
 
 (defun herdr-protocol-subscription-alive-p (proc)
   "Return non-nil if PROC is a live subscription connection."
