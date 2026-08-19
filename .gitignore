@@ -1,0 +1,8 @@
+*.elc
+*~
+\#*\#
+.\#*
+*.#*
+/.dir-locals.el
+/test/fixtures/*.elc
+/coverage/
