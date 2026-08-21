@@ -59,20 +59,46 @@ program `herdr' is prepended by the backend launch, not by `--argv'."
 ;;; --- Backend readiness: the §45.1 stale-module guard ----------------
 
 (ert-deftest agent-fleet-attach-ghostel-ready-p-rejects-stale-module ()
-  "ghostel's lisp can `require' successfully while the module-backed
-`ghostel-make-term' stays void — the stale/older-module case (PLAN §45.1).
-`--ghostel-ready-p' must return nil then: the `fboundp' guard, NOT just the
-`require' check, is what distinguishes a working ghostel from a lisp-only
-one.  `require' is stubbed so `ghostel' \"loads\" while `ghostel-make-term'
-remains unbound."
-  (let ((real-require (symbol-function 'require)))
+  "ghostel's lisp can `require' successfully while its dynamic module does
+NOT load (an older/broken module, or a missing libghostty-vt dependency) —
+the stale-module case (PLAN §45.1).  `module-load' sets the
+`ghostel-module' feature only on success, so `--ghostel-ready-p' must check
+`featurep 'ghostel-module', NOT merely that `require' succeeded.  Here
+`require' is stubbed so ghostel \"loads\" while `featurep' returns nil
+(module not loaded) — ready-p must be nil.  (An earlier version probed a
+symbol `ghostel-make-term' that ghostel does not expose — it was always
+void, so `auto' ALWAYS fell to eat even with a working module; this test
+now pins the real guard.)"
+  (let ((real-require (symbol-function 'require))
+        (real-featurep (symbol-function 'featurep)))
     (cl-letf (((symbol-function 'require)
                (lambda (feature &optional file noerror)
                  (if (eq feature 'ghostel)
-                     t                  ; lisp "loaded", module NOT actually loaded
-                   (funcall real-require feature file noerror)))))
-      (should-not (fboundp 'ghostel-make-term))
+                     t                  ; lisp "loaded"
+                   (funcall real-require feature file noerror))))
+              ((symbol-function 'featurep)
+               (lambda (feature &optional sub)
+                 (if (eq feature 'ghostel-module)
+                     nil                ; module did NOT load
+                   (funcall real-featurep feature sub)))))
       (should-not (agent-fleet-attach--ghostel-ready-p)))))
+
+(ert-deftest agent-fleet-attach-ghostel-ready-p-accepts-loaded-module ()
+  "When ghostel's lisp loads AND the module loaded (featurep t), ready-p is
+non-nil — `auto' picks ghostel (native libghostty-vt, fastest)."
+  (let ((real-require (symbol-function 'require))
+        (real-featurep (symbol-function 'featurep)))
+    (cl-letf (((symbol-function 'require)
+               (lambda (feature &optional file noerror)
+                 (if (eq feature 'ghostel)
+                     t
+                   (funcall real-require feature file noerror))))
+              ((symbol-function 'featurep)
+               (lambda (feature &optional sub)
+                 (if (eq feature 'ghostel-module)
+                     t                  ; module loaded
+                   (funcall real-featurep feature sub)))))
+      (should (agent-fleet-attach--ghostel-ready-p)))))
 
 
 ;;; --- Backend selection (auto preference + fallbacks) -----------------
