@@ -36,7 +36,7 @@
 ;; It knows nothing about workspaces, panes, agents, or orchestration:
 ;; that is `herdr-model.el', `herdr-events.el' and `herdr.el'.
 ;;
-;; Connection model (verified against Herdr 0.8.0, protocol 19):
+;; Connection model (verified against Herdr 0.8.2, protocol 20):
 ;;
 ;;   - Request connections are ONE-SHOT: open, send one request, read one
 ;;     response, the server closes.  Each request opens a fresh connection.
@@ -175,9 +175,12 @@ with string keys, plists with keyword keys, and hash-tables."
 
 (defun herdr-protocol--encode-request (id method params)
   "Encode a request frame as a JSON string terminated by a newline.
-PARAMS is normalized to a JSON object; nil/empty becomes \"{}\"."
+PARAMS is normalized to a JSON object; nil/empty becomes \"{}\".
+Boolean values use t/`:false' (bound to `json-false' so they encode as
+true/false, not as the strings \"true\"/\"false\")."
   (let ((json-object-type 'alist)
-        (json-array-type 'vector))
+        (json-array-type 'vector)
+        (json-false :false))
     (concat
      (json-encode
       `(("id" . ,id) ("method" . ,method)
@@ -461,8 +464,10 @@ still invoked with an :connection error in that case)."
 
 (cl-defun herdr-protocol-ping (&key (timeout herdr-protocol-ping-timeout))
   "Ping Herdr and return the pong result plist.
-The result looks like (:type \"pong\" :version \"0.8.0\" :protocol 19
-:capabilities ...).  Signals `herdr-request-error' or connection errors."
+The result looks like (:type \"pong\" :version <ver> :protocol <n>
+:capabilities ...), where <ver>/<n> are the server's reported version and
+protocol (verified against Herdr 0.8.2, protocol 20).  Signals
+`herdr-request-error' or connection errors."
   (herdr-protocol-request "ping" nil :timeout timeout))
 
 (defun herdr-protocol-protocol-version ()
@@ -543,8 +548,22 @@ connection could not be opened (ERROR-CALLBACK is still invoked)."
       (herdr--log 'error "sub decode failed: %s" line))
      ;; A pushed event: top-level has :event (and :data), no :id.
      ((plist-member msg :event)
-      (let ((ev (plist-get msg :event))
-            (data (plist-get msg :data)))
+      (let* ((raw (plist-get msg :event))
+             ;; The server has TWO push envelope shapes.  GLOBAL events
+             ;; (`EventEnvelope') carry an UNDERSCORED `event' (`EventKind'
+             ;; uses rename_all="snake_case", e.g. "pane_created"); PER-PANE
+             ;; subscription events (`SubscriptionEventEnvelope') carry a
+             ;; DOTTED `event' (`SubscriptionEventKind' uses explicit dotted
+             ;; renames, e.g. "pane.agent_status_changed").  This callback's
+             ;; contract (and the model's pcase arms) speak the underscored
+             ;; form, so normalize dotted->underscored here — a no-op for
+             ;; global events (they contain no dots) and the fix that lets a
+             ;; per-pane status push actually match the
+             ;; `pane_agent_status_changed' arm instead of falling through to
+             ;; `:unknown'.
+             (ev (and (stringp raw)
+                      (replace-regexp-in-string "\\." "_" raw)))
+             (data (plist-get msg :data)))
         (herdr--log 'debug "event %s" ev)
         (when-let* ((cb (plist-get state :event-callback)))
           (funcall cb ev data))))

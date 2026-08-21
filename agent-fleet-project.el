@@ -1,0 +1,196 @@
+;;; agent-fleet-project.el --- project.el integration for agent-fleet -*- lexical-binding: t; -*-
+
+;; Copyright (C) 2026  agent-fleet contributors
+
+;; Author: agent-fleet
+;; Keywords: processes, tools, convenience, projects
+;; Version: 0.4.0
+;; Package-Requires: ((emacs "29.1"))
+
+;; This program is free software; you can redistribute it and/or modify
+;; it under the terms of the GNU General Public License as published by
+;; the Free Software Foundation, either version 3 of the License, or
+;; (at your option) any later version.
+
+;; This program is distributed in the hope that it will be useful,
+;; but WITHOUT ANY WARRANTY; without even the implied warranty of
+;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+;; GNU General Public License for more details.
+
+;; You should have received a copy of the GNU General Public License
+;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+;;; Commentary:
+
+;; The project-integration layer (PLAN.md Phase 4, §69).  Maps Herdr-managed
+;; agents to Emacs `project.el' projects by **canonical cwd** (PLAN.md §31/§32:
+;; "不要仅通过 label 判断" — do not judge by workspace label alone; match by
+;; `file-truename (project-root ...)`), and lets the user start/list agents
+;; scoped to the current project.
+;;
+;; Design rules honored (PLAN.md):
+;;   §31  prefer `project.el' over Projectile; use `project-current'/`project-root'.
+;;        Default mapping: one Emacs project ↔ one Herdr workspace.
+;;   §32  match by canonical cwd; allow multiple workspaces per repo (worktrees,
+;;        investigation workspaces).  No label-based matching, no stale table —
+;;        the association is *derived* from agent cwds each time.
+;;   §69  deliverables: project.el + cwd↔workspace + project-scoped dashboard,
+;;        plus commands `agent-fleet-start-for-project' and
+;;        `agent-fleet-project-agents'.
+;;
+;; This is a thin layer over the Phase 2 control commands (`agent-fleet-start')
+;; and the Phase 1 model accessors (`herdr-agents', `herdr-agent-cwd',
+;; `herdr-agent-workspace-id').  It adds no wire protocol.  Worktree isolation
+;; (`:worktree t', Phase 5 §70/§33/§34) is forwarded to `agent-fleet-start'.
+;;
+;; The workspace *label* is intentionally not set on creation: the
+;; `workspace.create' label param is undocumented, and §32 forbids relying on
+;; labels anyway.  Project identity comes from agent cwd, not workspace label.
+
+;;; Code:
+
+(require 'cl-lib)
+(require 'subr-x)
+(require 'project)
+(require 'agent-fleet)
+(require 'herdr-model)
+
+
+;;; --- Project root resolution ----------------------------------------
+
+(defun agent-fleet-project-root-for-cwd (dir)
+  "Return the canonical project root for DIR, or nil.
+Uses `project-current' with DIR as `default-directory' (PLAN.md §31),
+falling back to the VC root (`vc-root-dir') for dirs not registered as
+Emacs projects.  The result is `file-truename'-canonicalized so that
+symlinked cwd variants of one repo all match (PLAN.md §32: canonical cwd).
+Nil-safe: nil, empty, or non-existent DIR returns nil — an empty cwd
+would otherwise expand to `default-directory' (via `file-directory-p')
+and leak the caller's project as the agent's."
+  (when (and (stringp dir) (not (string-empty-p dir)) (file-directory-p dir))
+    (let ((default-directory (file-truename dir)))
+      (let ((proj (project-current)))
+        (cond
+         (proj (directory-file-name (file-truename (project-root proj))))
+         (t
+          ;; VC fallback for repos not yet known to project.el.
+          (let ((root (vc-root-dir)))
+            (and root (not (string-empty-p root))
+                 (directory-file-name (file-truename root))))))))))
+
+(defun agent-fleet-project-for-agent (agent)
+  "Return the canonical project root for AGENT (by its cwd), or nil."
+  (agent-fleet-project-root-for-cwd (herdr-agent-cwd agent)))
+
+(defun agent-fleet--project-root (project-or-root)
+  "Normalize PROJECT-OR-ROOT to a canonical root directory string.
+PROJECT-OR-ROOT is either a project struct (its `project-root' is used) or
+a directory string; either way the result is `file-truename'-canonicalized.
+Returns nil when PROJECT-OR-ROOT is nil."
+  (when project-or-root
+    (directory-file-name
+     (file-truename
+      (if (stringp project-or-root)
+          project-or-root
+        (project-root project-or-root))))))
+
+
+;;; --- Project label (dashboard column) -------------------------------
+
+(defun agent-fleet-project-label (agent)
+  "Return a Project label for AGENT (PLAN.md §27/§69).
+Prefers the canonical project-root basename, then the cwd basename, then
+\"—\".  Keeps the Phase 3 fallback shape so non-repo dirs still label by
+cwd basename (e.g. \"/tmp/demo\" -> \"demo\")."
+  (let ((root (agent-fleet-project-for-agent agent)))
+    (cond
+     ((and root (file-directory-p root))
+      (file-name-nondirectory (directory-file-name root)))
+     ((let ((cwd (herdr-agent-cwd agent)))
+        (and cwd (not (string-empty-p cwd))
+             (file-name-nondirectory (directory-file-name cwd)))))
+     (t "—"))))
+
+
+;;; --- Project-scoped agent queries -----------------------------------
+
+(defun agent-fleet-project-agents (&optional project)
+  "Return the agents whose project root matches PROJECT.
+PROJECT defaults to `(project-current)'.  It may be a project struct or a
+root directory string.  Matching is by canonical cwd (PLAN.md §32), so
+agents in separate worktrees or checkouts of one repo all match.  Nil-safe
+when not connected or when PROJECT resolves to no root."
+  (let ((root (agent-fleet--project-root (or project (project-current)))))
+    (if (not root)
+        nil
+      (cl-remove-if-not
+       (lambda (a)
+         (let ((r (agent-fleet-project-for-agent a)))
+           (and r (string= r root))))
+       (herdr-agents)))))
+
+(defun agent-fleet--workspace-for-root (root)
+  "Return a workspace id hosting an agent whose project root is ROOT, or nil.
+Used to co-locate a project's agents in one workspace (PLAN.md §31: one
+project ↔ one workspace, by default).  Returns the first match."
+  (cl-loop for a in (herdr-agents)
+           when (equal (agent-fleet-project-for-agent a) root)
+           return (herdr-agent-workspace-id a)))
+
+
+;;; --- Start for project ----------------------------------------------
+
+;;;###autoload
+(cl-defun agent-fleet-start-for-project (kind &key project name args
+                                                  (timeout-ms agent-fleet-start-timeout-ms)
+                                                  focus worktree branch base)
+  "Start a CLI agent of KIND in Emacs project PROJECT (default: current).
+Resolves the project root (PLAN.md §31/§32), then finds a Herdr workspace
+already serving this project (one with an agent in it); if none, reuses the
+focused workspace; if none, creates a workspace with `cwd=root'.  The agent
+is started at `cwd=root' so the derived project association is immediate.
+
+With `:worktree t', the project root becomes the source repo for a fresh
+git worktree: the agent starts in an isolated checkout instead of the
+normal working tree (PLAN.md §34/§70).  Optional BRANCH/BASE override the
+default branch selection.  When `:worktree t' is set, the workspace/pane
+resolution above is skipped — `worktree.create' provisions both.
+
+KIND is a symbol like `claude' (see `agent-fleet-agent-executables').
+Keyword args:
+  :name        agent name (auto-generated if nil)
+  :project     a project struct or root dir (default: `(project-current)')
+  :args        list of extra CLI arg strings
+  :timeout-ms  startup timeout (Herdr requires > 3000)
+  :focus       non-nil to focus the new pane in the Herdr UI
+  :worktree    non-nil to start in a fresh git worktree at the project root
+  :branch      worktree branch override (with :worktree; nil = Herdr decides)
+  :base        worktree base ref override (with :worktree)
+
+Returns the `herdr-agent' for the started agent.  Signals `user-error' if
+no project can be resolved."
+  (interactive
+   (let* ((kinds (mapcar #'car agent-fleet-agent-executables))
+          (kind (intern (completing-read "Agent kind: " kinds nil t)))
+          (nm (read-string "Name (empty for auto): ")))
+     (list kind :name (and (not (string-empty-p nm)) nm))))
+  (agent-fleet--ensure-connected)
+  (let ((root (agent-fleet--project-root (or project (project-current)))))
+    (unless root
+      (user-error "No current project; call from a project buffer or pass :project"))
+    (if worktree
+        ;; A worktree start provisions its own workspace + pane via
+        ;; `worktree.create' (Phase 5); the project root is the source repo.
+        (agent-fleet-start kind :name name :cwd root :args args
+                               :timeout-ms timeout-ms :focus focus
+                               :worktree worktree :branch branch :base base)
+      (let ((ws (or (agent-fleet--workspace-for-root root)
+                    (when (herdr-focused-workspace)
+                      (herdr-workspace-id (herdr-focused-workspace)))
+                    (agent-fleet--create-workspace root))))
+        (agent-fleet-start kind :name name :cwd root :workspace ws
+                               :args args :timeout-ms timeout-ms :focus focus)))))
+
+
+(provide 'agent-fleet-project)
+;;; agent-fleet-project.el ends here

@@ -69,11 +69,11 @@ the server is stopped and any live herdr connection is torn down."
 ;;; --- One-shot request/response via mock ---------------------------
 
 (ert-deftest herdr-protocol-ping ()
-  "ping returns a pong plist with protocol 19."
+  "ping returns a pong plist with protocol 20."
   (with-herdr-mock path srv
     (let ((pong (herdr-protocol-ping :timeout 2.0)))
       (should (equal (plist-get pong :type) "pong"))
-      (should (equal (plist-get pong :protocol) 19)))))
+      (should (equal (plist-get pong :protocol) 20)))))
 
 (ert-deftest herdr-protocol-snapshot ()
   "session.snapshot returns a snapshot with the canned shape."
@@ -124,7 +124,7 @@ the server is stopped and any live herdr connection is torn down."
       (herdr-protocol-test--drain 1.0)
       (should (= calls 1))
       (should (equal (plist-get result :type) "pong"))
-      (should (equal (plist-get result :protocol) 19)))))
+      (should (equal (plist-get result :protocol) 20)))))
 
 (ert-deftest herdr-protocol-async-server-error ()
   "An async server error delivers (error ERRDATA) with :type/:code once."
@@ -234,6 +234,44 @@ the server is stopped and any live herdr connection is torn down."
                     (< (float-time) deadline))
           (herdr-protocol-test--drain 0.1)))
       (should (herdr-connected-p)))))
+
+
+(ert-deftest herdr-replay-stale-pane-does-not-break-connection ()
+  "A replayed `pane_created' for a closed pane must not leave us disconnected.
+The EventHub ring buffer replays on every subscribe; a `pane_created' for
+a pane whose matching `pane_closed' aged out of the bounded ring re-inserts
+the dead id into the cache.  The per-pane subscribe set then includes the
+stale id, and real Herdr rejects the WHOLE batch (`pane_get(...)?' →
+pane_not_found) → `on-subscription-lost' → reconnect → replay → loop,
+leaving `herdr-connected-p' nil (the reported bug).  The fix: `pane.list'
+reconciliation before each resubscribe drops stale ids, and the
+`gone-panes' replay guard stops the re-insert on the next replay — so the
+connection stays live without a reconnect."
+  (with-herdr-mock path srv
+    (herdr-mock-set-agent-handlers srv)
+    ;; A replayed create for a pane the snapshot does NOT report (its close
+    ;; aged out of the ring): the bug condition.  The mock rejects any
+    ;; per-pane subscribe referencing a pane it does not report as live,
+    ;; mirroring real Herdr's `pane_get(...)?' batch rejection.
+    (herdr-mock-set-pending-events srv
+      '(("pane_created" . (:pane (:pane_id "w1:p2" :workspace_id "w1"
+                                   :tab_id "w1:t1" :agent "codex"
+                                   :agent_status "idle" :cwd "/x")))))
+    (let ((herdr-reconnect-delay 0.1)
+          (herdr-reconnect-max-delay 0.2)
+          (herdr-reconnect-max-attempts 3))
+      (herdr-connect)
+      ;; Let the replay land, the rebuild fire, the reconcile + resubscribe
+      ;; settle.  Without the fix this loops on stale-pane rejection until
+      ;; max-attempts gives up (herdr--conn nil); with it, the reconcile
+      ;; drops the stale id before the resubscribe and the connection holds.
+      (herdr-protocol-test--drain 3.0)
+      (should (herdr-connected-p))
+      ;; The stale pane was dropped by reconciliation and remembered gone
+      ;; (so a further replayed create for it is ignored, not re-inserted).
+      (should-not (herdr-model-find-pane "w1:p2"))
+      (should (gethash "w1:p2"
+                       (herdr-session-gone-panes (herdr-model-cache)))))))
 
 
 ;;; --- Helpers ------------------------------------------------------
