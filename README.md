@@ -413,8 +413,9 @@ Terminal backends are **optional** (PLAN §45): `agent-fleet-attach-backend`
 > **vterm** > **external**. `external` is always "ready": when no Emacs
 backend is installed it `user-error`s with the exact `herdr agent attach`
 command for you to run in your own terminal (§44 path C). ghostel is
-preferred only when its dynamic module is actually loaded and current — a
-stale/older module leaves ghostel's terminal functions void, so `auto`
+preferred only when its dynamic module actually loaded (`featurep
+'ghostel-module`) — a missing or broken module (e.g. an older build, or a
+missing libghostty-vt dependency) leaves that feature unset, so `auto`
 falls through to eat (set `agent-fleet-attach-backend` to an explicit symbol
 to force one).
 

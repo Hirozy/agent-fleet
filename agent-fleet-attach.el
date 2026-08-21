@@ -65,11 +65,11 @@
 (require 'agent-fleet)
 
 ;; Terminal backends are optional (PLAN §45): declare the public entry points
-;; so the byte-compiler does not warn, without forcing a top-level `require'.
-;; ghostel's module-backed functions (e.g. `ghostel-make-term') are NOT
-;; declared here: they are probed at runtime via `fboundp' (a stale module
-;; leaves them void), which is how `agent-fleet-attach--ghostel-ready-p' tells
-;; a working ghostel from a lisp-only one.
+;; so the byte-compiler does not warn, without forcing a top-level `require`.
+;; `ghostel-exec' is what `--spawn' calls; ghostel's dynamic module is probed
+;; at runtime via `featurep 'ghostel-module' (a stale/missing module leaves the
+;; feature unset even when the lisp `require's), which is how
+;; `--ghostel-ready-p' tells a working ghostel from a lisp-only one.
 (declare-function eat-exec "eat" (buffer name command startfile switches))
 (declare-function eat-mode "eat" ())
 (declare-function eat-kill-process "eat" ())
@@ -114,13 +114,16 @@ The buffer is named PREFIX<name>*; <name> is the agent's display name."
 
 (defun agent-fleet-attach--ghostel-ready-p ()
   "Return non-nil if ghostel is loaded AND its dynamic module is working.
-ghostel's lisp can `require' successfully while the module-backed terminal
-functions stay void — this happens when the on-disk module is older than the
-lisp requires.  The `fboundp' check on a module function distinguishes a
-working ghostel from a lisp-only one, so `auto' falls through to eat rather
-than calling a `ghostel-exec' that would fail at runtime (PLAN §45.1)."
+The ghostel lisp can load fine while the dynamic module fails to load (an
+older/broken on-disk module, or a missing libghostty-vt dependency): at
+ghostel.el load time the module loader calls module-load, which provides
+the ghostel-module feature ONLY on success.  So checking that feature is
+the staleness signal — nil when the lisp loaded but the module did not
+take.  This lets auto fall through to eat rather than calling ghostel-exec
+when it would crash at runtime (the §45.1 module-dependency risk, realized
+in some dev envs)."
   (and (require 'ghostel nil t)
-       (fboundp 'ghostel-make-term)))
+       (featurep 'ghostel-module)))
 
 (defun agent-fleet-attach--eat-ready-p ()
   "Return non-nil if Eat is loaded or loadable (pure Elisp, no module)."

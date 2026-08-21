@@ -498,10 +498,12 @@ Herdr server → one live agent pane
   user to run in their own terminal).  The core control plane works with
   none of them installed.
 - **The §45.1 stale-module guard.**  ghostel's lisp can `require`
-  successfully while its dynamic module stays void (an older on-disk
-  module).  `auto` checks a module-backed function (`fboundp
-  'ghostel-make-term`), not just the `require`, so a stale ghostel falls
-  through to eat rather than calling a `ghostel-exec` that would fail.
+  successfully while its dynamic module fails to load (an older/broken
+  on-disk module, or a missing libghostty-vt dependency).  `auto` checks
+  `featurep 'ghostel-module` (the feature `module-load` sets only on a
+  successful load), not just the `require`, so a ghostel whose module did
+  not take falls through to eat rather than calling a `ghostel-exec` that
+  would fail.
 - **Security (§46/§23, unchanged).**  Attach is user-initiated interactive
   viewing — the terminal buffer is **transient**, not persisted or
   continuously mirrored (the same boundary as `agent-fleet-show-output`'s
