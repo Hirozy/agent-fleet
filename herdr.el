@@ -55,7 +55,9 @@
   "Minimum Herdr protocol version the client requires.
 The server's protocol (from `ping') must be at least this.  A server
 with a HIGHER protocol is accepted (the client tolerates unknown
-fields).  Set to nil to skip the check."
+fields).  Set to nil to skip the check.  The client is verified against
+Herdr 0.8.2 (protocol 20); the permissive default (19) also accepts the
+earlier 0.8.0 baseline."
   :type '(choice (const :tag "No minimum" nil)
                  (integer :tag "Minimum protocol"))
   :group 'herdr)
@@ -155,8 +157,44 @@ could not be opened)."
       (setf (herdr--connection-subscription-proc conn) proc)
       proc)))
 
+(defun herdr--reconcile-panes ()
+  "Drop cached panes the server no longer reports, marking them gone.
+Fetches `pane.list' (ground truth) and, for every pane id in the cache
+absent from the result, calls `herdr-model-mark-pane-gone' — removing it
+and recording it in `gone-panes' so a `pane_created' replayed later from
+the EventHub ring buffer (whose matching close aged out of the bounded
+ring) is ignored instead of re-inserted.
+
+This keeps stale pane ids out of the per-pane subscribe set: real Herdr
+rejects the ENTIRE subscribe batch when one per-pane subscription
+references a missing pane (`pane_get(...)?' in subscriptions.rs
+propagates `pane_not_found').  Without it, a single stale id re-inserted
+by replay would reject the resubscribe, drop `connected', and reconnect
+— and the reconnect's subscribe replays and re-inserts it again, looping.
+
+RPC failures are swallowed: the caller subscribes with the cache as-is,
+and if a stale id still rejects the batch, the subscription-loss path
+schedules a reconnect that retries with a fresh snapshot."
+  (ignore-errors
+    (let ((live (make-hash-table :test 'equal)))
+      (dolist (pn (plist-get (herdr-protocol-request "pane.list" nil) :panes))
+        (when-let* ((id (plist-get pn :pane_id)))
+          (puthash id t live)))
+      (when-let* ((session (herdr-model-cache)))
+        (let (stale)
+          (maphash (lambda (pid _pn)
+                     (unless (gethash pid live)
+                       (push pid stale)))
+                   (herdr-session-panes session))
+          (dolist (pid stale)
+            (herdr--log 'debug "reconcile: pane %s gone on server; dropping" pid)
+            (herdr-model-mark-pane-gone pid session)))))))
+
 (defvar herdr--resubscribe-pending nil
   "Non-nil while a deferred resubscribe is queued, to coalesce bursts.")
+
+(defvar herdr--resubscribe-timer nil
+  "The pending deferred-resubscribe timer, so `herdr-disconnect' can cancel it.")
 
 (defun herdr--on-event (kind data)
   "Event callback for the fleet subscription: dispatch + maybe resubscribe."
@@ -166,16 +204,24 @@ could not be opened)."
       ;; teardown/resubscribe rather than one per event.
       (unless herdr--resubscribe-pending
         (setq herdr--resubscribe-pending t)
-        (run-at-time 0 nil #'herdr--resubscribe)))))
+        (setq herdr--resubscribe-timer
+              (run-at-time 0 nil #'herdr--resubscribe))))))
 
 (defun herdr--resubscribe ()
-  "Tear down and re-establish the subscription with a fresh per-pane set."
+  "Tear down and re-establish the subscription with a fresh per-pane set.
+First reconciles the cache against `pane.list' (ground truth) so a stale
+pane id — a `pane_created' replayed from the EventHub ring buffer whose
+matching close aged out — is dropped and remembered gone, never reaching
+the per-pane subscribe batch (one stale id rejects the whole batch on
+real Herdr)."
   (setq herdr--resubscribe-pending nil)
+  (setq herdr--resubscribe-timer nil)
   (let ((conn herdr--conn))
     (when (and conn (herdr--connection-connected conn))
       (let ((old (herdr--connection-subscription-proc conn)))
         (when (herdr-protocol-subscription-alive-p old)
           (herdr-protocol-unsubscribe old)))
+      (herdr--reconcile-panes)
       (herdr--log 'debug "resubscribing (pane set changed)")
       (let ((proc (herdr-protocol-subscribe
                    (herdr-events-subscriptions-for (herdr-model-cache))
@@ -268,6 +314,12 @@ server still reaches `herdr-reconnect-max-attempts' and gives up."
       (when-let* ((proc (herdr--connection-subscription-proc conn)))
         (herdr-protocol-unsubscribe proc))
       (setf (herdr--connection-connected conn) nil)))
+  ;; Cancel any deferred resubscribe so it cannot fire after teardown
+  ;; (e.g. into the next test's connection) and leak a subscription.
+  (when herdr--resubscribe-timer
+    (cancel-timer herdr--resubscribe-timer)
+    (setq herdr--resubscribe-timer nil))
+  (setq herdr--resubscribe-pending nil)
   (setq herdr--conn nil)
   (herdr-model-clear-cache)
   (herdr--log 'info "disconnected")
@@ -371,15 +423,12 @@ Manage its lifetime with `herdr-protocol-unsubscribe'."
 
 ;;; --- Doctor --------------------------------------------------------
 
-;;;###autoload
-(defun herdr-doctor ()
-  "Check the Herdr environment and show a report.
+(defun herdr--doctor-checks ()
+  "Return the list of (LABEL OK DETAIL) doctor check triples.
 Verifies Emacs version, the Herdr executable and server, protocol
-compatibility, the socket, schema availability, and optional
-features (Magit, Eat).  Does NOT inspect agents or integrations beyond
-what `ping' reports; see `agent-fleet-doctor' for the full agent
-diagnostic (Phase 2)."
-  (interactive)
+compatibility, the socket, schema availability, the subscription
+stream, and optional features (Magit, Eat).  Does NOT inspect agents or
+integrations; `agent-fleet-doctor' appends those."
   (let ((checks nil))
     (push (herdr--doctor-check
            "Emacs version"
@@ -432,7 +481,12 @@ diagnostic (Phase 2)."
                (let* ((proc (herdr-protocol-subscribe
                              '((("type" . "workspace.created")))
                              (lambda (_ _))))
-                      (ok (process-live-p proc)))
+                      (ok (and (processp proc) (process-live-p proc))))
+                 ;; Drain the subscription_started ack before closing,
+                 ;; so the server has actually confirmed the subscription
+                 ;; (and is not left writing to a peer that stopped
+                 ;; reading, which can wedge `accept-process-output').
+                 (when ok (accept-process-output proc 0.1))
                  (when proc (herdr-protocol-unsubscribe proc))
                  ok)
              (error nil))
@@ -444,23 +498,40 @@ diagnostic (Phase 2)."
              (featurep (car feat))
              (if (featurep (car feat)) "available" "not installed"))
             checks))
-    (setq checks (nreverse checks))
-    (with-current-buffer (get-buffer-create "*herdr-doctor*")
-      (read-only-mode -1)
-      (erase-buffer)
-      (insert "Herdr Doctor\n\n")
-      (dolist (c checks)
-        (insert (format "%-22s %s  %s\n"
-                        (car c)
-                        (if (cadr c) "OK  " "FAIL")
-                        (caddr c))))
-      (goto-char (point-min))
-      (read-only-mode 1))
-    (display-buffer "*herdr-doctor*")
-    (let ((fails (cl-remove-if #'cadr checks)))
-      (if fails
-          (message "Herdr doctor: %d check(s) failed" (length fails))
-        (message "Herdr doctor: all checks passed")))))
+    (nreverse checks)))
+
+(defun herdr--doctor-render (checks buffer-name title)
+  "Render CHECKS to BUFFER-NAME and display it.
+TITLE is the report heading.  Returns the number of failing checks."
+  (with-current-buffer (get-buffer-create buffer-name)
+    (read-only-mode -1)
+    (erase-buffer)
+    (insert title "\n\n")
+    (dolist (c checks)
+      (insert (format "%-22s %s  %s\n"
+                      (car c)
+                      (if (cadr c) "OK  " "FAIL")
+                      (caddr c))))
+    (goto-char (point-min))
+    (read-only-mode 1))
+  (display-buffer buffer-name)
+  (let ((fails (cl-remove-if #'cadr checks)))
+    (if fails
+        (message "%s: %d check(s) failed" title (length fails))
+      (message "%s: all checks passed" title))
+    (length fails)))
+
+;;;###autoload
+(defun herdr-doctor ()
+  "Check the Herdr environment and show a report.
+Verifies Emacs version, the Herdr executable and server, protocol
+compatibility, the socket, schema availability, and optional
+features (Magit, Eat).  Does NOT inspect agents or integrations beyond
+what `ping' reports; see `agent-fleet-doctor' for the full agent
+diagnostic (Phase 2)."
+  (interactive)
+  (herdr--doctor-render (herdr--doctor-checks)
+                        "*herdr-doctor*" "Herdr Doctor"))
 
 (defun herdr--doctor-check (label ok detail)
   "Build a doctor check triple (LABEL OK DETAIL)."

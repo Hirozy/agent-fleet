@@ -93,8 +93,17 @@ Order: global subscriptions first, then one per-pane block per pane."
 
 ;; `pane.agent_status_changed' is scoped to a pane, so when panes come
 ;; and go the per-pane subscription set must be recomputed and the
-;; long-lived subscription connection re-established (the server does
-;; not accept additional subscribe requests on an existing stream).
+;; subscription re-established (the server does not accept additional
+;; subscribe requests on an existing stream).  Only the PER-PANE set is
+;; rebuilt — the global stream is unaffected by pane-set changes.
+;;
+;; Replayed events are excluded: the EventHub ring buffer is drained on
+;; every subscribe (global subscriptions replay from sequence 0), so a
+;; `pane_created' for a pane already in the cache (from the snapshot) or
+;; remembered gone is a stale replay, not a real new pane.  `apply-event'
+;; flags these :replayp; rebuilding for them would resubscribe per replay,
+;; and each resubscribe replays again — an infinite loop.  See
+;; `herdr-model-apply-event' and `herdr--reconcile-panes' (herdr.el).
 
 (defconst herdr-events--rebuild-kinds
   '("pane_created" "pane_closed" "pane_exited"
@@ -102,10 +111,18 @@ Order: global subscriptions first, then one per-pane block per pane."
   "Event kinds that change the pane set and so require resubscription.")
 
 (defun herdr-events-rebuild-needed-p (descriptor)
-  "Return non-nil if DESCRIPTOR describes a pane-set change.
-When true, the caller (herdr.el) should tear down and re-establish the
-subscription connection with a recomputed per-pane set."
+  "Return non-nil if DESCRIPTOR describes a genuine pane-set change.
+When true, the caller (herdr.el) rebuilds the per-pane subscription set
+(`pane.agent_status_changed' is pane-scoped, so a new pane needs a new
+per-pane subscription and the server accepts no additions to a live
+stream).  A REPLAYED event (DESCRIPTOR's :replayp is non-nil) is not a
+change: the EventHub ring buffer is drained on every subscribe, so a
+`pane_created' for a pane already cached (or remembered gone) adds no new
+pane — rebuilding for it would resubscribe on every replayed create, and
+each resubscribe itself replays, looping.  See `herdr-model-apply-event'
+for how replays are flagged."
   (and descriptor
+       (not (plist-get descriptor :replayp))
        (member (plist-get descriptor :event)
                herdr-events--rebuild-kinds)))
 
@@ -129,6 +146,10 @@ descriptor plist (:event :what :id :status ...).")
 
 (defvar herdr-event-pane-hook nil
   "Hook run for pane events.  Receives the descriptor plist.")
+
+(defvar herdr-event-worktree-hook nil
+  "Hook run for worktree events (created/opened/removed).  Receives the
+descriptor plist, whose :id is the worktree `path' (the canonical key).")
 
 (defvar herdr-event-agent-status-hook nil
   "Hook run when an agent's status changes.  Receives the descriptor
@@ -155,6 +176,8 @@ Returns the descriptor, or nil if there is no live cache to update."
           ((or :pane-updated :pane-closed :pane-focused
                :pane-output :pane-scroll :agent-detected)
            (run-hook-with-args 'herdr-event-pane-hook descriptor))
+          ((or :worktree-created :worktree-opened :worktree-removed)
+           (run-hook-with-args 'herdr-event-worktree-hook descriptor))
           (:agent-status
            (run-hook-with-args 'herdr-event-agent-status-hook descriptor))
           (_ nil))
