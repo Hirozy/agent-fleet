@@ -294,7 +294,8 @@ of worktrees removed."
           (sel (if choices
                    (completing-read "Cleanup task: " choices nil t)
                  (user-error "No tasks to clean up"))))
-     (list (agent-fleet-task-find (cdr (assoc sel choices))))))
+     (list (agent-fleet-task-find (cdr (assoc sel choices)))
+           current-prefix-arg)))
   (let* ((agents (agent-fleet-task-agents task))
          (finished-p (eq 'done (agent-fleet-task-state task))))
     (when (or no-confirm

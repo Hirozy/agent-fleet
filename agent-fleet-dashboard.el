@@ -253,7 +253,7 @@ With non-nil FROM-SERVER (the `g' action), first refresh the cache from
 The event-driven path calls this without FROM-SERVER: the cache is
 already post-event because `herdr-model-apply-event' mutates before the
 hooks fire (PLAN.md §25)."
-  (interactive "P")
+  (interactive (list t))
   (when from-server
     (agent-fleet-list t))
   (agent-fleet-dashboard--set-entries)
