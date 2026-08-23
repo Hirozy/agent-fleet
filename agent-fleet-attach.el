@@ -199,8 +199,13 @@ agent (PLAN §79)."
          (eat-exec buf-name "herdr-attach" "herdr" nil argv))
        (pop-to-buffer buf-name))
       ('ghostel
-       (ghostel-exec buf-name "herdr" argv)
-       (pop-to-buffer buf-name))
+       ;; Unlike the interactive `ghostel' entry point, `ghostel-exec'
+       ;; requires BUFFER to exist already (`with-current-buffer' is its
+       ;; first operation).  Pass the buffer object as well, so a missing
+       ;; BUF-NAME cannot surface as "No buffer named ...".
+       (let ((buffer (get-buffer-create buf-name)))
+         (ghostel-exec buffer "herdr" argv)
+         (pop-to-buffer buffer)))
       ('vterm
        ;; vterm has no argv launch API: it runs `vterm-shell' via
        ;; `sh -c "...; exec <vterm-shell>"', so a command string is parsed

@@ -277,20 +277,31 @@ with the buffer, the `herdr' program, and the attach argv.  `eat-mode' and
                    (nth 4 (car eat-called))))))            ; switches = argv
 
 (ert-deftest agent-fleet-attach-spawn-via-ghostel ()
-  "`--spawn' with ghostel calls `ghostel-exec' with the buffer, `herdr',
-and the argv (TAKEOVER appends `--takeover')."
-  (let (ghostel-called)
-    (cl-letf (((symbol-function 'ghostel-exec)
-               (lambda (buffer program &optional args)
-                 (push (list buffer program args) ghostel-called)))
-              ((symbol-function 'pop-to-buffer)
-               (lambda (_buf &rest _) nil)))
-      (agent-fleet-attach--spawn 'ghostel "*agent:arch*" "w4:p1" t))
+  "`--spawn' creates Ghostel's buffer before calling `ghostel-exec'.
+The real `ghostel-exec' starts with `with-current-buffer' and therefore
+signals `No buffer named ...' when callers pass an uncreated name.  Pin
+both that precondition and the attach argv (TAKEOVER adds `--takeover')."
+  (let ((buf-name "*agent:arch-ghostel*")
+        ghostel-called)
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostel-exec)
+                   (lambda (buffer program &optional args)
+                     (push (list (bufferp buffer)
+                                 (buffer-live-p buffer)
+                                 (buffer-name buffer)
+                                 program args)
+                           ghostel-called)))
+                  ((symbol-function 'pop-to-buffer)
+                   (lambda (_buf &rest _) nil)))
+          (agent-fleet-attach--spawn 'ghostel buf-name "w4:p1" t))
+      (when (get-buffer buf-name) (kill-buffer buf-name)))
     (should (= 1 (length ghostel-called)))
-    (should (equal "*agent:arch*" (nth 0 (car ghostel-called))))
-    (should (equal "herdr"        (nth 1 (car ghostel-called))))
+    (should (eq t (nth 0 (car ghostel-called))))
+    (should (eq t (nth 1 (car ghostel-called))))
+    (should (equal buf-name (nth 2 (car ghostel-called))))
+    (should (equal "herdr" (nth 3 (car ghostel-called))))
     (should (equal '("agent" "attach" "w4:p1" "--takeover")
-                   (nth 2 (car ghostel-called))))))
+                   (nth 4 (car ghostel-called))))))
 
 (ert-deftest agent-fleet-attach-spawn-via-vterm ()
   "`--spawn' with vterm sets `vterm-shell' to the space-joined,
