@@ -81,11 +81,18 @@ rebuild.  The same kind WITHOUT :replayp still triggers one."
   (should-not (herdr-events-rebuild-needed-p
                '(:event "pane_created" :what :pane-replayed :id "x" :replayp t)))
   (should (herdr-events-rebuild-needed-p
-           '(:event "pane_created" :what :pane-updated :id "x"))))
+           '(:event "pane_created" :what :pane-updated :id "x")))
+  ;; Parent closes also cascade pane removals and therefore rebuild.
+  (should (herdr-events-rebuild-needed-p
+           '(:event "tab_closed" :what :tab-closed :id "t1")))
+  (should-not (herdr-events-rebuild-needed-p
+               '(:event "workspace_closed" :what :workspace-closed
+                 :id "w1" :replayp t))))
 
 (ert-deftest herdr-events-dispatch-updates-cache-and-hook ()
   "Dispatch reconciles the cache and runs the catch-all hook."
   (let ((session (herdr-events-test--session))
+        (herdr-event-hook nil)
         (fired nil))
     (herdr-model-set-cache session)
     (add-hook 'herdr-event-hook
@@ -105,8 +112,24 @@ rebuild.  The same kind WITHOUT :replayp still triggers one."
                           (herdr-model-find-agent session "w1:p1"))
                          "w1:p1"))
           (should (member "pane_agent_status_changed" fired)))
-      (remove-hook 'herdr-event-hook
-                   (lambda (d) (push (plist-get d :event) fired)))
+      (herdr-model-clear-cache))))
+
+(ert-deftest herdr-events-parent-close-fans-out-agent-exits ()
+  "A workspace close emits one pane lifecycle descriptor per child agent."
+  (let ((session (herdr-events-test--session))
+        (herdr-event-pane-hook nil)
+        exits)
+    (herdr-model-set-cache session)
+    (add-hook 'herdr-event-pane-hook
+              (lambda (descriptor)
+                (when (eq :pane-closed (plist-get descriptor :what))
+                  (push descriptor exits))))
+    (unwind-protect
+        (progn
+          (herdr-events-dispatch "workspace_closed" '(:workspace_id "w1"))
+          (should (= 1 (length exits)))
+          (should (equal "w1:p1" (plist-get (car exits) :id)))
+          (should (plist-get (car exits) :agentp)))
       (herdr-model-clear-cache))))
 
 (ert-deftest herdr-events-dispatch-no-cache ()

@@ -38,7 +38,9 @@
 ;; On subscription loss: mark disconnected, schedule reconnect with
 ;; exponential backoff; on reconnect, ping -> snapshot (wholesale
 ;; cache replace) -> re-subscribe with a recomputed per-pane set.
-;; Events are never replayed; the snapshot is the canonical resync.
+;; The client never invents a missed-event replay: a fresh snapshot is the
+;; canonical resync.  Herdr may drain its bounded EventHub buffer when a new
+;; subscription starts, so model handlers are explicitly replay-idempotent.
 
 ;;; Code:
 
@@ -77,6 +79,11 @@ The actual delay grows exponentially up to `herdr-reconnect-max-delay'."
 
 (defcustom herdr-reconnect-max-delay 60.0
   "Cap (seconds) on the reconnection backoff delay."
+  :type 'number
+  :group 'herdr)
+
+(defcustom herdr-subscription-start-timeout 3.0
+  "Seconds to wait for Herdr's `subscription_started' acknowledgement."
   :type 'number
   :group 'herdr)
 
@@ -132,14 +139,22 @@ disconnects."
                      :version ver :capabilities caps
                      :connected t :reconnect-attempts 0)))
           (setq herdr--conn conn)
-          (herdr--start-subscription conn)
+          (let ((proc (herdr--start-subscription conn)))
+            (unless (herdr--await-current-subscription conn proc)
+              ;; A successful ping/snapshot is not a usable fleet
+              ;; connection without the event stream.  Do not report a
+              ;; false success or leave a reconnect timer behind.
+              (herdr-disconnect)
+              (signal 'herdr-connection-error
+                      (list :reason 'subscription-failed :path path))))
           (herdr--log 'info "connected to Herdr %s (protocol %s)" ver proto)
           t)))))
 
 (defun herdr--check-protocol (server-protocol)
-  "Signal `herdr-protocol-error' if SERVER-PROTOCOL is too old."
-  (when (and herdr-required-protocol-version server-protocol)
-    (when (< server-protocol herdr-required-protocol-version)
+  "Signal `herdr-protocol-error' if SERVER-PROTOCOL is absent or too old."
+  (when herdr-required-protocol-version
+    (unless (and (integerp server-protocol)
+                 (>= server-protocol herdr-required-protocol-version))
       (signal 'herdr-protocol-error
               (list :server server-protocol
                     :required herdr-required-protocol-version)))))
@@ -162,6 +177,25 @@ could not be opened)."
                  #'herdr--on-subscription-lost)))
       (setf (herdr--connection-subscription-proc conn) proc)
       proc)))
+
+(defun herdr--await-subscription (proc)
+  "Wait briefly for PROC's subscribe ack and return non-nil on success."
+  (let ((deadline (+ (float-time) herdr-subscription-start-timeout)))
+    (while (and (herdr-protocol-subscription-alive-p proc)
+                (not (herdr-protocol-subscription-started-p proc))
+                (< (float-time) deadline))
+      (accept-process-output proc 0.05))
+    (and (herdr-protocol-subscription-started-p proc) t)))
+
+(defun herdr--await-current-subscription (conn original)
+  "Await ORIGINAL, or a resubscribe that replaced it on CONN.
+Buffered pane events may legitimately trigger an immediate resubscribe while
+the bootstrap ack is being drained.  In that case ORIGINAL is intentionally
+closed and CONN's replacement stream is the usable result."
+  (or (herdr--await-subscription original)
+      (let ((current (herdr--connection-subscription-proc conn)))
+        (and current (not (eq current original))
+             (herdr--await-subscription current)))))
 
 (defun herdr--reconcile-panes ()
   "Drop cached panes the server no longer reports, marking them gone.
@@ -236,7 +270,13 @@ real Herdr)."
       ;; Reuse the connection helper so an explicit socket override remains
       ;; in force after pane-set changes as well as after full reconnects.
       (let ((proc (herdr--start-subscription conn)))
-        (setf (herdr--connection-subscription-proc conn) proc)))))
+        (setf (herdr--connection-subscription-proc conn) proc)
+        (unless (herdr--await-current-subscription conn proc)
+          ;; Rejection callbacks normally mark the connection lost.  A
+          ;; silent/unacknowledged stream needs the same recovery path.
+          (when (herdr--connection-connected conn)
+            (herdr--on-subscription-lost
+             (list :type 'closed :reason 'subscribe-ack-timeout))))))))
 
 (defun herdr--on-subscription-lost (errdata)
   "Error callback: mark disconnected and schedule a reconnect.
@@ -285,6 +325,10 @@ another attempt WITHOUT resetting the backoff, so a persistently-failing
 server still reaches `herdr-reconnect-max-attempts' and gives up."
   (let ((conn herdr--conn))
     (when conn
+      ;; The timer that invoked this function is no longer pending.  Clearing
+      ;; its slot also lets a subscription error callback install exactly one
+      ;; replacement timer during this attempt.
+      (setf (herdr--connection-reconnect-timer conn) nil)
       (condition-case err
           (let ((herdr-socket-path
                  (or (herdr--connection-socket-path conn)
@@ -298,8 +342,11 @@ server still reaches `herdr-reconnect-max-attempts' and gives up."
             (let* ((snap (herdr-protocol-request "session.snapshot" nil))
                    (session (herdr-model-parse-snapshot snap)))
               (herdr-model-set-cache session))
+            ;; Let buffered pane events rebuild the subscription during the
+            ;; ack wait just as they do during the initial connection.
+            (setf (herdr--connection-connected conn) t)
             (let ((proc (herdr--start-subscription conn)))
-              (if (herdr-protocol-subscription-alive-p proc)
+              (if (herdr--await-current-subscription conn proc)
                   (progn
                     (setf (herdr--connection-connected conn) t)
                     (setf (herdr--connection-reconnect-attempts conn) 0)
@@ -308,11 +355,15 @@ server still reaches `herdr-reconnect-max-attempts' and gives up."
                     t)
                 ;; ping+snapshot worked but the subscription did not land;
                 ;; do not advertise connected, do not reset the backoff.
+                (setf (herdr--connection-connected conn) nil)
                 (herdr--log 'warn "reconnect: subscription not live")
-                (herdr--schedule-reconnect))))
+                (unless (herdr--connection-reconnect-timer conn)
+                  (herdr--schedule-reconnect)))))
         (error
+         (setf (herdr--connection-connected conn) nil)
          (herdr--log 'warn "reconnect failed: %s" (error-message-string err))
-         (herdr--schedule-reconnect))))))
+         (unless (herdr--connection-reconnect-timer conn)
+           (herdr--schedule-reconnect)))))))
 
 ;;;###autoload
 (defun herdr-disconnect ()
@@ -467,9 +518,13 @@ integrations; `agent-fleet-doctor' appends those."
            (executable-find "herdr")
            (or (executable-find "herdr") "not on PATH"))
           checks)
-    (let ((server-ok nil) (server-detail ""))
+    (let ((server-ok nil) (server-detail "") pong)
       (condition-case err
-          (let ((pong (herdr-protocol-ping)))
+          (progn
+            ;; `herdr-ping' reuses an explicit socket path recorded by the
+            ;; active connection; calling the protocol primitive directly
+            ;; would silently rediscover (and diagnose) a different server.
+            (setq pong (herdr-ping))
             (setq server-ok t)
             (setq server-detail
                   (format "v%s protocol %s"
@@ -478,53 +533,55 @@ integrations; `agent-fleet-doctor' appends those."
         (error
          (setq server-detail (error-message-string err))))
       (push (herdr--doctor-check "Herdr server" server-ok server-detail)
-            checks))
-    (let* ((pong (ignore-errors (herdr-protocol-ping)))
-           (proto (plist-get pong :protocol))
-           (ok (or (null herdr-required-protocol-version)
-                   (and proto (>= proto herdr-required-protocol-version)))))
-      (push (herdr--doctor-check
-             "Protocol"
-             ok
-             (format "server %s / required %s"
-                     proto herdr-required-protocol-version))
-            checks))
-    (let ((path (condition-case nil
-                   (herdr-protocol-socket-path)
-                 (error nil))))
+            checks)
+      (let* ((proto (plist-get pong :protocol))
+             (ok (or (null herdr-required-protocol-version)
+                     (and (integerp proto)
+                          (>= proto herdr-required-protocol-version)))))
+        (push (herdr--doctor-check
+               "Protocol" ok
+               (format "server %s / required %s"
+                       proto herdr-required-protocol-version))
+              checks)))
+    (let ((path (or (and herdr--conn
+                         (herdr--connection-socket-path herdr--conn))
+                    (condition-case nil
+                        (herdr-protocol-socket-path)
+                      (error nil)))))
       (push (herdr--doctor-check
              "Socket path"
              (and path (file-exists-p path))
              (or path "not found"))
             checks))
-    (push (herdr--doctor-check
-           "Schema"
-           (herdr--schema-available-p)
-           (if (herdr--schema-available-p) "available via `herdr api schema'" "unavailable"))
-           checks)
+    (let ((schema-ok (herdr--schema-available-p)))
+      (push (herdr--doctor-check
+             "Schema" schema-ok
+             (if schema-ok "available via `herdr api schema'" "unavailable"))
+            checks))
     (push (herdr--doctor-check
            "Events"
            (condition-case nil
-               (let* ((proc (herdr-protocol-subscribe
+               (let* ((proc (herdr-subscribe
                              '((("type" . "workspace.created")))
                              (lambda (_ _))))
-                      (ok (and (processp proc) (process-live-p proc))))
-                 ;; Drain the subscription_started ack before closing,
-                 ;; so the server has actually confirmed the subscription
-                 ;; (and is not left writing to a peer that stopped
-                 ;; reading, which can wedge `accept-process-output').
-                 (when ok (accept-process-output proc 0.1))
+                      (ok (and proc (herdr--await-subscription proc))))
                  (when proc (herdr-protocol-unsubscribe proc))
                  ok)
              (error nil))
            "subscription stream")
           checks)
     (dolist (feat '((magit . "Magit") (eat . "Eat")))
-      (push (herdr--doctor-check
-             (format "%s (optional)" (cdr feat))
-             (featurep (car feat))
-             (if (featurep (car feat)) "available" "not installed"))
-            checks))
+      (let* ((symbol (car feat))
+             (loaded (featurep symbol))
+             (library (and (not loaded) (locate-library (symbol-name symbol))))
+             (available (or loaded library)))
+        (push (herdr--doctor-check
+               (format "%s (optional)" (cdr feat))
+               (and available t)
+               (cond (loaded "loaded")
+                     (library (format "available (%s)" library))
+                     (t "not installed")))
+              checks)))
     (nreverse checks)))
 
 (defun herdr--doctor-render (checks buffer-name title)

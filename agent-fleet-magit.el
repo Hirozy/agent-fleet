@@ -37,9 +37,9 @@
 ;; is absent; `declare-function' silences the byte-compiler without a top-level
 ;; `require', so the package loads and compiles with no Magit installed.
 ;;
-;; This file requires `agent-fleet', `agent-fleet-project', and
-;; `agent-fleet-worktree' one-way; `agent-fleet.el' does NOT require it, so
-;; there is no load cycle (mirrors `agent-fleet-worktree.el').
+;; The package entry point loads this feature module through the dashboard
+;; after providing `agent-fleet', so its control/project/worktree requires do
+;; not create a load cycle.
 
 ;;; Code:
 
@@ -67,6 +67,17 @@ not installed) causes the entry points to `user-error' with install advice."
 
 ;;; --- Root resolution (testable core) --------------------------------
 
+(defun agent-fleet-magit--checkout-root-for-cwd (cwd)
+  "Return the concrete git checkout containing CWD, or nil.
+Unlike project identity resolution, this deliberately does not follow a
+linked worktree's git-common-dir back to the primary checkout: Magit must
+open on the files the agent is actually editing."
+  (when (and (stringp cwd)
+             (not (string-empty-p cwd))
+             (file-directory-p cwd))
+    (when-let* ((root (locate-dominating-file cwd ".git")))
+      (directory-file-name (file-truename root)))))
+
 (defun agent-fleet-magit--root-for-agent (agent)
   "Return the git root to open Magit on for AGENT, or nil.
 AGENT is resolved via `agent-fleet--find-agent'.  For an agent whose cwd
@@ -77,7 +88,7 @@ non-existent-cwd guards.  When the agent has no usable cwd but a worktree
 is cached, the worktree path is the fallback (PLAN §36 \"open agent
 worktree in Magit\").  Returns nil if no directory is reachable."
   (when-let* ((a (agent-fleet--find-agent agent)))
-    (or (agent-fleet-project-root-for-cwd (herdr-agent-cwd a))
+    (or (agent-fleet-magit--checkout-root-for-cwd (herdr-agent-cwd a))
         (when-let* ((wt (agent-fleet--worktree-for-agent a))
                     (path (herdr-worktree-path wt))
                     ((file-directory-p path)))

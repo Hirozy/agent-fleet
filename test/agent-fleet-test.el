@@ -64,6 +64,27 @@ check mere occurrence."
   (cl-some (lambda (req) (equal (cadr req) method))
            (herdr-mock-received server)))
 
+(ert-deftest herdr-mock-default-state-is-isolated-between-servers ()
+  "Mutating one mock's agent state never changes a later default server."
+  (let* ((path-1 (make-temp-name "/tmp/herdr-mock-isolation-1-"))
+         (path-2 (make-temp-name "/tmp/herdr-mock-isolation-2-"))
+         (server-1 (herdr-mock-start path-1))
+         server-2)
+    (unwind-protect
+        (progn
+          (should (equal "working"
+                         (herdr-mock-agent-state server-1 "w1:p1")))
+          (herdr-mock--agent-transition server-1 "w1:p1" "done")
+          (should (equal "done"
+                         (herdr-mock-agent-state server-1 "w1:p1")))
+          (herdr-mock-stop server-1)
+          (setq server-1 nil
+                server-2 (herdr-mock-start path-2))
+          (should (equal "working"
+                         (herdr-mock-agent-state server-2 "w1:p1"))))
+      (when server-1 (herdr-mock-stop server-1))
+      (when server-2 (herdr-mock-stop server-2)))))
+
 
 ;;; --- Start ----------------------------------------------------------
 
@@ -94,6 +115,67 @@ check mere occurrence."
                      (alist-get "workspace_id" split-params nil nil #'equal)))
       (should (equal "w2:p1"
                      (alist-get "target_pane_id" split-params nil nil #'equal))))))
+
+(ert-deftest agent-fleet-provision-pane-uses-tab-root-pane-envelope ()
+  "tab.create uses its root_pane and never an unrelated pane.current."
+  (let ((herdr-model--cache (herdr-model--empty-session))
+        methods)
+    (cl-letf (((symbol-function 'herdr-request)
+               (lambda (method &optional _params &rest _keys)
+                 (push method methods)
+                 (pcase method
+                   ("tab.create"
+                    '(:type "tab_created"
+                      :tab (:tab_id "w9:t1" :workspace_id "w9")
+                      :root_pane (:pane_id "w9:p1" :workspace_id "w9"
+                                  :tab_id "w9:t1")))
+                   ("pane.current" '(:pane_id "wrong:pane"))))))
+      (should (equal "w9:p1"
+                     (agent-fleet--provision-pane "w9" "/repo" nil))))
+    (should (equal '("tab.create") (nreverse methods)))))
+
+(ert-deftest agent-fleet-start-reuses-new-workspace-root-pane ()
+  "workspace.create's root pane is the agent target; no extra tab is made."
+  (let ((herdr-model--cache (herdr-model--empty-session))
+        (agent-fleet-agent-started-hook nil)
+        methods start-params)
+    (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+              ((symbol-function 'herdr-request)
+               (lambda (method &optional params &rest _keys)
+                 (push method methods)
+                 (pcase method
+                   ("workspace.create"
+                    '(:type "workspace_created"
+                      :workspace (:workspace_id "new" :label "repo")
+                      :tab (:tab_id "new:t1" :workspace_id "new")
+                      :root_pane (:pane_id "new:p1" :workspace_id "new"
+                                  :tab_id "new:t1" :cwd "/repo")))
+                   ("agent.start"
+                    (setq start-params params)
+                    '(:type "agent_started"
+                      :agent (:pane_id "new:p1" :workspace_id "new"
+                              :name "root" :agent "codex"
+                              :agent_status "idle")))
+                   (_ (error "unexpected request %s" method))))))
+      (should (herdr-agent-p
+               (agent-fleet-start 'codex :name "root" :cwd "/repo"))))
+    (should (equal "new:p1" (alist-get "pane_id" start-params nil nil
+                                        #'equal)))
+    (should (equal '("workspace.create" "agent.start")
+                   (nreverse methods)))))
+
+(ert-deftest agent-fleet-resolve-pane-id-unwraps-agent-get ()
+  "An uncached agent name resolves through the typed agent_info envelope."
+  (let ((herdr-model--cache (herdr-model--empty-session)))
+    (cl-letf (((symbol-function 'herdr-request)
+               (lambda (method &optional params &rest _keys)
+                 (should (equal method "agent.get"))
+                 (should (equal "arch" (alist-get "target" params nil nil
+                                                   #'equal)))
+                 '(:type "agent_info"
+                   :agent (:pane_id "w1:p7" :name "arch"
+                           :agent "codex")))))
+      (should (equal "w1:p7" (agent-fleet--resolve-pane-id "arch"))))))
 
 (ert-deftest agent-fleet-long-rpcs-expand-transport-timeout ()
   "Server timeout_ms is always shorter than the socket request timeout."
@@ -193,6 +275,26 @@ without it the hook would fire twice."
       (should-not (agent-fleet-test--last-request server "pane.split"))
       (let ((start-params (agent-fleet-test--last-request server "agent.start")))
         (should (equal "w1:p9" (plist-get start-params :pane_id)))))))
+
+(ert-deftest agent-fleet-start-explicit-pane-does-not-create-workspace ()
+  "An explicit pane is sufficient even when no workspace is focused."
+  (let ((herdr-model--cache (herdr-model--empty-session))
+        (agent-fleet-agent-started-hook nil)
+        methods)
+    (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+              ((symbol-function 'herdr-request)
+               (lambda (method &optional _params &rest _keys)
+                 (push method methods)
+                 (pcase method
+                   ("agent.start"
+                    '(:type "agent_started"
+                      :agent (:pane_id "w9:p7" :workspace_id "w9"
+                              :name "direct" :agent "codex"
+                              :agent_status "idle")))
+                   (_ (error "unexpected request %s" method))))))
+      (should (herdr-agent-p
+               (agent-fleet-start 'codex :name "direct" :pane "w9:p7"))))
+    (should (equal '("agent.start") (nreverse methods)))))
 
 (ert-deftest agent-fleet-start-auto-name ()
   "start without :name generates a unique name."
@@ -330,6 +432,17 @@ Returns the unwrapped AgentInfo (tolerant of a bare ack on real servers)."
         (should (= 1 (length fired)))
         (should (equal pid (plist-get (car fired) :pane-id)))))))
 
+(ert-deftest agent-fleet-ordinary-pane-close-does-not-fire-agent-exited-hook ()
+  "Closing a shell pane is not reported as an agent lifecycle event."
+  (let ((agent-fleet-agent-exited-hook nil)
+        (fired nil))
+    (add-hook 'agent-fleet-agent-exited-hook
+              (lambda (descriptor) (push descriptor fired)))
+    (agent-fleet--on-pane-event
+     '(:event "pane_closed" :what :pane-closed :id "w1:shell"
+       :agentp nil :replayp nil))
+    (should-not fired)))
+
 (ert-deftest agent-fleet-switch-sends-focus ()
   "switch calls agent.focus with the resolved target."
   (with-agent-fleet-mock path server
@@ -362,6 +475,17 @@ no-op and would have left it missing)."
         (agent-fleet-list t)
         (should (agent-fleet-test--saw-request-p server "agent.list"))
         (should (herdr-model-find-agent pid))))))
+
+(ert-deftest agent-fleet-list-refresh-removes-server-absent-agents ()
+  "Authoritative agent.list removes stale client-only cache entries."
+  (with-agent-fleet-mock path server
+    (herdr-model-upsert-agent-info
+     '(:pane_id "gone:p1" :workspace_id "gone" :name "ghost"
+       :agent "codex" :agent_status "idle"))
+    (should (herdr-model-find-agent "gone:p1"))
+    (agent-fleet-list t)
+    (should-not (herdr-model-find-agent "gone:p1"))
+    (should (herdr-model-find-agent "w1:p1"))))
 
 (ert-deftest agent-fleet-unwraps-typed-envelopes ()
   "agent result envelopes (the live Herdr shape) are unwrapped to payloads."
@@ -582,8 +706,9 @@ teeth test: push the faithful dotted kind and assert the hook fires."
 ;;; --- Error paths ---------------------------------------------------
 
 (ert-deftest agent-fleet-not-connected-signals ()
-  "calling a control RPC without a connection signals not-connected."
-  (let ((herdr--conn nil))
+  "Manual policy keeps the explicit not-connected error behavior."
+  (let ((herdr--conn nil)
+        (agent-fleet-auto-connect nil))
     (should-error (agent-fleet-prompt "x" "y")
                   :type 'agent-fleet-not-connected)
     (should-error (agent-fleet-start 'claude)
@@ -591,11 +716,139 @@ teeth test: push the faithful dotted kind and assert the hook fires."
     (should-error (agent-fleet-read "x")
                   :type 'agent-fleet-not-connected)))
 
+(ert-deftest agent-fleet-ensure-connected-connects-on-demand-once ()
+  "Automatic mode connects at first use and reuses the live connection."
+  (let ((agent-fleet-auto-connect 'on-demand)
+        (connected nil)
+        (calls 0))
+    (cl-letf (((symbol-function 'herdr-connected-p)
+               (lambda () connected))
+              ((symbol-function 'herdr-connect)
+               (lambda (&optional _socket-path)
+                 (cl-incf calls)
+                 (setq connected t))))
+      (should (agent-fleet--ensure-connected))
+      (should (agent-fleet--ensure-connected)))
+    (should (= 1 calls))))
+
+(ert-deftest agent-fleet-control-command-connects-on-demand-end-to-end ()
+  "A real control call bootstraps the protocol before sending its RPC."
+  (let* ((path (make-temp-name "/tmp/agentfleet-auto-connect-"))
+         (server (herdr-mock-start path))
+         (herdr-socket-path path)
+         (herdr--conn nil)
+         (agent-fleet-auto-connect 'on-demand))
+    (herdr-mock-set-agent-handlers server)
+    (unwind-protect
+        (progn
+          (should-not (herdr-connected-p))
+          (should (agent-fleet-prompt "demo" "connect automatically"))
+          (should (herdr-connected-p))
+          (should (agent-fleet-test--saw-request-p server "ping"))
+          (should (agent-fleet-test--saw-request-p server "session.snapshot"))
+          (should (agent-fleet-test--saw-request-p server "events.subscribe"))
+          (should (agent-fleet-test--saw-request-p server "agent.prompt")))
+      (ignore-errors (herdr-disconnect))
+      (herdr-mock-stop server))))
+
+(ert-deftest agent-fleet-ensure-connected-reports-auto-connect-cause ()
+  "A failed automatic attempt becomes an actionable fleet-level error."
+  (let ((agent-fleet-auto-connect 'on-demand))
+    (cl-letf (((symbol-function 'herdr-connected-p) (lambda () nil))
+              ((symbol-function 'herdr-connect)
+               (lambda (&optional _socket-path)
+                 (signal 'herdr-connection-error '(:reason no-server)))))
+      (let* ((condition
+              (should-error (agent-fleet--ensure-connected)
+                            :type 'agent-fleet-not-connected))
+             (data (cdr condition)))
+        (should (eq 'herdr-connection-error
+                    (car (plist-get data :cause))))
+        (should (string-match-p "Herdr server"
+                                (plist-get data :hint)))))))
+
+(ert-deftest agent-fleet-ensure-connected-does-not-reenter-connect ()
+  "A re-entrant timer or command never starts a second bootstrap."
+  (let ((agent-fleet-auto-connect 'on-demand)
+        (agent-fleet--connect-in-progress t)
+        called)
+    (cl-letf (((symbol-function 'herdr-connected-p) (lambda () nil))
+              ((symbol-function 'herdr-connect)
+               (lambda (&optional _socket-path) (setq called t))))
+      (should-error (agent-fleet--ensure-connected)
+                    :type 'agent-fleet-not-connected))
+    (should-not called)))
+
+(ert-deftest agent-fleet-after-init-auto-connect-is-idle-and-nonfatal ()
+  "Startup mode schedules on idle and contains a failed bootstrap."
+  (let ((agent-fleet-auto-connect 'after-init)
+        (agent-fleet-auto-connect-delay 0.25)
+        (agent-fleet--auto-connect-timer nil)
+        scheduled-delay scheduled-function messages)
+    (cl-letf (((symbol-function 'herdr-connected-p) (lambda () nil))
+              ((symbol-function 'run-with-idle-timer)
+               (lambda (delay repeat function &rest _args)
+                 (should-not repeat)
+                 (setq scheduled-delay delay
+                       scheduled-function function)
+                 'test-auto-connect-timer))
+              ((symbol-function 'herdr-connect)
+               (lambda (&optional _socket-path)
+                 (signal 'herdr-connection-error '(:reason no-server))))
+              ((symbol-function 'message)
+               (lambda (format-string &rest args)
+                 (push (apply #'format format-string args) messages))))
+      (agent-fleet--schedule-auto-connect)
+      (should (= 0.25 scheduled-delay))
+      (should (eq #'agent-fleet--auto-connect-now scheduled-function))
+      ;; A missing server is reported, but the timer callback does not signal.
+      (should-not (funcall scheduled-function)))
+    (should-not agent-fleet--auto-connect-timer)
+    (should (string-match-p "pre-connection failed" (car messages)))))
+
+(ert-deftest agent-fleet-after-init-policy-installs-deferred-hook ()
+  "Loading before Emacs initialization defers scheduling to after-init-hook."
+  (let ((agent-fleet-auto-connect 'after-init)
+        (agent-fleet--auto-connect-timer nil)
+        (after-init-hook nil)
+        (after-init-time nil))
+    (agent-fleet--configure-auto-connect)
+    (should (memq #'agent-fleet--schedule-auto-connect after-init-hook))))
+
+(ert-deftest agent-fleet-feature-load-failure-can-be-retried ()
+  "A failed downstream require removes the early main feature marker."
+  (let ((test-features (cons 'agent-fleet
+                             (delq 'agent-fleet (copy-sequence features)))))
+    (cl-letf (((symbol-value 'features) test-features)
+              ((symbol-function 'require)
+               (lambda (&rest _) (error "dashboard load failed"))))
+      (should-error (agent-fleet--load-feature-modules) :type 'error)
+      (should-not (featurep 'agent-fleet)))))
+
+(ert-deftest agent-fleet-start-validates-required-fields-before-provisioning ()
+  "Bad kind/args/timeout values fail before any resource-creating RPC."
+  (let (called)
+    (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+              ((symbol-function 'herdr-request)
+               (lambda (&rest _) (setq called t))))
+      (should-error (agent-fleet-start nil) :type 'agent-fleet-error)
+      (should-error (agent-fleet-start 'codex :args "--bad")
+                    :type 'agent-fleet-error)
+      (should-error (agent-fleet-start 'codex :timeout-ms 3000)
+                    :type 'agent-fleet-error))
+    (should-not called)))
+
+(ert-deftest agent-fleet-read-agent-name-errors-when-cache-empty ()
+  "Interactive target readers report an empty fleet before minibuffer input."
+  (let ((herdr-model--cache (herdr-model--empty-session)))
+    (should-error (agent-fleet--read-agent-name "Agent") :type 'user-error)))
+
 (ert-deftest agent-fleet-list-when-disconnected-is-nil-safe ()
   "list and the cache read accessors return nil (not a type error) with no session.
 A nil `herdr-session' must yield an empty result, not a
 `wrong-type-argument' crash on the `herdr-session' struct."
-  (let ((herdr--conn nil))
+  (let ((herdr--conn nil)
+        (agent-fleet-auto-connect nil))
     (herdr-model-clear-cache)
     (should-not (agent-fleet-list))
     (should-not (agent-fleet-list t))      ; refresh path swallows the error
@@ -637,6 +890,18 @@ A nil `herdr-session' must yield an empty result, not a
               (should (string-match-p "Claude Code executable" (buffer-string)))))
         (when (get-buffer buf)
           (kill-buffer buf))))))
+
+(ert-deftest agent-fleet-doctor-unwraps-manifest-envelope ()
+  "server.agent_manifests typed envelopes render their manifest agents."
+  (let ((agent-fleet-agent-executables nil))
+    (cl-letf (((symbol-function 'herdr-request)
+               (lambda (&rest _)
+                 '(:type "agent_manifests"
+                   :manifests ((:agent "claude") (:agent "codex"))))))
+      (let ((check (assoc "Agent manifests (Herdr)"
+                          (agent-fleet--doctor-agent-checks))))
+        (should (nth 1 check))
+        (should (equal "claude, codex" (nth 2 check)))))))
 
 (provide 'agent-fleet-test)
 ;;; agent-fleet-test.el ends here

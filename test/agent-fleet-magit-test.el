@@ -48,6 +48,47 @@ worktree root; here a plain repo cwd returns the repo root."
           (should (file-equal-p repo root)))
       (when (file-exists-p repo) (delete-directory repo t)))))
 
+(ert-deftest agent-fleet-magit-root-keeps-linked-worktree-checkout ()
+  "Magit opens the linked checkout, not its primary repository."
+  (let* ((parent (make-temp-file "af-magit-linked-" t))
+         (repo (expand-file-name "main" parent))
+         (linked (expand-file-name "linked" parent))
+         (subdir (expand-file-name "src" linked)))
+    (unwind-protect
+        (progn
+          (make-directory repo)
+          (should (= 0 (call-process "git" nil nil nil "-C" repo "init"
+                                     "--quiet")))
+          (should (= 0 (call-process "git" nil nil nil "-C" repo "config"
+                                     "user.email" "test@example.invalid")))
+          (should (= 0 (call-process "git" nil nil nil "-C" repo "config"
+                                     "user.name" "Agent Fleet Test")))
+          ;; Never inherit a developer's global commit-signing policy.  A
+          ;; headless test cannot answer a GPG/pinentry prompt.
+          (should (= 0 (call-process "git" nil nil nil "-C" repo "config"
+                                     "commit.gpgSign" "false")))
+          (with-temp-file (expand-file-name "README" repo)
+            (insert "test\n"))
+          (should (= 0 (call-process "git" nil nil nil "-C" repo "add" ".")))
+          (should (= 0 (call-process "git" nil nil nil "-C" repo "commit"
+                                     "--quiet" "-m" "init")))
+          (should (= 0 (call-process "git" nil nil nil "-C" repo "worktree"
+                                     "add" "--quiet" "-b" "linked-test"
+                                     linked)))
+          (make-directory subdir)
+          (let ((agent (make-herdr-agent :id "x" :cwd subdir)))
+            (should (file-equal-p
+                     linked (agent-fleet-magit--root-for-agent agent)))
+            ;; Project grouping deliberately still identifies the primary
+            ;; repository; Magit checkout resolution has different semantics.
+            (should (file-equal-p
+                     repo (agent-fleet-project-root-for-cwd subdir)))))
+      (when (file-directory-p repo)
+        (ignore-errors
+          (call-process "git" nil nil nil "-C" repo "worktree" "remove"
+                        "--force" linked)))
+      (when (file-exists-p parent) (delete-directory parent t)))))
+
 (ert-deftest agent-fleet-magit-root-worktree-fallback ()
   "An agent with no usable cwd but a cached worktree falls back to the
 worktree path (§36 \"open agent worktree in Magit\").  A non-existent
@@ -117,7 +158,8 @@ lambda, so this runs without Magit installed."
                     ((symbol-function 'magit-status)
                      (lambda (dir) (push dir captured))))
             (agent-fleet-magit-status agent))
-          (should (equal (list root) captured)))
+          (should (= 1 (length captured)))
+          (should (file-equal-p root (car captured))))
       (when (file-exists-p repo) (delete-directory repo t)))))
 
 (ert-deftest agent-fleet-magit-diff-calls-magit-diff-working-tree ()
@@ -133,7 +175,8 @@ lambda, so this runs without Magit installed."
                     ((symbol-function 'magit-diff-working-tree)
                      (lambda (&rest _) (push default-directory captured))))
             (agent-fleet-magit-diff agent))
-          (should (equal (list root) captured)))
+          (should (= 1 (length captured)))
+          (should (file-equal-p root (car captured))))
       (when (file-exists-p repo) (delete-directory repo t)))))
 
 (ert-deftest agent-fleet-magit-status-no-root-messages ()

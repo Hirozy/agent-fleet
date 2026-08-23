@@ -97,8 +97,19 @@ non-nil — `auto' picks ghostel (native libghostty-vt, fastest)."
                (lambda (feature &optional sub)
                  (if (eq feature 'ghostel-module)
                      t                  ; module loaded
-                   (funcall real-featurep feature sub)))))
+                   (funcall real-featurep feature sub))))
+              ((symbol-function 'ghostel-exec) (lambda (&rest _))))
       (should (agent-fleet-attach--ghostel-ready-p)))))
+
+(ert-deftest agent-fleet-attach-ghostel-ready-p-requires-entry-point ()
+  "A provided module without ghostel-exec is not a usable backend."
+  (cl-letf (((symbol-function 'require) (lambda (&rest _) t))
+            ((symbol-function 'featurep)
+             (lambda (feature &optional _sub)
+               (memq feature '(ghostel ghostel-module))))
+            ((symbol-function 'fboundp)
+             (lambda (symbol) (not (eq symbol 'ghostel-exec)))))
+    (should-not (agent-fleet-attach--ghostel-ready-p))))
 
 
 ;;; --- Backend selection (auto preference + fallbacks) -----------------
@@ -223,8 +234,11 @@ effects in batch."
               ;; simulate an existing live attach buffer: a buffer whose
               ;; associated process is running.
               (with-current-buffer (get-buffer-create buf-name)
+                (setq-local agent-fleet-attach-pane-id
+                            (herdr-agent-id agent))
                 (start-process "fake-attach" buf-name "sleep" "30"))
-              (should (agent-fleet-attach--live-buffer-p buf-name))
+              (should (agent-fleet-attach--live-buffer-p
+                       buf-name (herdr-agent-id agent)))
               (cl-letf (((symbol-function 'agent-fleet-attach--eat-ready-p)
                          (lambda () t))
                         ((symbol-function 'agent-fleet-attach--spawn)
@@ -232,11 +246,82 @@ effects in batch."
                         ((symbol-function 'pop-to-buffer)
                          (lambda (_buf &rest _) nil)))
                 (agent-fleet-attach agent))
-              (should-not spawn-called))
+              (should-not spawn-called)
+              (should (buffer-local-value 'evil-escape-inhibit
+                                           (get-buffer buf-name))))
           (when (get-buffer buf-name)
             (let ((proc (get-buffer-process (get-buffer buf-name))))
               (when proc (delete-process proc)))
             (kill-buffer buf-name)))))))
+
+(ert-deftest agent-fleet-attach-same-display-name-never-reuses-other-pane ()
+  "Two panes with one display label get distinct attach buffers."
+  (let* ((session (herdr-model--empty-session))
+         (workspace (make-herdr-workspace :id "w1" :cached-label "demo"
+                                           :custom-name "demo"))
+         (first (make-herdr-agent :id "w1:p1" :workspace-id "w1"
+                                  :agent "claude"))
+         (second (make-herdr-agent :id "w1:p2" :workspace-id "w1"
+                                   :agent "codex"))
+         (base (agent-fleet-attach--buffer-name "demo"))
+         captured)
+    (puthash "w1" workspace (herdr-session-workspaces session))
+    (puthash "w1:p1" first (herdr-session-agents session))
+    (puthash "w1:p2" second (herdr-session-agents session))
+    (let ((herdr-model--cache session))
+      (unwind-protect
+          (progn
+            (with-current-buffer (get-buffer-create base)
+              (setq-local agent-fleet-attach-pane-id "w1:p1")
+              (start-process "fake-attach-collision" base "sleep" "30"))
+            (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+                      ((symbol-function 'agent-fleet-attach--pick-backend)
+                       (lambda () 'eat))
+                      ((symbol-function 'agent-fleet-attach--spawn)
+                       (lambda (_backend buffer pane-id _takeover)
+                         (setq captured (list buffer pane-id)))))
+              (agent-fleet-attach second))
+            (should (equal "w1:p2" (cadr captured)))
+            (should-not (equal base (car captured)))
+            (should (string-match-p "w1:p2" (car captured))))
+        (when-let* ((buf (get-buffer base)))
+          (when-let* ((proc (get-buffer-process buf)))
+            (delete-process proc))
+          (kill-buffer buf))))))
+
+(ert-deftest agent-fleet-attach-reuses-pane-after-buffer-name-changes ()
+  "A live attach is found by pane id after collision/rename changes its name."
+  (let* ((session (herdr-model--empty-session))
+         (workspace (make-herdr-workspace :id "w1" :cached-label "renamed"
+                                           :custom-name "renamed"))
+         (agent (make-herdr-agent :id "w1:p2" :workspace-id "w1"
+                                  :agent "codex"))
+         ;; Simulate a buffer created earlier under a collision-safe or old
+         ;; display name.  There is deliberately no current base-name buffer.
+         (old-name "*agent:old [w1:p2]*")
+         spawn-called popped)
+    (puthash "w1" workspace (herdr-session-workspaces session))
+    (puthash "w1:p2" agent (herdr-session-agents session))
+    (let ((herdr-model--cache session))
+      (unwind-protect
+          (progn
+            (with-current-buffer (get-buffer-create old-name)
+              (setq-local agent-fleet-attach-pane-id "w1:p2")
+              (start-process "fake-attach-renamed" old-name "sleep" "30"))
+            (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+                      ((symbol-function 'agent-fleet-attach--pick-backend)
+                       (lambda () 'eat))
+                      ((symbol-function 'agent-fleet-attach--spawn)
+                       (lambda (&rest _) (setq spawn-called t)))
+                      ((symbol-function 'pop-to-buffer)
+                       (lambda (buffer &rest _) (setq popped buffer))))
+              (agent-fleet-attach agent))
+            (should-not spawn-called)
+            (should (equal old-name popped)))
+        (when-let* ((buf (get-buffer old-name)))
+          (when-let* ((proc (get-buffer-process buf)))
+            (delete-process proc))
+          (kill-buffer buf))))))
 
 (ert-deftest agent-fleet-attach-live-buffer-p-ignores-dead ()
   "`--live-buffer-p' is nil for a buffer with NO process (e.g. a stale
@@ -248,6 +333,35 @@ leftover buffer from a crashed session) so a fresh attach is spawned."
           (should-not (agent-fleet-attach--live-buffer-p buf-name)))
       (when (get-buffer buf-name) (kill-buffer buf-name)))))
 
+(ert-deftest agent-fleet-attach-prepare-buffer-inhibits-evil-escape-locally ()
+  "Attach input disables evil-escape's synthetic first-key insertion locally.
+The global/default value must remain untouched, so `jk' continues to work in
+ordinary Evil editing buffers."
+  (let ((buf (generate-new-buffer " *agent-fleet-evil-escape*"))
+        (evil-escape-inhibit nil)
+        (agent-fleet-attach-inhibit-evil-escape t))
+    (unwind-protect
+        (progn
+          (should-not (buffer-local-value 'evil-escape-inhibit buf))
+          (should (eq buf (agent-fleet-attach--prepare-buffer buf)))
+          (should (local-variable-p 'evil-escape-inhibit buf))
+          (should (buffer-local-value 'evil-escape-inhibit buf))
+          (should-not evil-escape-inhibit))
+      (kill-buffer buf))))
+
+(ert-deftest agent-fleet-attach-prepare-buffer-can-be-disabled ()
+  "The evil-escape safeguard honors its explicit opt-out."
+  (let ((buf (generate-new-buffer " *agent-fleet-evil-escape-opt-out*"))
+        (agent-fleet-attach-inhibit-evil-escape nil))
+    (unwind-protect
+        (progn
+          (with-current-buffer buf
+            (setq-local evil-escape-inhibit t))
+          (should (eq buf (agent-fleet-attach--prepare-buffer buf)))
+          (should-not (local-variable-p 'evil-escape-inhibit buf))
+          (should-not (buffer-local-value 'evil-escape-inhibit buf)))
+      (kill-buffer buf))))
+
 
 ;;; --- Spawn dispatch (per backend, entry points stubbed) --------------
 
@@ -257,6 +371,7 @@ with the buffer, the `herdr' program, and the attach argv.  `eat-mode' and
 `eat-exec' are stubbed so no real terminal/process is spawned."
   (let ((eat-called nil)
         (mode-called nil)
+        (pop-inhibited nil)
         (buf-name "*agent:arch-eat*"))
     (unwind-protect
         (cl-letf (((symbol-function 'eat-mode)
@@ -266,10 +381,14 @@ with the buffer, the `herdr' program, and the attach argv.  `eat-mode' and
                      (push (list buffer name command startfile switches)
                            eat-called)))
                   ((symbol-function 'pop-to-buffer)
-                   (lambda (_buf &rest _) nil)))
+                   (lambda (buffer &rest _)
+                     (setq pop-inhibited
+                           (buffer-local-value
+                            'evil-escape-inhibit (get-buffer buffer))))))
           (agent-fleet-attach--spawn 'eat buf-name "w4:p1" nil))
       (when (get-buffer buf-name) (kill-buffer buf-name)))
     (should mode-called)
+    (should pop-inhibited)
     (should (= 1 (length eat-called)))
     (should (equal buf-name (nth 0 (car eat-called))))     ; buffer
     (should (equal "herdr"     (nth 2 (car eat-called))))  ; command
@@ -282,7 +401,7 @@ The real `ghostel-exec' starts with `with-current-buffer' and therefore
 signals `No buffer named ...' when callers pass an uncreated name.  Pin
 both that precondition and the attach argv (TAKEOVER adds `--takeover')."
   (let ((buf-name "*agent:arch-ghostel*")
-        ghostel-called)
+        ghostel-called pop-inhibited)
     (unwind-protect
         (cl-letf (((symbol-function 'ghostel-exec)
                    (lambda (buffer program &optional args)
@@ -292,10 +411,14 @@ both that precondition and the attach argv (TAKEOVER adds `--takeover')."
                                  program args)
                            ghostel-called)))
                   ((symbol-function 'pop-to-buffer)
-                   (lambda (_buf &rest _) nil)))
+                   (lambda (buffer &rest _)
+                     (setq pop-inhibited
+                           (buffer-local-value
+                            'evil-escape-inhibit (get-buffer buffer))))))
           (agent-fleet-attach--spawn 'ghostel buf-name "w4:p1" t))
       (when (get-buffer buf-name) (kill-buffer buf-name)))
     (should (= 1 (length ghostel-called)))
+    (should pop-inhibited)
     (should (eq t (nth 0 (car ghostel-called))))
     (should (eq t (nth 1 (car ghostel-called))))
     (should (equal buf-name (nth 2 (car ghostel-called))))
@@ -308,18 +431,26 @@ both that precondition and the attach argv (TAKEOVER adds `--takeover')."
 shell-quoted command string and calls `vterm'.  vterm has no argv launch
 API: it runs `vterm-shell' via `sh -c \"exec <vterm-shell>\"', so the
 command+args are shell-quoted into one string (pane-ids have no spaces)."
-  (let (vterm-shell-seen vterm-called)
-    (cl-letf (((symbol-function 'vterm)
-               (lambda (&optional _arg)
-                 (setq vterm-shell-seen vterm-shell
-                       vterm-called t)))
-              ((symbol-function 'pop-to-buffer)
-               (lambda (_buf &rest _) nil)))
-      ;; `vterm-shell' is declared special in agent-fleet-attach.el, so this
-      ;; let-binding is dynamic and visible to the stubbed `vterm'.
-      (let ((vterm-shell "sentinel"))
-        (agent-fleet-attach--spawn 'vterm "*agent:arch*" "w4:p1" nil)))
+  (let ((buf-name "*agent:arch-vterm*")
+        vterm-shell-seen vterm-called pop-inhibited)
+    (unwind-protect
+        (cl-letf (((symbol-function 'vterm)
+                   (lambda (&optional buffer)
+                     (get-buffer-create buffer)
+                     (setq vterm-shell-seen vterm-shell
+                           vterm-called t)))
+                  ((symbol-function 'pop-to-buffer)
+                   (lambda (buffer &rest _)
+                     (setq pop-inhibited
+                           (buffer-local-value
+                            'evil-escape-inhibit (get-buffer buffer))))))
+          ;; `vterm-shell' is declared special in agent-fleet-attach.el, so
+          ;; this binding is dynamic and visible to the stubbed `vterm'.
+          (let ((vterm-shell "sentinel"))
+            (agent-fleet-attach--spawn 'vterm buf-name "w4:p1" nil)))
+      (when (get-buffer buf-name) (kill-buffer buf-name)))
     (should vterm-called)
+    (should pop-inhibited)
     (should (stringp vterm-shell-seen))
     (should (string-match-p "herdr" vterm-shell-seen))
     (should (string-match-p "agent" vterm-shell-seen))
@@ -338,7 +469,7 @@ command+args are shell-quoted into one string (pane-ids have no spaces)."
   "The dashboard mode-map binds `a' to `agent-fleet-dashboard-attach'
 (PLAN §73; mirrors the `d'/`m'/`T' wiring tests)."
   (should (eq #'agent-fleet-dashboard-attach
-              (lookup-key agent-fleet-dashboard-mode-map "a"))))
+              (lookup-key agent-fleet-mode-map "a"))))
 
 (provide 'agent-fleet-attach-test)
 ;;; agent-fleet-attach-test.el ends here

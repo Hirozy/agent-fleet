@@ -5,7 +5,7 @@
 ;; Author: agent-fleet
 ;; Keywords: processes, tools, convenience
 ;; Version: 0.2.0
-;; Package-Requires: ((emacs "29.1"))
+;; Package-Requires: ((emacs "29.1") (transient "0.7.2"))
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -42,10 +42,9 @@
 ;;   §25  event-driven; no polling timers.
 ;;   §26  Herdr events are bridged into agent-fleet-*-hook variables.
 ;;
-;; This layer does NOT include the dashboard (Phase 3), project/cwd
-;; mapping (Phase 4; `agent-fleet-project.el'), standalone worktree
-;; management commands (Phase 5; `agent-fleet-worktree.el'), or
-;; Magit/orchestration (later phases).
+;; Requiring this package entry point also loads the dashboard and feature
+;; modules at the end of the file.  Optional runtime integrations
+;; (Magit/Eat/Ghostel/vterm) remain lazily probed by their own modules.
 
 ;;; Code:
 
@@ -62,6 +61,41 @@
   "Multi-agent supervisor over the Herdr terminal workspace server."
   :group 'processes
   :link '(url-link "https://herdr.dev"))
+
+(defvar agent-fleet--auto-connect-timer nil
+  "Pending idle timer for an automatic Herdr connection, or nil.")
+
+(defvar agent-fleet--connect-in-progress nil
+  "Non-nil while agent-fleet is establishing a Herdr connection.")
+
+(defun agent-fleet--set-auto-connect (symbol value)
+  "Set SYMBOL to VALUE and reconfigure automatic connection startup.
+This is the custom setter for `agent-fleet-auto-connect'."
+  (set-default symbol value)
+  ;; During the first `defcustom' evaluation the setup function has not
+  ;; been defined yet.  It is called explicitly once the package is loaded.
+  (when (fboundp 'agent-fleet--configure-auto-connect)
+    (agent-fleet--configure-auto-connect)))
+
+(defcustom agent-fleet-auto-connect 'on-demand
+  "When agent-fleet should connect to Herdr automatically.
+`on-demand' connects before the first dashboard or control operation.
+`after-init' additionally pre-connects from an idle timer after Emacs
+initialization; a later command retries on demand if pre-connection failed.
+Nil preserves manual-only behavior and requires `herdr-connect'.
+
+Automatic connection never starts the Herdr server itself."
+  :type '(choice (const :tag "Manually only" nil)
+                 (const :tag "When first needed" on-demand)
+                 (const :tag "After Emacs initialization" after-init))
+  :set #'agent-fleet--set-auto-connect
+  :group 'agent-fleet)
+
+(defcustom agent-fleet-auto-connect-delay 1.0
+  "Idle seconds before an `after-init' automatic Herdr connection.
+This affects only `agent-fleet-auto-connect' set to `after-init'."
+  :type 'number
+  :group 'agent-fleet)
 
 (defcustom agent-fleet-agent-executables
   '((claude "claude" "Claude Code")
@@ -135,11 +169,74 @@ this small allowance covers framing and scheduling around the server wait.")
 (define-error 'agent-fleet-provisioning-failed
   "agent-fleet: pane provisioning failed" 'agent-fleet-error)
 
+(defun agent-fleet--connect-now ()
+  "Establish a Herdr connection once and return non-nil when live.
+Concurrent/re-entrant attempts are coalesced.  Errors from `herdr-connect'
+are allowed to propagate to the caller."
+  (cond
+   ((herdr-connected-p) t)
+   (agent-fleet--connect-in-progress nil)
+   (t
+    (let ((agent-fleet--connect-in-progress t))
+      (herdr-connect)
+      (herdr-connected-p)))))
+
 (defun agent-fleet--ensure-connected ()
-  "Signal `agent-fleet-not-connected' unless Herdr is live."
-  (unless (herdr-connected-p)
+  "Ensure Herdr is live according to `agent-fleet-auto-connect'.
+Return t when connected.  In automatic modes, make one immediate connection
+attempt before signalling `agent-fleet-not-connected'."
+  (cond
+   ((herdr-connected-p) t)
+   ((null agent-fleet-auto-connect)
     (signal 'agent-fleet-not-connected
-            (list :hint "call (herdr-connect) first"))))
+            (list :hint "run M-x herdr-connect, or enable agent-fleet-auto-connect")))
+   (agent-fleet--connect-in-progress
+    (signal 'agent-fleet-not-connected
+            (list :hint "a Herdr connection is already in progress; retry shortly")))
+   (t
+    (let ((cause (condition-case err
+                     (progn (agent-fleet--connect-now) nil)
+                   (error err))))
+      (if (herdr-connected-p)
+          t
+        (signal 'agent-fleet-not-connected
+                (list :cause cause
+                      :hint (concat "ensure the Herdr server is running, then retry; "
+                                    "see M-x agent-fleet-doctor"))))))))
+
+(defun agent-fleet--auto-connect-now ()
+  "Try the configured startup connection without disrupting Emacs startup."
+  (setq agent-fleet--auto-connect-timer nil)
+  (when (and (eq agent-fleet-auto-connect 'after-init)
+             (not (herdr-connected-p))
+             (not agent-fleet--connect-in-progress))
+    (condition-case err
+        (agent-fleet--connect-now)
+      (error
+       (message "agent-fleet: Herdr pre-connection failed: %s"
+                (error-message-string err))
+       nil))))
+
+(defun agent-fleet--schedule-auto-connect ()
+  "Schedule one idle Herdr connection for `after-init' mode."
+  (remove-hook 'after-init-hook #'agent-fleet--schedule-auto-connect)
+  (when (and (eq agent-fleet-auto-connect 'after-init)
+             (not (herdr-connected-p))
+             (not (timerp agent-fleet--auto-connect-timer)))
+    (setq agent-fleet--auto-connect-timer
+          (run-with-idle-timer agent-fleet-auto-connect-delay nil
+                               #'agent-fleet--auto-connect-now))))
+
+(defun agent-fleet--configure-auto-connect ()
+  "Install or remove startup behavior for `agent-fleet-auto-connect'."
+  (remove-hook 'after-init-hook #'agent-fleet--schedule-auto-connect)
+  (when (timerp agent-fleet--auto-connect-timer)
+    (cancel-timer agent-fleet--auto-connect-timer))
+  (setq agent-fleet--auto-connect-timer nil)
+  (when (eq agent-fleet-auto-connect 'after-init)
+    (if after-init-time
+        (agent-fleet--schedule-auto-connect)
+      (add-hook 'after-init-hook #'agent-fleet--schedule-auto-connect))))
 
 
 ;;; --- Target resolution ----------------------------------------------
@@ -186,10 +283,11 @@ pane id."
           ;; Uncached string (a name Herdr knows but we don't): ask Herdr
           ;; to resolve name -> pane id, falling back to treating the
           ;; string itself as a pane id.
-          (or (plist-get (ignore-errors
-                           (herdr-request "agent.get"
-                                          `(("target" . ,agent))))
-                         :pane_id)
+          (or (plist-get
+               (agent-fleet--unwrap-agent
+                (ignore-errors
+                  (herdr-request "agent.get" `(("target" . ,agent)))))
+               :pane_id)
               agent))))
      ((symbolp agent) (agent-fleet--resolve-pane-id (symbol-name agent)))
      (t (signal 'agent-fleet-target-not-found (list :agent agent))))))
@@ -229,13 +327,15 @@ from the Herdr-mirrored cache."
 
 (defun agent-fleet--extract-pane-id (result)
   "Extract a pane id from a pane.split / tab.create / pane.current RESULT.
-Tolerant of several result shapes: top-level :pane_id, nested :pane,
-a :panes list (last entry), or a :tab envelope."
+  Tolerant of several result shapes: top-level :pane_id, nested :pane or
+:root_pane, a :panes list (last entry), or a :tab envelope."
   (cond
    ((null result) nil)
    ((plist-get result :pane_id) (plist-get result :pane_id))
    ((plist-get result :pane)
     (plist-get (plist-get result :pane) :pane_id))
+   ((plist-get result :root_pane)
+    (plist-get (plist-get result :root_pane) :pane_id))
    ((plist-get result :panes)
     (let ((panes (plist-get result :panes)))
       (and panes (plist-get (car (last (if (listp panes) panes
@@ -267,15 +367,32 @@ carries `:text' directly.  Falls back to RESULT itself."
    ((plist-member result :read) (plist-get result :read))
    (t result)))
 
+(defun agent-fleet--create-workspace-provisioning (cwd &optional focus)
+  "Create a workspace and return its workspace/root-pane provisioning data.
+The live `workspace_created' result contains `:workspace', `:tab', and
+`:root_pane'.  Reusing that root pane avoids immediately creating a redundant
+second tab.  Returns `(:workspace-id WS :pane-id PANE)' or signals."
+  (let* ((params (if cwd
+                     `(("focus" . ,(if focus t :false)) ("cwd" . ,cwd))
+                   `(("focus" . ,(if focus t :false)))))
+         (res (herdr-request "workspace.create" params))
+         (workspace (or (plist-get res :workspace)
+                        (and (plist-get res :workspace_id) res)))
+         (root-pane (or (plist-get res :root_pane)
+                        (plist-get res :pane)))
+         (workspace-id (plist-get workspace :workspace_id))
+         (pane-id (plist-get root-pane :pane_id)))
+    (unless workspace-id
+      (signal 'agent-fleet-provisioning-failed
+              (list :step 'workspace-create :result res)))
+    (herdr-model-upsert-workspace workspace)
+    (when (and root-pane (herdr-model-cache))
+      (herdr-model--upsert-pane (herdr-model-cache) root-pane))
+    `(:workspace-id ,workspace-id :pane-id ,pane-id)))
+
 (defun agent-fleet--create-workspace (cwd)
-  "Create a Herdr workspace (with CWD if given) and return its id.
-Signals `agent-fleet-provisioning-failed' if no id comes back."
-  (let ((res (herdr-request "workspace.create"
-                            (if cwd `(("cwd" . ,cwd)) nil))))
-    (or (plist-get res :workspace_id)
-        (plist-get (plist-get res :workspace) :workspace_id)
-        (signal 'agent-fleet-provisioning-failed
-                (list :step 'workspace-create :result res)))))
+  "Create a Herdr workspace (with CWD if given) and return its id."
+  (plist-get (agent-fleet--create-workspace-provisioning cwd) :workspace-id))
 
 (defun agent-fleet--resolve-workspace-id (&optional workspace cwd)
   "Return a workspace id to start an agent in.
@@ -409,6 +526,18 @@ Returns the `herdr-agent' struct for the started agent.  Signals an
           (nm (read-string "Name (empty for auto): ")))
      (list kind :name (and (not (string-empty-p nm)) nm))))
   (agent-fleet--ensure-connected)
+  (let ((candidate (if (symbolp kind) (symbol-name kind) kind)))
+    (unless (and kind (stringp candidate) (not (string-empty-p candidate)))
+      (signal 'agent-fleet-error (list :hint "agent kind must be non-empty"))))
+  (unless (and (integerp timeout-ms) (> timeout-ms 3000)
+               (<= timeout-ms 300000))
+    (signal 'agent-fleet-error
+            (list :hint "agent.start timeout_ms must be 3001..300000"
+                  :timeout-ms timeout-ms)))
+  (unless (or (null args)
+              (and (listp args) (cl-every #'stringp args)))
+    (signal 'agent-fleet-error
+            (list :hint "agent args must be a list of strings" :args args)))
   (let* ((agent-name (or name (agent-fleet--fresh-name kind)))
          (kind-str (if (symbolp kind) (symbol-name kind) kind))
          ;; `:worktree t' provisions an isolated workspace + root pane via
@@ -420,12 +549,21 @@ Returns the `herdr-agent' struct for the started agent.  Signals an
                                 (list :step 'worktree-cwd)))
                       (agent-fleet--provision-worktree
                        cwd :branch branch :base base :focus focus)))
+         (created-workspace
+          (when (and (null wt-result) (null pane) (null workspace)
+                     (null (herdr-focused-workspace)))
+            (agent-fleet--create-workspace-provisioning cwd focus)))
          (ws-id (or (and wt-result (plist-get wt-result :workspace-id))
+                    (plist-get created-workspace :workspace-id)
                     workspace
-                    (and (herdr-focused-workspace)
+                    ;; An explicit pane is already a complete target.  Do
+                    ;; not create an unrelated workspace merely because the
+                    ;; cache has no focused workspace.
+                    (and (null pane) (herdr-focused-workspace)
                          (herdr-workspace-id (herdr-focused-workspace)))
-                    (agent-fleet--create-workspace cwd)))
+                    (and (null pane) (agent-fleet--create-workspace cwd))))
          (pane-id (or (and wt-result (plist-get wt-result :pane-id))
+                      (plist-get created-workspace :pane-id)
                       pane
                       (agent-fleet--provision-pane ws-id cwd focus)))
          (params `(("name" . ,agent-name)
@@ -434,33 +572,55 @@ Returns the `herdr-agent' struct for the started agent.  Signals an
                    ("timeout_ms" . ,timeout-ms)
                    ,@(and args `(("args" . ,(vconcat args)))))))
     (herdr--log 'info "starting agent %s (%s) in %s" agent-name kind-str pane-id)
-    (let* ((result (herdr-request
-                    "agent.start" params
-                    :timeout (agent-fleet--transport-timeout timeout-ms)))
-           ;; `agent.start' returns an AgentInfo (live: `agent_started' ->
-           ;; :agent).  Unwrap it; if no info came back (e.g. a bare ack),
-           ;; fetch the authoritative info so the cache is set.
-           (info (or (agent-fleet--unwrap-agent result)
-                     (ignore-errors
-                       (agent-fleet--unwrap-agent
-                        (herdr-request "agent.get" `(("target" . ,pane-id))))))))
-      (when info (herdr-model-upsert-agent-info info))
-      (let ((agent (herdr-model-find-agent pane-id)))
-        (unless agent
-          (signal 'agent-fleet-provisioning-failed
-                  (list :pane-id pane-id :result result)))
-        ;; Fire the started hook from the authoritative `agent.start' result
-        ;; (the AgentInfo carries the name/kind the server accepted).  Live
-        ;; Herdr separately pushes a `pane_agent_detected' screen-detection
-        ;; event later (async, from the screen-scrape loop — NOT inline with
-        ;; the RPC); by then this agent is cached, so the detected handler
-        ;; takes its `cached' (replay) branch and does NOT re-fire the hook
-        ;; (`:replayp' is skipped in `agent-fleet--on-pane-event').  Thus
-        ;; each start notifies exactly once, with the RPC-authoritative
-        ;; identity rather than the minimal detection payload.
-        (run-hook-with-args 'agent-fleet-agent-started-hook
-                            (agent-fleet--enrich-descriptor nil pane-id))
-        agent))))
+    (let ((completed nil))
+      (unwind-protect
+          (let* ((result (herdr-request
+                          "agent.start" params
+                          :timeout (agent-fleet--transport-timeout timeout-ms)))
+                 ;; `agent.start' returns an AgentInfo (live:
+                 ;; `agent_started' -> :agent).  Unwrap it; if no info came
+                 ;; back (e.g. a bare ack), fetch authoritative info.
+                 (info (or (agent-fleet--unwrap-agent result)
+                           (ignore-errors
+                             (agent-fleet--unwrap-agent
+                              (herdr-request
+                               "agent.get" `(("target" . ,pane-id))))))))
+            (when info (herdr-model-upsert-agent-info info))
+            (let ((agent (herdr-model-find-agent pane-id)))
+              (unless agent
+                (signal 'agent-fleet-provisioning-failed
+                        (list :pane-id pane-id :result result)))
+              ;; Fire the started hook from the authoritative result.  The
+              ;; later screen-detection event sees the cached agent and is
+              ;; marked replay, so the hook is delivered exactly once.
+              (run-hook-with-args 'agent-fleet-agent-started-hook
+                                  (agent-fleet--enrich-descriptor nil pane-id))
+              (setq completed t)
+              agent))
+        (unless completed
+          ;; Provisioning belongs to this call, so a failed agent.start must
+          ;; not leave an empty pane or isolated worktree behind.  Explicit
+          ;; caller-owned panes are never closed.  Cleanup errors are kept
+          ;; secondary to the original failure.
+          (cond
+           (created-workspace
+            (ignore-errors
+              (herdr-request "workspace.close"
+                             `(("workspace_id" . ,ws-id))))
+            (when (herdr-model-cache)
+              (herdr-model--remove-workspace-cascade
+               (herdr-model-cache) ws-id)))
+           ((and pane-id (or wt-result (null pane)))
+            (ignore-errors
+              (herdr-request "pane.close" `(("pane_id" . ,pane-id))))))
+          (when wt-result
+            (ignore-errors
+              (herdr-request
+               "worktree.remove"
+               `(("workspace_id" . ,ws-id) ("force" . :false))))
+            (when-let* ((worktree-info (plist-get wt-result :worktree))
+                        (path (plist-get worktree-info :path)))
+              (herdr-model-remove-worktree path))))))))
 
 
 ;;; --- Prompt / Wait / Read ------------------------------------------
@@ -678,20 +838,30 @@ project).  Falls back to the display name alone when the kind is nil."
 With non-nil REFRESH, first refresh the cache from `agent.list'.  The
 cache is normally kept live by events, so REFRESH is only needed after
 operations Herdr does not notify about (PLAN.md §25).
-When called interactively, also messages the count (or notes that there
-is no connection).  Returns nil — never errors — when not connected."
+An interactive call, or a REFRESH call, tries the configured automatic
+connection first.  It still returns nil rather than signalling when the
+server is unavailable, so cache inspection remains safe while offline.
+When called interactively, also message the count or connection state."
   (interactive "P")
+  (when (or refresh (called-interactively-p 'any))
+    (ignore-errors (agent-fleet--ensure-connected)))
   (when refresh
     (ignore-errors
       (let ((infos (agent-fleet--agent-list-from-result
                     (herdr-request "agent.list" nil))))
+        ;; agent.list is authoritative, not a stream of deltas.  Replacing
+        ;; the table removes agents whose close event was missed while Emacs
+        ;; was suspended or disconnected; merely upserting retained ghosts
+        ;; in the dashboard forever.
+        (when-let* ((session (herdr-model-cache)))
+          (clrhash (herdr-session-agents session)))
         (dolist (info infos)
           (herdr-model-upsert-agent-info info)))))
   (let ((agents (herdr-agents)))
     (when (called-interactively-p 'any)
       (cond
        ((null (herdr-model-cache))
-        (message "Not connected to Herdr; run M-x herdr-connect first"))
+        (message "Not connected to Herdr; a control command will connect on demand"))
        (agents
         (message "%d agent(s): %s"
                  (length agents)
@@ -737,6 +907,8 @@ agents share a label.  Returns the pane id so it round-trips through
                                   (herdr-agent-id a))))
                         agents))
          (default (and alist (caar alist))))
+    (unless alist
+      (user-error "No agents are available"))
     (cdr (assoc (completing-read (if default
                                      (format "%s (default %s): " prompt default)
                                    (concat prompt ": "))
@@ -804,7 +976,8 @@ hooks document :pane-id as the public key, so we always add it.  :name
 the cwd basename / terminal title when the agent has no name) and :kind
 are filled when the agent is still cached (an exited agent may already
 have been removed eagerly)."
-  (let ((agent (and pane-id (herdr-model-find-agent pane-id))))
+  (let ((agent (or (plist-get descriptor :agent)
+                   (and pane-id (herdr-model-find-agent pane-id)))))
     (append descriptor
             `(:pane-id ,pane-id
               ,@(when agent
@@ -838,9 +1011,11 @@ TUI-spawned agent — fires the started hook here, its only signal."
                            (agent-fleet--enrich-descriptor
                             descriptor (plist-get descriptor :id)))))
     (:pane-closed
-     (run-hook-with-args 'agent-fleet-agent-exited-hook
-                         (agent-fleet--enrich-descriptor
-                          descriptor (plist-get descriptor :id))))
+     (when (and (plist-get descriptor :agentp)
+                (not (plist-get descriptor :replayp)))
+       (run-hook-with-args 'agent-fleet-agent-exited-hook
+                           (agent-fleet--enrich-descriptor
+                            descriptor (plist-get descriptor :id)))))
     (_ nil)))
 
 (defun agent-fleet--setup-hooks ()
@@ -851,6 +1026,7 @@ TUI-spawned agent — fires the started hook here, its only signal."
     (add-hook 'herdr-event-pane-hook #'agent-fleet--on-pane-event)))
 
 (agent-fleet--setup-hooks)
+(agent-fleet--configure-auto-connect)
 
 
 ;;; --- Doctor ---------------------------------------------------------
@@ -870,10 +1046,13 @@ TUI-spawned agent — fires the started hook here, its only signal."
     (let ((detail "") (ok nil))
       (condition-case err
           (let* ((res (ignore-errors (herdr-request "server.agent_manifests" nil)))
+                 (raw (and (listp res) (plist-get res :manifests)))
                  (manifests (cond
-                             ((and (listp res) res) res)
+                             ((vectorp raw) (append raw nil))
+                             ((listp raw) raw)
                              ((vectorp res) (append res nil))
-                             ((and res (plist-get res :manifests)))
+                             ((and (listp res)
+                                   (not (keywordp (car res)))) res)
                              (t nil))))
             (setq ok (and res t))
             (setq detail (if manifests
@@ -915,6 +1094,19 @@ agent manifests.  See PLAN.md §14."
 ;; already on `features' when the dashboard requires it.  Optional deps
 ;; (magit/eat/ghostel/vterm) are still guarded inside each module
 ;; (`declare-function' + `--available-p'); nothing here hard-requires them.
-(require 'agent-fleet-dashboard)
+(defun agent-fleet--load-feature-modules ()
+  "Load the dashboard and feature modules, leaving no false feature on error.
+`agent-fleet' must be provided first to break the intentional one-way load
+cycle: the dashboard's feature modules require the already-defined control
+plane.  If a required dependency or module then fails, remove that early
+feature marker before re-signalling.  A later `(require \='agent-fleet)' can
+therefore retry the load instead of silently accepting a half-loaded package."
+  (condition-case err
+      (require 'agent-fleet-dashboard)
+    (error
+     (setq features (delq 'agent-fleet features))
+     (signal (car err) (cdr err)))))
+
+(agent-fleet--load-feature-modules)
 
 ;;; agent-fleet.el ends here

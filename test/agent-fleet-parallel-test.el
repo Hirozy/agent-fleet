@@ -121,6 +121,54 @@ and the prompt's status events stay queued until a pump — §72)."
       (should (member "analyze architecture" texts))
       (should (member "analyze tests" texts)))))
 
+(ert-deftest agent-fleet-parallel-default-title-reuses-task-id ()
+  "Generating a default title consumes exactly one task id."
+  (with-agent-fleet-mock path server
+    (let ((agent-fleet--task-id-counter 0)
+          (agent-fleet--tasks nil)
+          (agent-fleet--agent-tasks (make-hash-table :test 'equal)))
+      (let ((task (agent-fleet-parallel '((claude . "review")) :cwd "/tmp")))
+        (should (equal "task-1" (agent-fleet-task-id task)))
+        (should (equal "task-1" (agent-fleet-task-title task)))
+        (should (equal "review" (agent-fleet-task-prompt task)))
+        (should (equal (list task) (agent-fleet-task-list)))))))
+
+(ert-deftest agent-fleet-parallel-prompt-failure-retains-started-agent ()
+  "A failed prompt never orphans the already-started agent/worktree."
+  (with-agent-fleet-mock path server
+    (let ((handlers
+           (mapcar
+            (lambda (cell)
+              (if (equal (car cell) "agent.prompt")
+                  (cons "agent.prompt"
+                        (lambda (_params)
+                          (list 'error "prompt_failed" "submit failed")))
+                cell))
+            (herdr-mock-default-agent-handlers))))
+      (herdr-mock-set-handlers server handlers)
+      (let ((task (agent-fleet-parallel
+                   '((claude . "review")) :title "prompt-failure"
+                   :cwd "/tmp")))
+        (should (agent-fleet-task-p task))
+        (should (= 1 (length (agent-fleet-task-agents task))))
+        (let ((pid (car (agent-fleet-task-agents task))))
+          (should (herdr-model-find-agent pid))
+          (should (agent-fleet-task-for-agent pid)))))))
+
+(ert-deftest agent-fleet-parallel-stamps-completion-before-task-registration ()
+  "An agent finishing during prompt acknowledgement still stamps the task."
+  (with-agent-fleet-mock path server
+    (cl-letf (((symbol-function 'agent-fleet-prompt)
+               (lambda (agent _text)
+                 ;; Simulate the final status event landing before
+                 ;; `agent-fleet-parallel' has installed pane->task metadata.
+                 (setf (herdr-agent-agent-status agent) "done")
+                 '(:agent_status "done"))))
+      (let ((task (agent-fleet-parallel
+                   '((claude . "fast")) :title "fast" :cwd "/tmp")))
+        (should (eq 'done (agent-fleet-task-state task)))
+        (should (agent-fleet-task-finished-at task))))))
+
 (ert-deftest agent-fleet-parallel-requires-cwd ()
   "`agent-fleet-parallel' without :cwd (and no project root) signals
 provisioning-failed at the `parallel-cwd' step; no RPC is issued."
@@ -294,6 +342,48 @@ prompting."
       (should-not (agent-fleet-task-find task-id))
       (dolist (pid pids)
         (should-not (agent-fleet-task-for-agent pid))))))
+
+(ert-deftest agent-fleet-task-cleanup-survives-missing-agent-cache ()
+  "Task metadata retains workspace ids after exited agents are evicted."
+  (with-agent-fleet-mock path server
+    (agent-fleet-parallel-test--use-working-prompt server)
+    (let* ((task (agent-fleet-parallel '((claude . "do A"))
+                                       :title "missing" :cwd "/tmp"))
+           (pid (car (agent-fleet-task-agents task))))
+      (should (cdr (assoc pid (agent-fleet-task-workspaces task))))
+      (herdr-model-remove-agent pid)
+      (should (eq 'failed (agent-fleet-task-state task)))
+      (should (= 1 (agent-fleet-task-cleanup task t)))
+      (should (= 1 (agent-fleet-parallel-test--count
+                    server "worktree.remove"))))))
+
+(ert-deftest agent-fleet-task-cleanup-retains-failed-members-for-retry ()
+  "Partial cleanup keeps failed worktree metadata and drops only successes."
+  (let* ((task (make-agent-fleet-task
+                :id "task-partial" :title "partial" :prompt "review"
+                :agents '("w1:p1" "w2:p1")
+                :workspaces '(("w1:p1" . "w1") ("w2:p1" . "w2"))
+                :started-at 1.0 :finished-at 2.0))
+         (agent-fleet--tasks (list task))
+         (agent-fleet--agent-tasks (make-hash-table :test 'equal))
+         calls)
+    (puthash "w1:p1" "task-partial" agent-fleet--agent-tasks)
+    (puthash "w2:p1" "task-partial" agent-fleet--agent-tasks)
+    (cl-letf (((symbol-function 'agent-fleet--find-agent) (lambda (_) nil))
+              ((symbol-function 'agent-fleet-worktree-remove)
+               (lambda (workspace-id &optional _force)
+                 (push workspace-id calls)
+                 (when (equal workspace-id "w2")
+                   (error "dirty worktree")))))
+      (should (= 1 (agent-fleet-task-cleanup task t)))
+      (should (equal '("w1" "w2") (sort calls #'string<)))
+      (should (eq task (agent-fleet-task-find "task-partial")))
+      (should (equal '("w2:p1") (agent-fleet-task-agents task)))
+      (should (equal '(("w2:p1" . "w2"))
+                     (agent-fleet-task-workspaces task)))
+      (should-not (gethash "w1:p1" agent-fleet--agent-tasks))
+      (should (equal "task-partial"
+                     (gethash "w2:p1" agent-fleet--agent-tasks))))))
 
 
 (provide 'agent-fleet-parallel-test)

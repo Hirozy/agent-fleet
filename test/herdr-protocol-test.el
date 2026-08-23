@@ -14,6 +14,10 @@
 (require 'herdr-protocol)
 (require 'herdr-mock-server)
 
+(defconst herdr-protocol-test--directory
+  (file-name-directory (or load-file-name buffer-file-name default-directory))
+  "Directory containing the protocol test and its fixtures.")
+
 (defmacro with-herdr-mock (path-var server-var &rest body)
   "Run BODY with a fresh mock server, PATH-VAR and SERVER-VAR bound.
 Dynamically binds `herdr-socket-path' to the mock socket, and ensures
@@ -83,6 +87,71 @@ the server is stopped and any live herdr connection is torn down."
               "{\"id\":\"r1\",\"error\":{\"code\":\"invalid_request\",\"message\":\"x\"}}")))
     (should (equal (plist-get (plist-get msg :error) :code) "invalid_request"))
     (should (equal (plist-get (plist-get msg :error) :message) "x"))))
+
+(ert-deftest herdr-protocol-empty-socket-settings-are-not-paths ()
+  "Empty custom/environment socket values fall through to discovery."
+  (let ((herdr-socket-path "")
+        (process-environment (copy-sequence process-environment)))
+    (setenv "HERDR_SOCKET_PATH" "")
+    (cl-letf (((symbol-function 'herdr-protocol--socket-path-from-status)
+               (lambda () "/tmp/herdr-discovered.sock")))
+      (should (equal "/tmp/herdr-discovered.sock"
+                     (herdr-protocol-socket-path))))))
+
+(ert-deftest herdr-protocol-version-check-rejects-missing-and-old ()
+  "A malformed pong without a protocol is not accepted as compatible."
+  (let ((herdr-required-protocol-version 19))
+    (should-error (herdr--check-protocol nil) :type 'herdr-protocol-error)
+    (should-error (herdr--check-protocol "20") :type 'herdr-protocol-error)
+    (should-error (herdr--check-protocol 18) :type 'herdr-protocol-error)
+    (should-not (herdr--check-protocol 19))
+    (should-not (herdr--check-protocol 20))))
+
+(ert-deftest herdr-schema-fixture-pins-critical-request-response-shapes ()
+  "The checked-in schema guards fields that mocks previously got wrong."
+  (let* ((fixture (expand-file-name "fixtures/schema.json"
+                                    herdr-protocol-test--directory))
+         (schema (with-temp-buffer
+                   (insert-file-contents fixture)
+                   (json-parse-buffer :object-type 'alist :array-type 'list
+                                      :null-object nil :false-object :false)))
+         (get (lambda (key object)
+                (alist-get (if (stringp key) (intern key) key) object)))
+         (schemas (funcall get "schemas" schema))
+         (request (funcall get "request" schemas))
+         (defs (funcall get "$defs" request))
+         (start (funcall get "AgentStartParams" defs))
+         (required (funcall get "required" start))
+         (properties (funcall get "properties" start))
+         (success (funcall get "success_response" schemas))
+         (success-defs (funcall get "$defs" success))
+         (response-result (funcall get "ResponseResult" success-defs))
+         (variants (funcall get "oneOf" response-result))
+         (tab-created
+          (cl-find-if
+           (lambda (variant)
+             (let* ((props (funcall get "properties" variant))
+                    (type (funcall get "type" props)))
+               (equal "tab_created" (funcall get "const" type))))
+           variants))
+         (workspace-created
+          (cl-find-if
+           (lambda (variant)
+             (let* ((props (funcall get "properties" variant))
+                    (type (funcall get "type" props)))
+               (equal "workspace_created" (funcall get "const" type))))
+           variants)))
+    (should (>= (funcall get "protocol" schema)
+                herdr-required-protocol-version))
+    (dolist (field '("name" "kind" "pane_id"))
+      (should (member field required)))
+    (should-not (member "args" required))
+    (should (assoc 'args properties))
+    (should tab-created)
+    (should (member "root_pane" (funcall get "required" tab-created)))
+    (should workspace-created)
+    (should (member "root_pane"
+                    (funcall get "required" workspace-created)))))
 
 
 ;;; --- One-shot request/response via mock ---------------------------
@@ -181,9 +250,10 @@ the server is stopped and any live herdr connection is torn down."
       (should (equal (plist-get errdata :message) "bad")))))
 
 (ert-deftest herdr-protocol-async-connection-refused ()
-  "A bad socket delivers a :connection error synchronously, returns nil."
+  "A bad socket reports a connection error without leaking its buffer."
   (let ((herdr-socket-path "/tmp/herdr-definitely-does-not-exist-sock")
-        (calls 0) errdata ret)
+        (calls 0) errdata ret
+        (before (buffer-list)))
     (setq ret (herdr-protocol-request-async "ping" nil
                 (lambda (r &optional err)
                   (cl-incf calls)
@@ -192,7 +262,13 @@ the server is stopped and any live herdr connection is torn down."
                 :timeout 2.0))
     (should (null ret))                  ; make-socket failed -> nil
     (should (= calls 1))
-    (should (eq (plist-get errdata :type) 'connection))))
+    (should (eq (plist-get errdata :type) 'connection))
+    (should-not
+     (cl-find-if
+      (lambda (buffer)
+        (and (not (memq buffer before))
+             (string-match-p "herdr-req-async" (buffer-name buffer))))
+      (buffer-list)))))
 
 
 ;;; --- Partial-frame reassembly (direct filter test) ----------------
@@ -241,8 +317,38 @@ the server is stopped and any live herdr connection is torn down."
                  (lambda (_ _))
                  (lambda (_)))))
       (should (herdr-protocol-subscription-alive-p proc))
+      (herdr-protocol-test--drain 0.2)
+      (should (herdr-protocol-subscription-started-p proc))
       (herdr-protocol-unsubscribe proc)
-      (should-not (herdr-protocol-subscription-alive-p proc)))))
+      (should-not (herdr-protocol-subscription-alive-p proc))
+      (should-not (herdr-protocol-subscription-started-p proc)))))
+
+(ert-deftest herdr-protocol-rejected-subscription-releases-buffer ()
+  "A rejected subscription closes its process and process buffer."
+  (with-herdr-mock path srv
+    (let (err)
+      (let* ((proc (herdr-protocol-subscribe
+                    '((
+                       ("type" . "pane.agent_status_changed")
+                       ("pane_id" . "missing:p1")))
+                    (lambda (_event _data))
+                    (lambda (e) (setq err e))))
+             (buffer (process-buffer proc)))
+        (herdr-protocol-test--drain 0.5)
+        (should (eq (plist-get err :type) 'rejected))
+        (should-not (process-live-p proc))
+        (should-not (buffer-live-p buffer))))))
+
+(ert-deftest herdr-protocol-subscription-rejects-wrong-success-envelope ()
+  "Only `subscription_started', not an arbitrary success, marks a stream live."
+  (let ((state (list :pending "" :started nil :error nil :id "el:1"
+                     :event-callback #'ignore :error-callback nil
+                     :closing nil :dead nil :proc nil)))
+    (herdr-protocol--handle-sub-line
+     "{\"id\":\"el:1\",\"result\":{\"type\":\"ok\"}}" state)
+    (should-not (plist-get state :started))
+    (should (equal "invalid_subscription_ack"
+                   (plist-get (plist-get state :error) :code)))))
 
 
 ;;; --- Reconnect ----------------------------------------------------
@@ -260,9 +366,11 @@ the server is stopped and any live herdr connection is torn down."
       ;; simulate connection loss: kill the client subscription process.
       ;; The sentinel fires synchronously during delete-process, marking
       ;; us disconnected (the reconnect timer hasn't fired yet).
-      (let ((proc (herdr--connection-subscription-proc herdr--conn)))
+      (let* ((proc (herdr--connection-subscription-proc herdr--conn))
+             (buffer (process-buffer proc)))
         (should (processp proc))
-        (delete-process proc))
+        (delete-process proc)
+        (should-not (buffer-live-p buffer)))
       (should-not (herdr-connected-p))
       ;; allow the reconnect timer + snapshot + resubscribe to land
       (let ((deadline (+ (float-time) 4.0)))
@@ -270,6 +378,44 @@ the server is stopped and any live herdr connection is torn down."
                     (< (float-time) deadline))
           (herdr-protocol-test--drain 0.1)))
       (should (herdr-connected-p)))))
+
+(ert-deftest herdr-connect-does-not-succeed-without-subscription ()
+  "Bootstrap fails atomically when the subscription socket cannot start."
+  (let ((herdr--conn nil)
+        (herdr-model--cache nil))
+    (cl-letf (((symbol-function 'herdr-protocol-socket-path)
+               (lambda () "/tmp/herdr-test.sock"))
+              ((symbol-function 'herdr-protocol-ping)
+               (lambda (&rest _) '(:protocol 20 :version "mock")))
+              ((symbol-function 'herdr-protocol-request)
+               (lambda (&rest _)
+                 '(:protocol 20 :version "mock" :workspaces () :tabs ()
+                   :panes () :agents ())))
+              ((symbol-function 'herdr-protocol-subscribe)
+               (lambda (&rest _) nil)))
+      (should-error (herdr-connect) :type 'herdr-connection-error)
+      (should-not herdr--conn)
+      (should-not (herdr-model-cache)))))
+
+(ert-deftest herdr-resubscribe-allows-an-event-driven-replacement ()
+  "Pane-set rebuild waits for the current stream, not only the original one."
+  (let* ((conn (make-herdr--connection :connected t))
+         (herdr--conn conn)
+         (herdr--resubscribe-pending t)
+         (herdr--resubscribe-timer 'placeholder)
+         awaited)
+    (cl-letf (((symbol-function 'herdr-protocol-subscription-alive-p)
+               (lambda (_) nil))
+              ((symbol-function 'herdr--reconcile-panes) #'ignore)
+              ((symbol-function 'herdr--start-subscription)
+               (lambda (_conn) 'original-stream))
+              ((symbol-function 'herdr--await-current-subscription)
+               (lambda (seen-conn original)
+                 (setq awaited (list seen-conn original))
+                 t)))
+      (herdr--resubscribe)
+      (should (equal (list conn 'original-stream) awaited))
+      (should (herdr--connection-connected conn)))))
 
 
 (ert-deftest herdr-replay-stale-pane-does-not-break-connection ()
