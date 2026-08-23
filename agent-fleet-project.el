@@ -58,6 +58,31 @@
 
 ;;; --- Project root resolution ----------------------------------------
 
+(defun agent-fleet-project--git-common-root (dir)
+  "Return the primary checkout root shared by Git worktree DIR, or nil.
+For a normal checkout, `git rev-parse --git-common-dir' yields ROOT/.git;
+for a linked worktree it yields that same directory in the primary checkout.
+Mapping both to ROOT makes all worktrees of one repository share the project
+identity required by PLAN.md §32.  Non-standard separate git-dir layouts fall
+back to `project.el' rather than guessing."
+  (when (and (executable-find "git") (file-directory-p dir))
+    (let ((default-directory (file-name-as-directory (file-truename dir))))
+      (with-temp-buffer
+        (when (eq 0 (process-file "git" nil t nil
+                                  "rev-parse" "--path-format=absolute"
+                                  "--git-common-dir"))
+          (let* ((raw (string-trim (buffer-string)))
+                 (common (and (not (string-empty-p raw))
+                              (file-truename
+                               (expand-file-name raw default-directory)))))
+            (when (and common
+                       (string= (file-name-nondirectory
+                                 (directory-file-name common))
+                                ".git"))
+              (directory-file-name
+               (file-truename (file-name-directory
+                               (directory-file-name common)))))))))))
+
 (defun agent-fleet-project-root-for-cwd (dir)
   "Return the canonical project root for DIR, or nil.
 Uses `project-current' with DIR as `default-directory' (PLAN.md §31),
@@ -69,14 +94,15 @@ would otherwise expand to `default-directory' (via `file-directory-p')
 and leak the caller's project as the agent's."
   (when (and (stringp dir) (not (string-empty-p dir)) (file-directory-p dir))
     (let ((default-directory (file-truename dir)))
-      (let ((proj (project-current)))
-        (cond
-         (proj (directory-file-name (file-truename (project-root proj))))
-         (t
-          ;; VC fallback for repos not yet known to project.el.
-          (let ((root (vc-root-dir)))
-            (and root (not (string-empty-p root))
-                 (directory-file-name (file-truename root))))))))))
+      (or (agent-fleet-project--git-common-root default-directory)
+          (let ((proj (project-current)))
+            (cond
+             (proj (directory-file-name (file-truename (project-root proj))))
+             (t
+              ;; VC fallback for repos not yet known to project.el.
+              (let ((root (vc-root-dir)))
+                (and root (not (string-empty-p root))
+                     (directory-file-name (file-truename root)))))))))))
 
 (defun agent-fleet-project-for-agent (agent)
   "Return the canonical project root for AGENT (by its cwd), or nil."

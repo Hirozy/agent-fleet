@@ -118,6 +118,12 @@ The buffer is named PREFIX<name>*."
   :type 'string
   :group 'agent-fleet)
 
+(defconst agent-fleet--request-timeout-slack 5.0
+  "Extra seconds allowed beyond a Herdr server-side timeout.
+Long-running RPCs such as `agent.start' and `agent.wait' carry their own
+`timeout_ms'.  The socket request must remain alive for at least that long;
+this small allowance covers framing and scheduling around the server wait.")
+
 
 ;;; --- Errors ---------------------------------------------------------
 
@@ -203,6 +209,13 @@ UNTIL may be a symbol, a string, or a list of either."
    ((stringp until) (list until))
    (t nil)))
 
+(defun agent-fleet--transport-timeout (timeout-ms)
+  "Return a socket timeout in seconds for server TIMEOUT-MS.
+The result exceeds the server-side deadline by
+`agent-fleet--request-timeout-slack', preventing the protocol layer's
+short default timeout from cutting off legitimate agent waits."
+  (+ (/ timeout-ms 1000.0) agent-fleet--request-timeout-slack))
+
 (defun agent-fleet-status (agent)
   "Return AGENT's current cached status as a symbol, or nil.
 One of idle/working/blocked/done/unknown (PLAN.md §12), read straight
@@ -278,11 +291,22 @@ WORKSPACE wins if given; else the focused workspace; else a new one
 Splits the focused pane (PLAN.md §16: agent.start needs an interactive
 shell pane); if there is no pane to split, creates a fresh tab.  Returns
 the new pane id.  Signals `agent-fleet-provisioning-failed'."
-  (let ((focused (herdr-focused-pane)))
-    (if (and focused (herdr-pane-id focused))
-        ;; Split the focused pane to get a fresh shell at a prompt.
+  (let* ((focused (herdr-focused-pane))
+         ;; The globally focused pane may belong to another project.  Split a
+         ;; pane only when it is in the requested workspace; otherwise choose
+         ;; another pane from that workspace, or create a tab there.
+         (target (or (and focused
+                          (equal workspace-id
+                                 (herdr-pane-workspace-id focused))
+                          focused)
+                     (cl-find workspace-id (herdr-panes)
+                              :test #'equal
+                              :key #'herdr-pane-workspace-id))))
+    (if (and target (herdr-pane-id target))
+        ;; Split a pane in the target workspace to get a fresh shell prompt.
         (let* ((params `(("direction" . "right")
-                         ("target_pane_id" . ,(herdr-pane-id focused))
+                         ("workspace_id" . ,workspace-id)
+                         ("target_pane_id" . ,(herdr-pane-id target))
                          ("focus" . ,(if focus t :false))
                          ,@(and cwd `(("cwd" . ,cwd)))))
                (res (herdr-request "pane.split" params)))
@@ -410,7 +434,9 @@ Returns the `herdr-agent' struct for the started agent.  Signals an
                    ("timeout_ms" . ,timeout-ms)
                    ,@(and args `(("args" . ,(vconcat args)))))))
     (herdr--log 'info "starting agent %s (%s) in %s" agent-name kind-str pane-id)
-    (let* ((result (herdr-request "agent.start" params))
+    (let* ((result (herdr-request
+                    "agent.start" params
+                    :timeout (agent-fleet--transport-timeout timeout-ms)))
            ;; `agent.start' returns an AgentInfo (live: `agent_started' ->
            ;; :agent).  Unwrap it; if no info came back (e.g. a bare ack),
            ;; fetch the authoritative info so the cache is set.
@@ -447,6 +473,9 @@ agent's AgentInfo plist (the `agent_prompted' result, unwrapped from its
 envelope).  The agent may keep working after this returns; use
 `agent-fleet-wait' or the status hooks to observe completion.
 See PLAN.md §18."
+  (interactive
+   (list (agent-fleet--read-agent-name "Prompt agent")
+         (read-string "Prompt: ")))
   (agent-fleet--ensure-connected)
   (agent-fleet--unwrap-agent
    (herdr-request "agent.prompt"
@@ -464,6 +493,9 @@ between a separate prompt and wait (PLAN.md §19).  UNTIL is a status
 symbol or list (default `agent-fleet-default-wait-until').  Returns the
 agent's AgentInfo plist (unwrapped); its `:agent_status' is the wait
 outcome."
+  (interactive
+   (list (agent-fleet--read-agent-name "Prompt and wait for agent")
+         (read-string "Prompt: ")))
   (agent-fleet--ensure-connected)
   (let ((target (agent-fleet--resolve-target agent))
         (until-list (agent-fleet--normalize-until until)))
@@ -472,7 +504,8 @@ outcome."
                     `(("target" . ,target)
                       ("text" . ,text)
                       ("wait" . (("until" . ,(vconcat until-list))
-                                 ("timeout_ms" . ,timeout-ms))))))))
+                                 ("timeout_ms" . ,timeout-ms))))
+                    :timeout (agent-fleet--transport-timeout timeout-ms)))))
 
 ;;;###autoload
 (cl-defun agent-fleet-read (agent &key
@@ -484,15 +517,19 @@ outcome."
 Returns a PaneReadResult plist: (:pane_id :workspace_id :tab_id :source
 :format :text :revision :truncated), unwrapped from the `pane_read'
 envelope.  Defaults to `recent_unwrapped' output (ignores soft wrapping;
-best for logs — PLAN.md §22)."
-  (agent-fleet--ensure-connected)
-  (agent-fleet--unwrap-read
-   (herdr-request "agent.read"
-                  `(("target" . ,(agent-fleet--resolve-target agent))
-                    ("source" . ,(if (symbolp source) (symbol-name source) source))
-                    ("lines" . ,lines)
-                    ("format" . ,(if (symbolp format) (symbol-name format) format))
-                    ("strip_ansi" . ,(if strip-ansi t :false))))))
+best for logs — PLAN.md §22).  Interactively, display the snapshot in the
+read-only output buffer rather than discarding the returned plist."
+  (interactive (list (agent-fleet--read-agent-name "Read output for agent")))
+  (if (called-interactively-p 'interactive)
+      (agent-fleet-show-output agent lines source)
+    (agent-fleet--ensure-connected)
+    (agent-fleet--unwrap-read
+     (herdr-request "agent.read"
+                    `(("target" . ,(agent-fleet--resolve-target agent))
+                      ("source" . ,(if (symbolp source) (symbol-name source) source))
+                      ("lines" . ,lines)
+                      ("format" . ,(if (symbolp format) (symbol-name format) format))
+                      ("strip_ansi" . ,(if strip-ansi t :false)))))))
 
 ;;;###autoload
 (cl-defun agent-fleet-wait (agent &optional until &key
@@ -503,6 +540,7 @@ This is a single blocking RPC, NOT polling (PLAN.md §25): Emacs stays
 responsive because the protocol layer pumps `accept-process-output' during
 the wait, which also keeps the live cache in step.  Returns the agent's
 AgentInfo plist (unwrapped); its `:agent_status' is the outcome."
+  (interactive (list (agent-fleet--read-agent-name "Wait for agent")))
   (agent-fleet--ensure-connected)
   (let ((target (agent-fleet--resolve-target agent))
         (until-list (agent-fleet--normalize-until
@@ -511,7 +549,8 @@ AgentInfo plist (unwrapped); its `:agent_status' is the outcome."
      (herdr-request "agent.wait"
                     `(("target" . ,target)
                       ("until" . ,(vconcat until-list))
-                      ("timeout_ms" . ,timeout-ms))))))
+                      ("timeout_ms" . ,timeout-ms))
+                    :timeout (agent-fleet--transport-timeout timeout-ms)))))
 
 
 ;;; --- Keys / Interrupt ----------------------------------------------
@@ -522,6 +561,9 @@ AgentInfo plist (unwrapped); its `:agent_status' is the outcome."
 KEYS is a single key-notation string (\"ctrl+c\", \"enter\", \"esc\",
 \"shift+tab\", \"f1\", ...) or a list of them.  Returns the agent's
 AgentInfo plist if the server returned one, else the raw ack."
+  (interactive
+   (list (agent-fleet--read-agent-name "Send keys to agent")
+         (read-string "Keys (for example ctrl+c or enter): ")))
   (agent-fleet--ensure-connected)
   (let ((key-list (if (stringp keys) (list keys)
                     (delq nil keys))))
@@ -539,6 +581,7 @@ This is `interrupt', not `cancel': different CLIs attach different
 semantics to Ctrl-C, so we expose the key directly (PLAN.md §21).
 Returns the agent's AgentInfo plist if the server returned one, else the
 raw ack."
+  (interactive (list (agent-fleet--read-agent-name "Interrupt agent")))
   (agent-fleet--ensure-connected)
   (let ((res (herdr-request "agent.send_keys"
                             `(("target" . ,(agent-fleet--resolve-target agent))
@@ -553,6 +596,11 @@ raw ack."
   "Rename AGENT to NAME (a string) via `agent.rename'.
 Refreshes the cached agent so `agent-fleet-list' reflects the new name.
 Returns the renamed agent's AgentInfo plist (unwrapped)."
+  (interactive
+   (let* ((target (agent-fleet--read-agent-name "Rename agent"))
+          (cached (agent-fleet--find-agent target))
+          (current (and cached (herdr-agent-display-name cached))))
+     (list target (read-string "New name: " current))))
   (agent-fleet--ensure-connected)
   (unless (stringp name)
     (signal 'agent-fleet-error
@@ -573,6 +621,11 @@ Returns the renamed agent's AgentInfo plist (unwrapped)."
   "Kill AGENT by closing its pane via `pane.close'.
 The agent process is terminated with the pane.  The cache is updated
 eagerly (the `pane_closed' event also removes it).  Returns the result."
+  (interactive
+   (let ((target (agent-fleet--read-agent-name "Kill agent")))
+     (unless (y-or-n-p (format "Kill agent %s? " target))
+       (user-error "Canceled"))
+     (list target)))
   (agent-fleet--ensure-connected)
   (let* ((pane-id (agent-fleet--resolve-pane-id agent))
          (res (herdr-request "pane.close" `(("pane_id" . ,pane-id)))))
@@ -586,6 +639,7 @@ eagerly (the `pane_closed' event also removes it).  Returns the result."
 (defun agent-fleet-switch (agent)
   "Focus AGENT's pane in the Herdr UI via `agent.focus'.
 Returns the focused agent's AgentInfo plist (unwrapped)."
+  (interactive (list (agent-fleet--read-agent-name "Focus agent")))
   (agent-fleet--ensure-connected)
   (agent-fleet--unwrap-agent
    (herdr-request "agent.focus" `(("target" . ,(agent-fleet--resolve-target agent))))))

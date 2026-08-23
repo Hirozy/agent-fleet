@@ -113,7 +113,12 @@ terminal output may contain secrets."
 (defun herdr--log (level format-string &rest args)
   "Write a log entry at LEVEL (a symbol) to *herdr-log*.
 FORMAT-STRING and ARGS are as for `format'."
-  (when (herdr-protocol--level>= level herdr-log-level)
+  ;; `herdr-log-level' is the maximum verbosity the user opted into.  The
+  ;; numeric table grows with verbosity (error=0 ... trace=4), so compare the
+  ;; configured level against the message level, not the other way around.
+  ;; Reversing these operands makes the default `warn' setting drop errors and
+  ;; record debug/trace frames -- including prompts and terminal output.
+  (when (herdr-protocol--level>= herdr-log-level level)
     (let ((inhibit-read-only t)
           (msg (format "[%s] %s\n" (upcase (symbol-name level))
                         (apply #'format format-string args))))

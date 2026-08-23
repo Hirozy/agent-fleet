@@ -554,12 +554,12 @@ notifications into the blocked/done hooks.  Safe to call repeatedly."
 ;;;###autoload
 (defvar-keymap agent-fleet-command-map
   :doc "Prefix map for agent-fleet commands (PLAN.md §53).
-Bind it yourself, e.g. (global-set-key (kbd \"C-c a\") \\='agent-fleet-command-map).
+Bind it yourself, e.g. (global-set-key (kbd \"C-c a\") agent-fleet-command-map).
 The package binds NO global keys."
   "a" #'agent-fleet
   "s" #'agent-fleet-start
   "p" #'agent-fleet-prompt
-  "o" #'agent-fleet-read
+  "o" #'agent-fleet-show-output
   "i" #'agent-fleet-interrupt)
 
 
