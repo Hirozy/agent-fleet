@@ -203,6 +203,25 @@ full state machine over three agents."
       (agent-fleet-test--pump)
       (should (eq 'done (agent-fleet-task-state task))))))
 
+(ert-deftest agent-fleet-task-missing-agent-is-failed-not-done ()
+  "A crashed, killed, or disconnected agent cannot complete its task."
+  (let ((agent-fleet--tasks nil)
+        (agent-fleet--agent-tasks (make-hash-table :test 'equal)))
+    (with-agent-fleet-mock path server
+      (agent-fleet-parallel-test--use-working-prompt server)
+      (let* ((task (agent-fleet-parallel
+                    '((claude . "do A")) :title "rev" :cwd "/tmp"))
+             (pid (car (agent-fleet-task-agents task))))
+        (agent-fleet-test--pump)
+        (should (eq 'running (agent-fleet-task-state task)))
+        (herdr-model-remove-agent pid)
+        (should (eq 'failed (agent-fleet-task-state task)))
+        (should (equal `((,pid . failed))
+                       (agent-fleet-task-agents-state task)))
+        ;; Default settled-state wait includes failed and returns immediately.
+        (should (eq task (agent-fleet-task-wait task nil :timeout-ms 100)))
+        (should-not (agent-fleet-task-finished-at task))))))
+
 
 ;;; --- Task wait (§38/§25) --------------------------------------------
 

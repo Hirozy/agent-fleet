@@ -170,6 +170,37 @@ key is silent (PLAN.md §25 — the cache stays post-event-correct)."
                              '(:pane (:pane_id "w1:p1" :agent nil)))
     (should-not (herdr-model-find-agent session "w1:p1"))))
 
+(ert-deftest herdr-model-pane-update-preserves-agentinfo-identity ()
+  "PaneInfo updates/moves preserve fields available only on AgentInfo."
+  (let ((session (herdr-model-parse-snapshot (herdr-model-test--snapshot))))
+    (herdr-model-upsert-agent-info
+     '(:pane_id "w1:p1" :workspace_id "w1" :tab_id "w1:t1"
+       :terminal_id "t1" :cwd "/d" :focused t :revision 3
+       :agent "claude" :agent_status "idle" :name "architect"
+       :state_change_seq 9 :interactive_ready t :launch_pending :false)
+     session)
+    (herdr-model-apply-event
+     session "pane_updated"
+     '(:pane (:pane_id "w1:p1" :workspace_id "w1" :tab_id "w1:t1"
+              :terminal_id "t1" :cwd "/new" :focused t :revision 4
+              :agent "claude" :agent_status "working")))
+    (let ((agent (herdr-model-find-agent session "w1:p1")))
+      (should (equal "architect" (herdr-agent-name agent)))
+      (should (= 9 (herdr-agent-state-change-seq agent)))
+      (should (herdr-agent-interactive-ready agent))
+      (should (equal "/new" (herdr-agent-cwd agent))))
+    ;; A cross-workspace move changes pane-id but the live alias must survive.
+    (herdr-model-apply-event
+     session "pane_moved"
+     '(:previous_pane_id "w1:p1"
+       :pane (:pane_id "w2:p2" :workspace_id "w2" :tab_id "w2:t1"
+              :terminal_id "t1" :cwd "/new" :focused t :revision 5
+              :agent "claude" :agent_status "working")))
+    (should-not (herdr-model-find-agent session "w1:p1"))
+    (should (equal "architect"
+                   (herdr-agent-name
+                    (herdr-model-find-agent session "w2:p2"))))))
+
 (ert-deftest herdr-model-pane-created-replay-guard-skips-cached ()
   "A replayed `pane_created' for an already-cached pane adds no pane.
 The EventHub ring buffer is drained on every subscribe, so a

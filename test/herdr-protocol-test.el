@@ -33,6 +33,25 @@ the server is stopped and any live herdr connection is torn down."
 
 ;;; --- Framing: JSON encode/decode ---------------------------------
 
+(ert-deftest herdr-protocol-log-level-orders-severity-correctly ()
+  "`warn' records error/warn but never debug/trace payloads."
+  (let ((herdr-log-level 'warn)
+        (herdr-log-buffer " *herdr-log-level-test*"))
+    (unwind-protect
+        (progn
+          (herdr--log 'error "error-entry")
+          (herdr--log 'warn "warn-entry")
+          (herdr--log 'info "info-entry")
+          (herdr--log 'trace "secret-trace-entry")
+          (let ((text (with-current-buffer herdr-log-buffer
+                        (buffer-string))))
+            (should (string-match-p "error-entry" text))
+            (should (string-match-p "warn-entry" text))
+            (should-not (string-match-p "info-entry" text))
+            (should-not (string-match-p "secret-trace-entry" text))))
+      (when (get-buffer herdr-log-buffer)
+        (kill-buffer herdr-log-buffer)))))
+
 (ert-deftest herdr-protocol-encode-empty-params ()
   "Empty params encode as {} not null."
   (let ((frame (herdr-protocol--encode-request "r1" "ping" nil)))
@@ -82,6 +101,23 @@ the server is stopped and any live herdr connection is torn down."
            (snap (plist-get res :snapshot)))
       (should (plist-get snap :workspaces))
       (should (equal (plist-get snap :focused_workspace_id) "w1")))))
+
+(ert-deftest herdr-connect-honors-explicit-socket-path ()
+  "The SOCKET-PATH argument drives bootstrap and later fleet RPCs."
+  (let* ((path (make-temp-name "/tmp/herdr-explicit-"))
+         (srv (herdr-mock-start path))
+         (herdr-socket-path nil)
+         (herdr--conn herdr--conn))
+    (unwind-protect
+        (progn
+          (herdr-connect path)
+          (should (herdr-connected-p))
+          (should (equal path (herdr--connection-socket-path herdr--conn)))
+          ;; This call goes through `herdr-request', which must reuse the
+          ;; connection path rather than rediscovering a default socket.
+          (should (equal "pong" (plist-get (herdr-request "ping") :type))))
+      (ignore-errors (herdr-disconnect))
+      (herdr-mock-stop srv))))
 
 (ert-deftest herdr-protocol-server-error-becomes-condition ()
   "A server error response signals herdr-request-error with :code."

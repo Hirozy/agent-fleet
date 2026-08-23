@@ -116,29 +116,34 @@ Populated by `agent-fleet-parallel'; cleared by `agent-fleet-task-cleanup'.")
 ;;; --- Aggregate state (live, §72) ------------------------------------
 
 (defun agent-fleet-task-state (task)
-  "Return TASK's aggregate state as a symbol: `done', `blocked', or `running'.
-Computed live from the cache: `done' when every agent is done (an agent that
-has exited / dropped from the cache counts as terminal-done); `blocked' when
-at least one agent is blocked (and not all done); else `running'.  Per §38 a
-single agent finishing does NOT make the task `done' — all must finish."
-  (let* ((agents (agent-fleet-task-agents task))
-         (total (length agents))
-         (done 0) (blocked nil))
-    (dolist (pid agents)
-      (let ((s (agent-fleet-status pid)))
-        (cond
-         ((or (eq s 'done) (null s)) (cl-incf done))
-         ((eq s 'blocked) (setq blocked t)))))
-    (cond
-     ((>= done total) 'done)
-     (blocked 'blocked)
-     (t 'running))))
+  "Return TASK's aggregate state: `done', `failed', `blocked', or `running'.
+`done' requires every agent to report Herdr's authoritative done state.  A
+missing agent is `failed', not successful: it may have crashed, been killed,
+or disappeared while the client was disconnected.  Once FINISHED-AT records a
+real all-done transition, later pane cleanup does not retroactively fail the
+completed task.  Per §38 one agent finishing never completes the whole task."
+  (if (agent-fleet-task-finished-at task)
+      'done
+    (let* ((agents (agent-fleet-task-agents task))
+           (total (length agents))
+           (done 0) (blocked nil) (missing nil))
+      (dolist (pid agents)
+        (let ((s (agent-fleet-status pid)))
+          (cond
+           ((eq s 'done) (cl-incf done))
+           ((null s) (setq missing t))
+           ((eq s 'blocked) (setq blocked t)))))
+      (cond
+       ((and (> total 0) (>= done total)) 'done)
+       (missing 'failed)
+       (blocked 'blocked)
+       (t 'running)))))
 
 (defun agent-fleet-task-agents-state (task)
   "Return an alist (pane-id . status-symbol) for TASK's agents, for display.
-Reads the live cache; an exited agent shows as `done'."
+Reads the live cache; an exited/missing agent shows as `failed'."
   (mapcar (lambda (pid)
-            (cons pid (or (agent-fleet-status pid) 'done)))
+            (cons pid (or (agent-fleet-status pid) 'failed)))
           (agent-fleet-task-agents task)))
 
 
@@ -219,13 +224,13 @@ failure is caught and reported; the task records the agents that did launch."
 ;;; --- Wait (§38/§25) --------------------------------------------------
 
 (defun agent-fleet-parallel--normalize-until (until)
-  "Normalize UNTIL to a list of status SYMBOLS (default `(done blocked)').
+  "Normalize UNTIL to status SYMBOLS (default `(done blocked failed)').
 Unlike `agent-fleet--normalize-until' (which stringifies for the wire
 `until' param of `agent.wait'), this keeps SYMBOLS: `agent-fleet-task-state'
 returns a symbol and the wait loop compares with `memq', so a string list
 would never match (a symbol is never `eq' to a string).  Accepts a symbol,
 a string, or a list of either."
-  (let ((u (or until '(done blocked))))
+  (let ((u (or until '(done blocked failed))))
     (cond
      ((null u) nil)
      ((consp u) (delq nil (mapcar (lambda (s)
@@ -240,9 +245,9 @@ a string, or a list of either."
 (cl-defun agent-fleet-task-wait (task &optional until
                                        &key (timeout-ms agent-fleet-wait-timeout-ms))
   "Block until TASK reaches an aggregate terminal state (PLAN §38/§72).
-UNtil is `done' (all agents done) or `(done blocked)' (settled = all done OR
-any blocked); default `(done blocked)' (mirrors `agent-fleet-default-wait-
-until').  TIMEOUT-MS bounds the wait (default `agent-fleet-wait-timeout-ms').
+UNTIL is `done' (all agents done) or `(done blocked failed)' (settled = all
+done, any blocked, or an agent disappeared); that settled set is the default.
+TIMEOUT-MS bounds the wait (default `agent-fleet-wait-timeout-ms').
 
 Waits in PARALLEL (wall-clock = slowest agent, not the sum): the loop pumps
 `accept-process-output' — event-driven I/O, NOT timer polling (§25, same

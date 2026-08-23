@@ -52,7 +52,7 @@ orchestration is a later phase.
 | Broadcast / pipeline | — | ⏳ later phases |
 
 Verified against **Herdr 0.8.2** (protocol 20). All source byte-compiles with
-zero warnings; 135 unit tests (mock) + 4 live integration tests pass.
+zero warnings; 150 unit tests (mock) + 4 live integration tests pass.
 Magit is an optional dependency (PLAN §55); the Magit layer `user-error's
 clearly when it is absent. Terminal backends (eat/ghostel/vterm) are likewise
 optional (PLAN §45); `agent-fleet-attach` degrades gracefully when none is
@@ -210,7 +210,7 @@ The package binds **no global key** (§53). To get a prefix map, bind it
 yourself, e.g.:
 
 ```elisp
-(global-set-key (kbd "C-c a") 'agent-fleet-command-map)
+(global-set-key (kbd "C-c a") agent-fleet-command-map)
 ;; C-c a a  dashboard   C-c a s start   C-c a p prompt
 ;; C-c a o  read        C-c a i interrupt
 ```
@@ -352,11 +352,11 @@ status is tracked live from the event bus:
          (pi     . "Analyze tests"))
        :title "auth-refactor" :cwd "~/src/myapp"))
 
-(agent-fleet-task-state task)          ; => 'running | 'blocked | 'done (live)
+(agent-fleet-task-state task)          ; => 'running | 'blocked | 'failed | 'done
 (agent-fleet-task-agents task)         ; list of pane-ids spawned
 
 ;; Block until the task settles (event-driven pump, not polling — §25):
-(agent-fleet-task-wait task)           ; default until (done blocked)
+(agent-fleet-task-wait task)           ; default until (done blocked failed)
 (agent-fleet-task-wait task '(done))   ; only when ALL agents are done
 
 ;; Inspect any agent's output as a read-snapshot (§23) — no extraction:

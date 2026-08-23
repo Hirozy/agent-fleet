@@ -260,8 +260,16 @@ following `pane.agent_status_changed' (dotted per-pane kind, §7.3) event."
   (should (eq (lookup-key agent-fleet-command-map "a") #'agent-fleet))
   (should (eq (lookup-key agent-fleet-command-map "s") #'agent-fleet-start))
   (should (eq (lookup-key agent-fleet-command-map "p") #'agent-fleet-prompt))
-  (should (eq (lookup-key agent-fleet-command-map "o") #'agent-fleet-read))
-  (should (eq (lookup-key agent-fleet-command-map "i") #'agent-fleet-interrupt)))
+  (should (eq (lookup-key agent-fleet-command-map "o") #'agent-fleet-show-output))
+  (should (eq (lookup-key agent-fleet-command-map "i") #'agent-fleet-interrupt))
+  (dolist (command '(agent-fleet-start agent-fleet-prompt agent-fleet-read
+                     agent-fleet-wait agent-fleet-interrupt agent-fleet-rename
+                     agent-fleet-kill agent-fleet-switch agent-fleet-show-output))
+    (should (commandp command)))
+  ;; The documented unquoted map value forms a real prefix keymap.
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "C-c a") agent-fleet-command-map)
+    (should (eq (lookup-key map (kbd "C-c a p")) #'agent-fleet-prompt))))
 
 
 ;;; --- Row keys (PLAN.md §27) -----------------------------------------
