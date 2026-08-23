@@ -69,6 +69,7 @@ The dashboard is in `*Agent Fleet*'.  Robust to sort order."
                          "git" nil nil nil "-C" repo
                          "-c" "user.name=Agent Fleet Test"
                          "-c" "user.email=agent-fleet@example.invalid"
+                         "-c" "commit.gpgSign=false"
                          "commit" "--quiet" "--allow-empty" "-m" "initial")))
           (should (eq 0 (process-file "git" nil nil nil "-C" repo
                                      "worktree" "add" "--quiet" "--detach"

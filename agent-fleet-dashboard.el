@@ -5,7 +5,7 @@
 ;; Author: agent-fleet
 ;; Keywords: processes, tools, convenience
 ;; Version: 0.3.0
-;; Package-Requires: ((emacs "29.1"))
+;; Package-Requires: ((emacs "29.1") (transient "0.7.2"))
 
 ;; This program is free software; you can redistribute it and/or modify
 ;; it under the terms of the GNU General Public License as published by
@@ -31,7 +31,8 @@
 ;;   §25  event-driven; NO timer polling.  The buffer rebuilds only when an
 ;;        `agent-fleet-agent-{started,status-changed,exited}-hook' fires.
 ;;   §27  columns Project / Agent / Kind / State / Task; row keys
-;;        RET p o i k r g P T w d m a (`a' = live attach, Phase 8/§73).
+;;        RET p o i k r g P T w d m a h (`a' = live attach, Phase 8/§73;
+;;        `h' = transient command help).
 ;;   §28  one face per status; blocked is the most prominent.
 ;;   §29  optional notifications on working→blocked / working→done, gated by
 ;;        `agent-fleet-notify-on'.
@@ -54,6 +55,7 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'tabulated-list)
+(require 'transient)
 (require 'agent-fleet)
 (require 'agent-fleet-project)
 (require 'agent-fleet-worktree)
@@ -61,6 +63,9 @@
 (require 'agent-fleet-parallel)
 (require 'agent-fleet-attach)
 (require 'herdr-model)
+
+(declare-function evil-define-key* "evil-core"
+                  (state keymap key def &rest bindings))
 
 
 ;;; --- Customization --------------------------------------------------
@@ -255,6 +260,7 @@ already post-event because `herdr-model-apply-event' mutates before the
 hooks fire (PLAN.md §25)."
   (interactive (list t))
   (when from-server
+    (agent-fleet--ensure-connected)
     (agent-fleet-list t))
   (agent-fleet-dashboard--set-entries)
   (agent-fleet-dashboard--update-task-banner)
@@ -414,23 +420,74 @@ Delegates to `agent-fleet-attach' (terminal backends optional, PLAN §45)."
   (agent-fleet-attach (agent-fleet-dashboard--agent-at-point)
                       current-prefix-arg))
 
-(defvar agent-fleet-dashboard-mode-map
+
+;;; --- Command help ---------------------------------------------------
+
+(transient-define-prefix agent-fleet-dashboard-help ()
+  "Show and dispatch commands for the agent-fleet dashboard."
+  [["Agent"
+    ("RET" "Inspect output" agent-fleet-dashboard-inspect)
+    ("o"   "Inspect output" agent-fleet-dashboard-inspect)
+    ("p"   "Prompt" agent-fleet-dashboard-prompt)
+    ("i"   "Interrupt" agent-fleet-dashboard-interrupt)
+    ("k"   "Kill" agent-fleet-dashboard-kill)
+    ("r"   "Rename" agent-fleet-dashboard-rename)]
+   ["View / Filter"
+    ("g" "Refresh from server" agent-fleet-dashboard-refresh)
+    ("P" "Toggle project filter" agent-fleet-dashboard-toggle-project-filter)
+    ("T" "Toggle task filter" agent-fleet-dashboard-toggle-task-filter)]
+   ["Worktree / Git"
+    ("w" "Worktree status" agent-fleet-dashboard-worktree)
+    ("d" "Working-tree diff" agent-fleet-dashboard-diff)
+    ("m" "Magit status" agent-fleet-dashboard-magit)]
+   ["Session"
+    ("a" "Attach terminal" agent-fleet-dashboard-attach)]])
+
+(defconst agent-fleet-dashboard--bindings
+  '(("RET" . agent-fleet-dashboard-inspect)
+    ("o"   . agent-fleet-dashboard-inspect)
+    ("p"   . agent-fleet-dashboard-prompt)
+    ("i"   . agent-fleet-dashboard-interrupt)
+    ("k"   . agent-fleet-dashboard-kill)
+    ("r"   . agent-fleet-dashboard-rename)
+    ("g"   . agent-fleet-dashboard-refresh)
+    ("P"   . agent-fleet-dashboard-toggle-project-filter)
+    ("T"   . agent-fleet-dashboard-toggle-task-filter)
+    ("w"   . agent-fleet-dashboard-worktree)
+    ("d"   . agent-fleet-dashboard-diff)
+    ("m"   . agent-fleet-dashboard-magit)
+    ("a"   . agent-fleet-dashboard-attach)
+    ("h"   . agent-fleet-dashboard-help))
+  "Documented key bindings for `agent-fleet-mode'.")
+
+(defvaralias 'agent-fleet-dashboard-mode-map 'agent-fleet-mode-map
+  "Compatibility alias for the dashboard mode map's former name.")
+
+(defvar agent-fleet-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "RET") #'agent-fleet-dashboard-inspect)
-    (define-key map (kbd "o")   #'agent-fleet-dashboard-inspect)
-    (define-key map (kbd "p")   #'agent-fleet-dashboard-prompt)
-    (define-key map (kbd "i")   #'agent-fleet-dashboard-interrupt)
-    (define-key map (kbd "k")   #'agent-fleet-dashboard-kill)
-    (define-key map (kbd "r")   #'agent-fleet-dashboard-rename)
-    (define-key map (kbd "g")   #'agent-fleet-dashboard-refresh)
-    (define-key map (kbd "P")   #'agent-fleet-dashboard-toggle-project-filter)
-    (define-key map (kbd "T")   #'agent-fleet-dashboard-toggle-task-filter)
-    (define-key map (kbd "w")   #'agent-fleet-dashboard-worktree)
-    (define-key map (kbd "d")   #'agent-fleet-dashboard-diff)
-    (define-key map (kbd "m")   #'agent-fleet-dashboard-magit)
-    (define-key map (kbd "a")   #'agent-fleet-dashboard-attach)
+    (set-keymap-parent map tabulated-list-mode-map)
     map)
   "Keymap for `agent-fleet-mode' (PLAN.md §27 row keys).")
+
+(defun agent-fleet-dashboard--install-key-bindings ()
+  "Install dashboard bindings in the active mode map and optional Evil maps.
+This function intentionally runs outside the map's `defvar' initializer so
+reloading agent-fleet updates an already-created `agent-fleet-mode-map'."
+  (dolist (binding agent-fleet-dashboard--bindings)
+    (define-key agent-fleet-mode-map (kbd (car binding)) (cdr binding)))
+  ;; Evil's state maps take precedence over an ordinary major-mode map.  The
+  ;; dashboard inherits motion state from `special-mode' in common setups, so
+  ;; mirror its commands into the two non-insert states when Evil is present.
+  (when (fboundp 'evil-define-key*)
+    (apply #'evil-define-key* '(normal motion) agent-fleet-mode-map
+           (mapcan (lambda (binding)
+                     (list (kbd (car binding)) (cdr binding)))
+                   agent-fleet-dashboard--bindings))))
+
+(agent-fleet-dashboard--install-key-bindings)
+
+(with-eval-after-load 'evil
+  (agent-fleet-dashboard--install-key-bindings))
 
 
 ;;; --- Mode -----------------------------------------------------------
@@ -444,7 +501,7 @@ narrows the list to the project of the agent at point.  `T' (Phase 7, §72)
 narrows the list to one parallel task's agents and shows that task's title
 + live aggregate state in the mode line.
 
-\\{agent-fleet-dashboard-mode-map}"
+\\{agent-fleet-mode-map}"
   (setq tabulated-list-format
         `[("Project" 12 t)
           ("Agent"   18 t)
@@ -470,8 +527,9 @@ narrows the list to one parallel task's agents and shows that task's title
 (defun agent-fleet ()
   "Open the agent-fleet dashboard (PLAN.md Phase 3, §27/§68).
 Lists every Herdr-managed agent with its state and refreshes live from
-the event bus.  Connect first with `M-x herdr-connect'."
+the event bus.  Connects according to `agent-fleet-auto-connect'."
   (interactive)
+  (agent-fleet--ensure-connected)
   (let ((buf (get-buffer-create agent-fleet-dashboard-buffer-name)))
     (with-current-buffer buf
       (agent-fleet-mode)
@@ -536,6 +594,10 @@ notifications into the blocked/done hooks.  Safe to call repeatedly."
   (unless (memq #'agent-fleet-dashboard--on-event
                 agent-fleet-agent-exited-hook)
     (add-hook 'agent-fleet-agent-exited-hook
+              #'agent-fleet-dashboard--on-event))
+  (unless (memq #'agent-fleet-dashboard--on-event
+                agent-fleet-task-changed-hook)
+    (add-hook 'agent-fleet-task-changed-hook
               #'agent-fleet-dashboard--on-event))
   (unless (memq #'agent-fleet-dashboard--notify
                 agent-fleet-agent-blocked-hook)

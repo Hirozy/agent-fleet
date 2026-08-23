@@ -29,7 +29,8 @@
 ;; The cache is bootstrapped from `session.snapshot' and then kept in
 ;; step by `herdr-model-apply-event', which reconciles one pushed event
 ;; against the cache.  On reconnect the cache is replaced wholesale by a
-;; fresh snapshot (see `herdr.el'); events are never replayed.
+;; fresh snapshot (see `herdr.el').  The client does not replay missed events;
+;; server-buffered events delivered after subscribing are handled idempotently.
 ;;
 ;; All parsing is tolerant: unknown fields in the Herdr JSON are ignored,
 ;; so the client survives forward-compatible protocol changes.
@@ -159,6 +160,11 @@ RESULT is the decoded `result' field of a session.snapshot response,
 i.e. a plist with a `:snapshot' key.  Unknown fields are ignored."
   (let* ((snap (or (plist-get result :snapshot) result))
          (session (herdr-model--empty-session)))
+    (unless (and (listp snap)
+                 (cl-every (lambda (key) (plist-member snap key))
+                           '(:workspaces :tabs :panes :agents)))
+      (signal 'herdr-protocol-error
+              (list :reason 'malformed-snapshot :result result)))
     (setf (herdr-session-protocol session)
           (plist-get snap :protocol))
     (setf (herdr-session-version session)
@@ -313,6 +319,97 @@ PATH is the canonical key.  BRANCH is nil for a detached worktree."
 ;; STATUS-OR-NIL).  Unknown event kinds return a no-op descriptor so the
 ;; bus can still route them to a catch-all hook.
 
+(defun herdr-model--remove-pane-cascade (session pane-id)
+  "Remove PANE-ID and its agent from SESSION and remember it as gone."
+  (when pane-id
+    (remhash pane-id (herdr-session-panes session))
+    (remhash pane-id (herdr-session-agents session))
+    (puthash pane-id t (herdr-session-gone-panes session))
+    (when (equal pane-id (herdr-session-focused-pane-id session))
+      (setf (herdr-session-focused-pane-id session) nil))))
+
+(defun herdr-model--remove-tab-cascade (session tab-id)
+  "Remove TAB-ID and every child pane/agent from SESSION."
+  (let (pane-ids)
+    (maphash (lambda (pane-id pane)
+               (when (equal tab-id (herdr-pane-tab-id pane))
+                 (push pane-id pane-ids)))
+             (herdr-session-panes session))
+    ;; Also cover a partial cache containing AgentInfo but no PaneInfo.
+    (maphash (lambda (pane-id agent)
+               (when (equal tab-id (herdr-agent-tab-id agent))
+                 (cl-pushnew pane-id pane-ids :test #'equal)))
+             (herdr-session-agents session))
+    (dolist (pane-id pane-ids)
+      (herdr-model--remove-pane-cascade session pane-id)))
+  (remhash tab-id (herdr-session-tabs session))
+  (when (equal tab-id (herdr-session-focused-tab-id session))
+    (setf (herdr-session-focused-tab-id session) nil))
+  (maphash (lambda (_id workspace)
+             (when (equal tab-id (herdr-workspace-active-tab-id workspace))
+               (setf (herdr-workspace-active-tab-id workspace) nil)))
+           (herdr-session-workspaces session)))
+
+(defun herdr-model--remove-workspace-cascade (session workspace-id)
+  "Remove WORKSPACE-ID and all descendant tabs/panes/agents from SESSION."
+  (let (tab-ids pane-ids)
+    (maphash (lambda (tab-id tab)
+               (when (equal workspace-id (herdr-tab-workspace-id tab))
+                 (push tab-id tab-ids)))
+             (herdr-session-tabs session))
+    (dolist (tab-id tab-ids)
+      (herdr-model--remove-tab-cascade session tab-id))
+    ;; Partial event streams can contain panes whose tab was never cached.
+    (maphash (lambda (pane-id pane)
+               (when (equal workspace-id (herdr-pane-workspace-id pane))
+                 (push pane-id pane-ids)))
+             (herdr-session-panes session))
+    (maphash (lambda (pane-id agent)
+               (when (equal workspace-id (herdr-agent-workspace-id agent))
+                 (cl-pushnew pane-id pane-ids :test #'equal)))
+             (herdr-session-agents session))
+    (dolist (pane-id pane-ids)
+      (herdr-model--remove-pane-cascade session pane-id)))
+  (remhash workspace-id (herdr-session-workspaces session))
+  (when (equal workspace-id (herdr-session-focused-workspace-id session))
+    (setf (herdr-session-focused-workspace-id session) nil)))
+
+(defun herdr-model--focus-workspace (session workspace-id)
+  "Make WORKSPACE-ID the sole focused workspace in SESSION."
+  (setf (herdr-session-focused-workspace-id session) workspace-id)
+  (maphash (lambda (id workspace)
+             (setf (herdr-workspace-focused workspace)
+                   (equal id workspace-id)))
+           (herdr-session-workspaces session)))
+
+(defun herdr-model--focus-tab (session tab-id workspace-id)
+  "Make TAB-ID the sole focused tab and update its WORKSPACE-ID."
+  (setf (herdr-session-focused-tab-id session) tab-id)
+  (maphash (lambda (id tab)
+             (setf (herdr-tab-focused tab) (equal id tab-id)))
+           (herdr-session-tabs session))
+  (when workspace-id
+    (herdr-model--focus-workspace session workspace-id)
+    (when-let* ((workspace (herdr-model-find-workspace session workspace-id)))
+      (setf (herdr-workspace-active-tab-id workspace) tab-id))))
+
+(defun herdr-model--focus-pane (session pane-id workspace-id)
+  "Make PANE-ID the sole focused pane, deriving its tab when cached."
+  (setf (herdr-session-focused-pane-id session) pane-id)
+  (maphash (lambda (id pane)
+             (setf (herdr-pane-focused pane) (equal id pane-id)))
+           (herdr-session-panes session))
+  (maphash (lambda (id agent)
+             (setf (herdr-agent-focused agent) (equal id pane-id)))
+           (herdr-session-agents session))
+  (let ((pane (herdr-model-find-pane session pane-id)))
+    (if (and pane (herdr-pane-tab-id pane))
+        (herdr-model--focus-tab session (herdr-pane-tab-id pane)
+                                (or workspace-id
+                                    (herdr-pane-workspace-id pane)))
+      (when workspace-id
+        (herdr-model--focus-workspace session workspace-id)))))
+
 (defun herdr-model-apply-event (session kind data)
   "Reconcile one pushed event against SESSION (mutated in place).
 KIND is the underscored event type (e.g. \"pane_agent_status_changed\").
@@ -349,17 +446,37 @@ DATA is the decoded event payload plist.  Returns a descriptor plist
          (setf (herdr-workspace-custom-name w) (plist-get data :label)))
        `(:event ,kind :what :workspace-updated :id ,wid)))
     ("workspace_closed"
-     (let ((wid (or (plist-get data :workspace_id)
-                    (plist-get (plist-get data :workspace) :workspace_id))))
-       (remhash wid (herdr-session-workspaces session))
-       `(:event ,kind :what :workspace-closed :id ,wid)))
+     (let* ((wid (or (plist-get data :workspace_id)
+                     (plist-get (plist-get data :workspace) :workspace_id)))
+            (closed-agents
+             (cl-remove-if-not
+              (lambda (agent)
+                (equal wid (herdr-agent-workspace-id agent)))
+              (herdr-model--hash-values (herdr-session-agents session))))
+            (changed
+             (or (herdr-model-find-workspace session wid)
+                 closed-agents
+                 (cl-some (lambda (tab)
+                            (equal wid (herdr-tab-workspace-id tab)))
+                          (herdr-model--hash-values
+                           (herdr-session-tabs session)))
+                 (cl-some (lambda (pane)
+                            (equal wid (herdr-pane-workspace-id pane)))
+                          (herdr-model--hash-values
+                           (herdr-session-panes session))))))
+       (herdr-model--remove-workspace-cascade session wid)
+       `(:event ,kind :what :workspace-closed :id ,wid
+         :closed-agents ,closed-agents :replayp ,(not changed))))
     ("workspace_focused"
      (let ((wid (plist-get data :workspace_id)))
-       (setf (herdr-session-focused-workspace-id session) wid)
+       (herdr-model--focus-workspace session wid)
        `(:event ,kind :what :workspace-focused :id ,wid)))
     ((or "workspace_moved" "workspace_reordered")
+     (dolist (workspace (append (plist-get data :workspaces) nil))
+       (herdr-model--upsert-workspace session workspace))
      `(:event ,kind :what :workspace-reordered
-       :id ,(plist-get data :workspace_id)))
+       :id ,(or (plist-get data :workspace_id)
+                (car (append (plist-get data :workspace_ids) nil)))))
     ;; --- worktrees (Phase 5) ---
     ;; The snapshot carries no worktree collection, so the cache is seeded
     ;; by these events and by `worktree.list'.  `worktree_created'/`opened'
@@ -393,16 +510,36 @@ DATA is the decoded event payload plist.  Returns a descriptor plist
      (let ((tb (plist-get data :tab)))
        (herdr-model--upsert-tab session tb)
        `(:event ,kind :what :tab-updated :id ,(plist-get tb :tab_id))))
-    ((or "tab_renamed" "tab_moved")
-     `(:event ,kind :what :tab-updated
-       :id ,(plist-get data :tab_id)))
+    ("tab_renamed"
+     (let* ((tab-id (plist-get data :tab_id))
+            (tab (herdr-model-find-tab session tab-id)))
+       (when tab
+         (setf (herdr-tab-label tab) (plist-get data :label)))
+       `(:event ,kind :what :tab-updated :id ,tab-id)))
+    ("tab_moved"
+     (dolist (tab (append (plist-get data :tabs) nil))
+       (herdr-model--upsert-tab session tab))
+     `(:event ,kind :what :tab-updated :id ,(plist-get data :tab_id)))
     ("tab_closed"
-     (let ((tid (plist-get data :tab_id)))
-       (remhash tid (herdr-session-tabs session))
-       `(:event ,kind :what :tab-closed :id ,tid)))
+     (let* ((tid (plist-get data :tab_id))
+            (closed-agents
+             (cl-remove-if-not
+              (lambda (agent) (equal tid (herdr-agent-tab-id agent)))
+              (herdr-model--hash-values (herdr-session-agents session))))
+            (changed
+             (or (herdr-model-find-tab session tid)
+                 closed-agents
+                 (cl-some (lambda (pane)
+                            (equal tid (herdr-pane-tab-id pane)))
+                          (herdr-model--hash-values
+                           (herdr-session-panes session))))))
+       (herdr-model--remove-tab-cascade session tid)
+       `(:event ,kind :what :tab-closed :id ,tid
+         :closed-agents ,closed-agents :replayp ,(not changed))))
     ("tab_focused"
-     (let ((tid (plist-get data :tab_id)))
-       (setf (herdr-session-focused-tab-id session) tid)
+     (let ((tid (plist-get data :tab_id))
+           (wid (plist-get data :workspace_id)))
+       (herdr-model--focus-tab session tid wid)
        `(:event ,kind :what :tab-focused :id ,tid)))
     ;; --- panes & agents ---
     ("pane_created"
@@ -435,25 +572,41 @@ DATA is the decoded event payload plist.  Returns a descriptor plist
      (let* ((pn (plist-get data :pane))
             (id (plist-get pn :pane_id))
             (prev (plist-get data :previous_pane_id)))
-       ;; A move may change the workspace-qualified pane id; drop the
-       ;; stale entries from BOTH the panes and agents tables so we do
-       ;; not leave an orphaned agent keyed by the old id.
-       (let ((previous-agent
-              (and prev (herdr-model-find-agent session prev))))
-         (when prev
-           (remhash prev (herdr-session-panes session))
-           (remhash prev (herdr-session-agents session)))
-         (herdr-model--upsert-pane session pn)
-         (herdr-model--maybe-upsert-agent-from-pane session pn previous-agent)
-         `(:event ,kind :what :pane-updated :id ,id))))
+       (if (and id (gethash id (herdr-session-gone-panes session)))
+           `(:event ,kind :what :pane-replayed :id ,id :replayp t)
+         ;; A move may change the workspace-qualified pane id; drop the
+         ;; stale entries from BOTH tables and permanently retire the old id.
+         (let ((previous-agent
+                (and prev (herdr-model-find-agent session prev))))
+           (when (and prev (not (equal prev id)))
+             (herdr-model--remove-pane-cascade session prev))
+           (herdr-model--upsert-pane session pn)
+           (herdr-model--maybe-upsert-agent-from-pane session pn previous-agent)
+           `(:event ,kind :what :pane-updated :id ,id)))))
     ((or "pane_closed" "pane_exited")
-     (let ((pid (plist-get data :pane_id)))
+     (let* ((pid (plist-get data :pane_id))
+            (already-gone (and pid
+                               (gethash pid
+                                        (herdr-session-gone-panes session))))
+            (pane (and pid (herdr-model-find-pane session pid)))
+            ;; Remember whether this was an agent pane before removing it.
+            ;; The explicit kill path may already have removed the AgentInfo,
+            ;; while the PaneInfo still carries its detected agent kind.
+            (agentp (or (and pid (herdr-model-find-agent session pid))
+                        (and pane (herdr-pane-agent pane)))))
        (remhash pid (herdr-session-panes session))
        (remhash pid (herdr-session-agents session))
-       `(:event ,kind :what :pane-closed :id ,pid)))
+       (when pid
+         ;; Pane ids are never recycled.  Recording every observed close
+         ;; prevents a replayed pane_created from resurrecting it and
+         ;; repeatedly rebuilding/rejecting the subscription batch.
+         (puthash pid t (herdr-session-gone-panes session)))
+       `(:event ,kind :what :pane-closed :id ,pid
+         :agentp ,(and agentp t) :replayp ,(and already-gone t))))
     ("pane_focused"
-     (let ((pid (plist-get data :pane_id)))
-       (setf (herdr-session-focused-pane-id session) pid)
+     (let ((pid (plist-get data :pane_id))
+           (wid (plist-get data :workspace_id)))
+       (herdr-model--focus-pane session pid wid)
        `(:event ,kind :what :pane-focused :id ,pid)))
     ("pane_output_changed"
      (let* ((pid (plist-get data :pane_id))
@@ -534,6 +687,22 @@ DATA is the decoded event payload plist.  Returns a descriptor plist
             (state-labels (plist-get data :state_labels))
             (cached (herdr-model-find-agent session pid))
             (pn (herdr-model-find-pane session pid)))
+       ;; A per-pane status frame can race ahead of the global detection
+       ;; event after subscribe.  If it identifies an agent kind, create a
+       ;; minimal AgentInfo projection instead of dropping the only status
+       ;; signal and leaving the dashboard empty until the next snapshot.
+       (when (and (null cached) pid ag-kind
+                  (not (gethash pid (herdr-session-gone-panes session))))
+         (setq cached
+               (make-herdr-agent
+                :id pid
+                :workspace-id (and pn (herdr-pane-workspace-id pn))
+                :tab-id (and pn (herdr-pane-tab-id pn))
+                :terminal-id (and pn (herdr-pane-terminal-id pn))
+                :cwd (and pn (herdr-pane-cwd pn))
+                :focused (and pn (herdr-pane-focused pn))
+                :agent ag-kind :agent-status (or status "unknown")))
+         (puthash pid cached (herdr-session-agents session)))
        (when cached
          (when status       (setf (herdr-agent-agent-status cached) status))
          (when ag-kind      (setf (herdr-agent-agent cached) ag-kind))
@@ -860,9 +1029,7 @@ it gone lets `herdr-model-apply-event' ignore a future replayed
 `pane_created' for it, instead of re-inserting a dead id that would
 reject the per-pane subscribe batch.  No-op if there is no live cache."
   (when-let* ((s (or session (herdr-model-cache))))
-    (puthash pane-id t (herdr-session-gone-panes s))
-    (remhash pane-id (herdr-session-panes s))
-    (remhash pane-id (herdr-session-agents s))))
+    (herdr-model--remove-pane-cascade s pane-id)))
 
 (defun herdr-model-remove-worktree (path &optional session)
   "Remove the worktree with PATH from the cache.

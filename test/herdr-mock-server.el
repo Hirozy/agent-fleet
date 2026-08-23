@@ -33,6 +33,7 @@
   panes                             ; hash pane_id -> pane-info plist (provisioned panes)
   worktrees                         ; hash workspace_id -> worktree plist (Phase 5 state)
   (pane-counter 0)                  ; monotonic mock pane id source
+  (workspace-counter 0)             ; monotonic mock workspace id source
   (worktree-counter 0))             ; monotonic mock worktree id source
 
 (defvar herdr-mock--seq 0
@@ -48,8 +49,13 @@ OPTS keys:
   :snapshot   plist snapshot for session.snapshot [a canned default]
   :pending-events  list of (KIND . DATA) pushed after a subscribe
 Returns a `herdr-mock--server'.  Use `herdr-mock-stop' to tear down."
-  (let* ((snapshot (or (plist-get opts :snapshot)
-                       (herdr-mock--default-snapshot)))
+  ;; Handlers mutate nested AgentInfo plists in place to model authoritative
+  ;; server state.  Copy the fixture (including vectors) so one mock instance
+  ;; cannot mutate a quoted default or a caller-owned snapshot and leak status
+  ;; into the next test.
+  (let* ((snapshot (copy-tree (or (plist-get opts :snapshot)
+                                  (herdr-mock--default-snapshot))
+                              t))
          (server (make-herdr-mock--server
                   :path path
                   :handlers (plist-get opts :handlers)
@@ -59,7 +65,8 @@ Returns a `herdr-mock--server'.  Use `herdr-mock-stop' to tear down."
                   :agents (make-hash-table :test 'equal)
                   :panes (make-hash-table :test 'equal)
                   :worktrees (make-hash-table :test 'equal)
-                  :pane-counter 0)))
+                  :pane-counter 0
+                  :workspace-counter 0)))
     ;; Seed the mutable agent list from the snapshot so `agent.list'
     ;; returns every agent — faithful to live Herdr, where agent.list
     ;; includes agents started outside this client (the snapshot agents),
@@ -163,7 +170,7 @@ place and truncate the stored list to its head on every call."
 
 (defun herdr-mock-set-snapshot (server snapshot)
   "Replace the canned snapshot."
-  (setf (herdr-mock--server-snapshot server) snapshot))
+  (setf (herdr-mock--server-snapshot server) (copy-tree snapshot t)))
 
 (defun herdr-mock-set-pending-events (server events)
   "Replace the pending events to push after the next subscribe.
@@ -173,11 +180,11 @@ EVENTS is a list of (KIND-STRING . DATA-PLIST)."
 
 ;;; --- Phase 2 agent state -------------------------------------------
 
-(defun herdr-mock--fresh-pane-id (server)
-  "Return a fresh mock pane id for SERVER, incrementing its counter."
+(defun herdr-mock--fresh-pane-id (server &optional workspace-id)
+  "Return a fresh mock pane id for SERVER in WORKSPACE-ID."
   (let ((n (1+ (herdr-mock--server-pane-counter server))))
     (setf (herdr-mock--server-pane-counter server) n)
-    (format "w1:pmock%d" n)))
+    (format "%s:pmock%d" (or workspace-id "w1") n)))
 
 (defun herdr-mock--agent-set (server pane-id info)
   "Store agent INFO (a plist) for PANE-ID on SERVER."
@@ -684,16 +691,18 @@ would) so the client's cache gains the pane and its per-pane status
 subscription is rebuilt.  Records the pane so `agent.start' can inherit
 its cwd (faithful to live Herdr, where an agent's cwd is the pane's cwd)."
   (let* ((server herdr-mock--current)
-         (pane-id (herdr-mock--fresh-pane-id server))
+         (ws-id (or (plist-get params :workspace_id) "w1"))
+         (pane-id (herdr-mock--fresh-pane-id server ws-id))
          (cwd (or (plist-get params :cwd) "/tmp"))
-         (info `(:pane_id ,pane-id :workspace_id "w1" :tab_id "w1:t1"
+         (info `(:pane_id ,pane-id :workspace_id ,ws-id
+                  :tab_id ,(format "%s:t1" ws-id)
                   :terminal_id ,(format "term_%s" pane-id)
                   :terminal_title "shell" :terminal_title_stripped "shell"
                   :cwd ,cwd :foreground_cwd ,cwd
                   :focused t :revision 0)))
     (puthash pane-id info (herdr-mock--server-panes server))
     (herdr-mock-push-event server "pane_created" `(:pane ,info))
-    info))
+    `(:type "pane_info" :pane ,info)))
 
 (defun herdr-mock--h-pane-close (params)
   "Mock pane.close: drop the pane + agent and push a pane_closed event.
@@ -716,16 +725,59 @@ it rather than being told it still exists."
       `(:pane_id "w1:p1" :workspace_id "w1" :tab_id "w1:t1"))))
 
 (defun herdr-mock--h-workspace-create (params)
-  "Mock workspace.create: return a fixed workspace id."
-  (let ((cwd (plist-get params :cwd)))
-    `(:workspace_id "w1" :label "mock" :cwd ,(or cwd "/tmp"))))
-
-(defun herdr-mock--h-tab-create (_params)
-  "Mock tab.create: allocate a fresh pane id in a new tab."
+  "Mock workspace.create with workspace/tab/root-pane typed payload."
   (let* ((server herdr-mock--current)
-         (pane-id (herdr-mock--fresh-pane-id server)))
-    `(:pane_id ,pane-id :workspace_id "w1" :tab_id "w1:t1"
-      :terminal_id ,(format "term_%s" pane-id))))
+         (cwd (or (plist-get params :cwd) "/tmp"))
+         (n (1+ (herdr-mock--server-workspace-counter server)))
+         (ws-id (format "wmock%d" n))
+         (tab-id (format "%s:t1" ws-id))
+         (pane-id (herdr-mock--fresh-pane-id server ws-id))
+         (workspace `(:workspace_id ,ws-id :label "mock" :number 2
+                       :focused ,(plist-get params :focus)
+                       :active_tab_id ,tab-id :tab_count 1 :pane_count 1
+                       :agent_status "idle"))
+         (tab `(:tab_id ,tab-id :workspace_id ,ws-id :label "1" :number 1
+                :focused t :pane_count 1 :agent_status "idle"))
+         (pane `(:pane_id ,pane-id :workspace_id ,ws-id :tab_id ,tab-id
+                 :terminal_id ,(format "term_%s" pane-id)
+                 :cwd ,cwd :foreground_cwd ,cwd :focused t :revision 0
+                 :agent_status "idle")))
+    (setf (herdr-mock--server-workspace-counter server) n)
+    (puthash pane-id pane (herdr-mock--server-panes server))
+    `(:type "workspace_created" :workspace ,workspace
+      :tab ,tab :root_pane ,pane)))
+
+(defun herdr-mock--h-workspace-close (params)
+  "Mock workspace.close: remove its panes/agents and push the close event."
+  (let* ((server herdr-mock--current)
+         (ws-id (plist-get params :workspace_id))
+         pane-ids)
+    (maphash (lambda (pane-id pane)
+               (when (equal ws-id (plist-get pane :workspace_id))
+                 (push pane-id pane-ids)))
+             (herdr-mock--server-panes server))
+    (dolist (pane-id pane-ids)
+      (remhash pane-id (herdr-mock--server-panes server))
+      (herdr-mock--agent-del server pane-id))
+    (herdr-mock-push-event server "workspace_closed"
+                           `(:workspace_id ,ws-id :workspace nil))
+    `(:type "workspace_closed" :workspace_id ,ws-id :workspace nil)))
+
+(defun herdr-mock--h-tab-create (params)
+  "Mock tab.create with the live `tab_created' response envelope."
+  (let* ((server herdr-mock--current)
+         (ws-id (or (plist-get params :workspace_id) "w1"))
+         (pane-id (herdr-mock--fresh-pane-id server ws-id))
+         (tab-id (format "%s:tmock" ws-id))
+         (pane `(:pane_id ,pane-id :workspace_id ,ws-id :tab_id ,tab-id
+                 :terminal_id ,(format "term_%s" pane-id)
+                 :cwd ,(or (plist-get params :cwd) "/tmp")
+                 :agent_status "idle")))
+    (puthash pane-id pane (herdr-mock--server-panes server))
+    `(:type "tab_created"
+      :tab (:tab_id ,tab-id :workspace_id ,ws-id :label "mock"
+            :pane_count 1 :agent_status "idle")
+      :root_pane ,pane)))
 
 ;;; --- Phase 5 worktree handlers -------------------------------------
 ;;
@@ -849,6 +901,7 @@ Install with `herdr-mock-set-agent-handlers'."
     ("pane.send_input" . ,(lambda (_params) `(:ok t)))
     ("pane.send_keys"  . ,(lambda (_params) `(:ok t)))
     ("workspace.create" . herdr-mock--h-workspace-create)
+    ("workspace.close"  . herdr-mock--h-workspace-close)
     ("tab.create"       . herdr-mock--h-tab-create)
     ("worktree.create"  . herdr-mock--h-worktree-create)
     ("worktree.open"    . herdr-mock--h-worktree-open)

@@ -44,8 +44,9 @@
 ;;   §46/§23  the status view shows worktree METADATA only (path/branch/
 ;;        repo); no pane output is ever persisted or mirrored.
 ;;
-;; This file requires `agent-fleet' one-way: `agent-fleet.el' does NOT
-;; require it, so there is no load cycle (mirrors `agent-fleet-project.el').
+;; The package entry point loads this feature module through the dashboard
+;; after providing `agent-fleet', so requiring the control feature below does
+;; not create a load cycle.
 
 ;;; Code:
 
@@ -72,6 +73,13 @@ User-initiated (never a timer; PLAN.md §25)."
          (source (plist-get res :source))
          (raw (let ((w (plist-get res :worktrees)))
                 (cond ((listp w) w) ((vectorp w) (append w nil)) (t nil))))
+         ;; An unscoped list is authoritative for the complete worktree set.
+         ;; Drop stale entries before upserting; a scoped repo query cannot
+         ;; safely remove entries belonging to other repos.
+         (_reconciled (when (and (or (null cwd) (string-empty-p cwd))
+                                  (herdr-model-cache))
+                        (clrhash (herdr-session-worktrees
+                                  (herdr-model-cache)))))
          (structs (delq nil (mapcar #'herdr-model-upsert-worktree raw))))
     (cons structs source)))
 
@@ -94,7 +102,7 @@ interactively, messages the count and paths."
     (when (called-interactively-p 'any)
       (cond
        ((null (herdr-model-cache))
-        (message "Not connected to Herdr; run M-x herdr-connect first"))
+        (message "Not connected to Herdr"))
        (structs
         (message "%d worktree(s): %s"
                  (length structs)
@@ -143,15 +151,10 @@ response lacks a workspace or root pane."
 
 (defun agent-fleet-worktree--workspace-choices ()
   "Return an alist (LABEL . WORKSPACE-ID) of worktree-hosting workspaces.
-Drawn from cached agents and cached worktrees, deduplicated by workspace
-id.  Used to complete `agent-fleet-worktree-remove'."
+Drawn from cached worktrees, deduplicated by workspace id.  Ordinary agent
+workspaces are deliberately excluded: `worktree.remove' is invalid for them."
   (let ((seen (make-hash-table :test 'equal))
         (choices nil))
-    (dolist (a (herdr-agents))
-      (when-let* ((ws-id (herdr-agent-workspace-id a)))
-        (unless (gethash ws-id seen)
-          (puthash ws-id t seen)
-          (push (cons (herdr-agent-display-name a) ws-id) choices))))
     (dolist (wt (herdr-model-worktrees))
       (when-let* ((ws-id (herdr-worktree-open-workspace-id wt)))
         (unless (gethash ws-id seen)
@@ -168,6 +171,7 @@ uncommitted changes.  The worktree is removed from the cache eagerly; the
 pushed `worktree_removed' event also removes it.  Returns the RPC result."
   (interactive
    (let* ((choices (agent-fleet-worktree--workspace-choices))
+          (_ (unless choices (user-error "No cached worktrees to remove")))
           (default (and choices (caar choices)))
           (sel (completing-read
                 (if default
@@ -284,9 +288,16 @@ Returns the number of worktrees removed."
   (let* ((done (cl-remove-if-not
                 (lambda (a) (eq 'done (agent-fleet-status a)))
                 (agent-fleet-list)))
-         (targets (cl-remove-if-not
-                   (lambda (a) (agent-fleet--worktree-for-agent a))
-                   done)))
+         (seen (make-hash-table :test 'equal))
+         (targets
+          (cl-remove-if-not
+           (lambda (a)
+             (when-let* ((wt (agent-fleet--worktree-for-agent a))
+                         (ws-id (herdr-worktree-open-workspace-id wt)))
+               (unless (gethash ws-id seen)
+                 (puthash ws-id t seen)
+                 t)))
+           done)))
     (if (null targets)
         (progn (message "No finished-agent worktrees to clean up") 0)
       (let ((n (length targets))

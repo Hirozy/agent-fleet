@@ -17,7 +17,7 @@
 ;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
 ;; GNU General Public License for more details.
 
-;; You file should have received a copy of the GNU General Public License
+;; You should have received a copy of the GNU General Public License
 ;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 ;;; Commentary:
@@ -54,9 +54,9 @@
 ;; viewing — the terminal buffer is transient, NOT persisted or continuously
 ;; mirrored (same boundary as `agent-fleet-show-output''s read-snapshot).
 ;;
-;; This file requires `agent-fleet' one-way; `agent-fleet.el' does NOT require
-;; it, so there is no load cycle (mirrors `agent-fleet-worktree.el' /
-;; `-magit.el' / `-parallel.el').  `agent-fleet-dashboard.el' requires it.
+;; This feature module requires the provided `agent-fleet' control feature;
+;; the package entry point loads it through `agent-fleet-dashboard' after
+;; providing that feature, so the dependency graph has no load cycle.
 
 ;;; Code:
 
@@ -72,7 +72,6 @@
 ;; `--ghostel-ready-p' tells a working ghostel from a lisp-only one.
 (declare-function eat-exec "eat" (buffer name command startfile switches))
 (declare-function eat-mode "eat" ())
-(declare-function eat-kill-process "eat" ())
 (declare-function ghostel-exec "ghostel" (buffer program &optional args))
 (declare-function vterm "vterm" (&optional arg))
 ;; Marked special (no value) so the byte-compiler treats a `let'-binding of
@@ -80,6 +79,14 @@
 ;; but is an optional dep that may not be loaded at byte-compile time.  The
 ;; vterm launch reads `vterm-shell' dynamically via `sh -c "exec <vterm-shell>"'.
 (defvar vterm-shell)
+;; Optional evil-escape dependency.  Its global pre-command hook consults
+;; this variable dynamically, so a buffer-local value can safely protect an
+;; attach terminal without loading evil-escape or changing the user's global
+;; configuration.
+(defvar evil-escape-inhibit nil)
+
+(defvar-local agent-fleet-attach-pane-id nil
+  "Pane id owned by the current attach terminal buffer.")
 
 
 ;;; --- Customizable backend + buffer naming ---------------------------
@@ -103,6 +110,22 @@ The buffer is named PREFIX<name>*; <name> is the agent's display name."
   :type 'string
   :group 'agent-fleet)
 
+(defcustom agent-fleet-attach-inhibit-evil-escape t
+  "Whether attach buffers inhibit `evil-escape' locally.
+`evil-escape' probes the first key of its escape sequence by running
+`self-insert-command' from `pre-command-hook'.  Terminal modes such as
+Ghostel forward that synthetic insertion to the PTY and then forward the
+real key command too, so a sequence beginning with `j' makes a plain `j'
+arrive twice.  A non-nil value prevents that input corruption in attach
+buffers only; the user's global Evil/evil-escape configuration is unchanged.
+
+While inhibited, the configured escape sequence is sent literally to the
+attached terminal.  Use the terminal backend's normal ESC/Evil integration
+when an escape is needed.  Set this to nil only when the installed terminal
+and evil-escape integration is known to avoid synthetic insertion."
+  :type 'boolean
+  :group 'agent-fleet)
+
 ;; Preference order for `auto' (PLAN §45.1: ghostel preferred; §79: eat as the
 ;; reliable Elisp fallback; vterm next; external the floor).
 (defconst agent-fleet-attach--backend-preference
@@ -123,15 +146,19 @@ take.  This lets auto fall through to eat rather than calling ghostel-exec
 when it would crash at runtime (the §45.1 module-dependency risk, realized
 in some dev envs)."
   (and (require 'ghostel nil t)
-       (featurep 'ghostel-module)))
+       (featurep 'ghostel-module)
+       (fboundp 'ghostel-exec)))
 
 (defun agent-fleet-attach--eat-ready-p ()
   "Return non-nil if Eat is loaded or loadable (pure Elisp, no module)."
-  (or (featurep 'eat) (require 'eat nil t)))
+  (and (or (featurep 'eat) (require 'eat nil t))
+       (fboundp 'eat-mode)
+       (fboundp 'eat-exec)))
 
 (defun agent-fleet-attach--vterm-ready-p ()
   "Return non-nil if vterm is loaded or loadable."
-  (or (featurep 'vterm) (require 'vterm nil t)))
+  (and (or (featurep 'vterm) (require 'vterm nil t))
+       (fboundp 'vterm)))
 
 (defun agent-fleet-attach--ready-p (backend)
   "Return non-nil if BACKEND is usable in this Emacs."
@@ -165,6 +192,21 @@ unavailable choice rather than silently substituting)."
   "Return the attach buffer name for agent display NAME (PLAN §73)."
   (concat agent-fleet-attach-buffer-prefix name "*"))
 
+(defun agent-fleet-attach--buffer-name-for-pane (name pane-id)
+  "Return a collision-safe attach buffer name for NAME and PANE-ID.
+Keep the documented `*agent:NAME*' name when it is unused or already
+belongs to PANE-ID.  If another pane owns it, add the stable pane id so two
+unnamed agents with the same workspace-derived display name cannot reuse
+each other's live terminal."
+  (let* ((base (agent-fleet-attach--buffer-name name))
+         (buf (get-buffer base))
+         (owner (and buf
+                     (buffer-local-value 'agent-fleet-attach-pane-id buf))))
+    (if (and buf (not (equal owner pane-id)))
+        (agent-fleet-attach--buffer-name
+         (format "%s [%s]" name pane-id))
+      base)))
+
 (defun agent-fleet-attach--argv (pane-id takeover)
   "Build the `herdr agent attach' argv for PANE-ID.
 TAKEOVER (non-nil) appends `--takeover'.  The leading `agent' and `attach'
@@ -173,14 +215,43 @@ the backend launch)."
   (append (list "agent" "attach" pane-id)
           (and takeover '("--takeover"))))
 
-(defun agent-fleet-attach--live-buffer-p (buf-name)
-  "Return non-nil if BUF-NAME is a live attach buffer (process alive).
-Reused instead of double-attaching an agent that already has an open session."
+(defun agent-fleet-attach--live-buffer-p (buf-name &optional pane-id)
+  "Return non-nil if BUF-NAME is a live attach buffer for PANE-ID.
+When PANE-ID is nil only process liveness is checked.  With PANE-ID, the
+buffer-local owner must match, preventing same-display-name agents from
+being cross-attached."
   (when-let* ((buf (get-buffer buf-name)))
     (with-current-buffer buf
       (let ((proc (get-buffer-process buf)))
-        (and proc (processp proc)
+        (and (or (null pane-id)
+                 (equal agent-fleet-attach-pane-id pane-id))
+             proc (processp proc)
              (memq (process-status proc) '(run stop open connect)))))))
+
+(defun agent-fleet-attach--live-buffer-for-pane (pane-id)
+  "Return the live attach buffer owned by PANE-ID, or nil.
+Attach buffer names are display labels and can change after an agent rename or
+when a same-label collision disappears.  The pane id is the stable identity,
+so scan buffer-local ownership before deriving a fresh name; otherwise a live
+disambiguated/old-name attach can be duplicated under a new base name."
+  (cl-find-if
+   (lambda (buffer)
+     (agent-fleet-attach--live-buffer-p (buffer-name buffer) pane-id))
+   (buffer-list)))
+
+(defun agent-fleet-attach--prepare-buffer (buffer &optional pane-id)
+  "Apply attach-specific input safeguards to BUFFER and return it.
+BUFFER may be a buffer or its name.  The terminal backend must initialize its
+major mode before this runs, because changing major mode clears buffer-local
+variables."
+  (when-let ((buf (get-buffer buffer)))
+    (with-current-buffer buf
+      (when pane-id
+        (setq-local agent-fleet-attach-pane-id pane-id))
+      (if agent-fleet-attach-inhibit-evil-escape
+          (setq-local evil-escape-inhibit t)
+        (kill-local-variable 'evil-escape-inhibit)))
+    buf))
 
 
 ;;; --- Spawn (backend dispatch) ---------------------------------------
@@ -197,6 +268,7 @@ agent (PLAN §79)."
        (with-current-buffer (get-buffer-create buf-name)
          (eat-mode)
          (eat-exec buf-name "herdr-attach" "herdr" nil argv))
+       (agent-fleet-attach--prepare-buffer buf-name pane-id)
        (pop-to-buffer buf-name))
       ('ghostel
        ;; Unlike the interactive `ghostel' entry point, `ghostel-exec'
@@ -205,6 +277,7 @@ agent (PLAN §79)."
        ;; BUF-NAME cannot surface as "No buffer named ...".
        (let ((buffer (get-buffer-create buf-name)))
          (ghostel-exec buffer "herdr" argv)
+         (agent-fleet-attach--prepare-buffer buffer pane-id)
          (pop-to-buffer buffer)))
       ('vterm
        ;; vterm has no argv launch API: it runs `vterm-shell' via
@@ -214,6 +287,7 @@ agent (PLAN §79)."
                            #'shell-quote-argument
                            (append '("herdr") argv) " ")))
          (vterm buf-name))
+       (agent-fleet-attach--prepare-buffer buf-name pane-id)
        (pop-to-buffer buf-name))
       ('external
        (user-error
@@ -250,10 +324,17 @@ available (set `agent-fleet-attach-backend' to `external' for the command text).
                              (list :agent target))))
          (pane-id (agent-fleet--resolve-pane-id struct))
          (name (herdr-agent-display-name struct))
-         (buf-name (agent-fleet-attach--buffer-name name))
+         (existing (agent-fleet-attach--live-buffer-for-pane pane-id))
+         (buf-name (if existing
+                       (buffer-name existing)
+                     (agent-fleet-attach--buffer-name-for-pane name pane-id)))
          (backend (agent-fleet-attach--pick-backend)))
-    (if (agent-fleet-attach--live-buffer-p buf-name)
-        (pop-to-buffer buf-name)
+    (if (agent-fleet-attach--live-buffer-p buf-name pane-id)
+        (progn
+          ;; Also repair attach buffers created before this safeguard was
+          ;; added, or buffers whose local value was changed after spawning.
+          (agent-fleet-attach--prepare-buffer buf-name pane-id)
+          (pop-to-buffer buf-name))
       (agent-fleet-attach--spawn backend buf-name pane-id takeover))))
 
 (provide 'agent-fleet-attach)

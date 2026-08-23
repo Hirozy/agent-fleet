@@ -70,6 +70,7 @@
     (agent-fleet-dashboard-refresh . agent-fleet-interactive-dashboard-refresh-and-filters)
     (agent-fleet-dashboard-toggle-project-filter . agent-fleet-interactive-dashboard-refresh-and-filters)
     (agent-fleet-dashboard-toggle-task-filter . agent-fleet-interactive-dashboard-refresh-and-filters)
+    (agent-fleet-dashboard-help . agent-fleet-interactive-dashboard-help)
     (agent-fleet-dashboard-inspect . agent-fleet-interactive-dashboard-row-actions)
     (agent-fleet-dashboard-prompt . agent-fleet-interactive-dashboard-row-actions)
     (agent-fleet-dashboard-interrupt . agent-fleet-interactive-dashboard-row-actions)
@@ -116,7 +117,7 @@ it yet."
            (when (agent-fleet-interactive-test--contains-interactive-p form)
              (push (cadr form) commands)))
           ((or 'define-derived-mode 'define-minor-mode
-               'define-globalized-minor-mode)
+               'define-globalized-minor-mode 'transient-define-prefix)
            (push (cadr form) commands)))))
     (sort (delete-dups commands)
           (lambda (a b) (string< (symbol-name a) (symbol-name b))))))
@@ -213,6 +214,10 @@ it yet."
                (lambda (conn)
                  (setf (herdr--connection-subscription-proc conn) 'sub)
                  'sub))
+              ((symbol-function 'herdr-protocol-subscription-alive-p)
+               (lambda (proc) (eq proc 'sub)))
+              ((symbol-function 'herdr--await-subscription)
+               (lambda (proc) (eq proc 'sub)))
               ((symbol-function 'herdr-protocol-unsubscribe)
                (lambda (proc) (setq unsubscribed proc))))
       (should (eq t (call-interactively #'herdr-connect)))
@@ -585,7 +590,7 @@ it yet."
               ((symbol-function 'agent-fleet-attach--pick-backend)
                (lambda () 'eat))
               ((symbol-function 'agent-fleet-attach--live-buffer-p)
-               (lambda (_) nil))
+               (lambda (_buffer &optional _pane-id) nil))
               ((symbol-function 'agent-fleet-attach--spawn)
                (lambda (&rest args) (setq captured args))))
       (let ((current-prefix-arg '(4)))
@@ -604,7 +609,8 @@ it yet."
         (buf-name agent-fleet-dashboard-buffer-name)
         popped)
     (unwind-protect
-        (cl-letf (((symbol-function 'pop-to-buffer)
+        (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+                  ((symbol-function 'pop-to-buffer)
                    (lambda (buffer &rest _) (setq popped buffer))))
           (let ((buffer (call-interactively #'agent-fleet)))
             (should (buffer-live-p buffer))
@@ -623,7 +629,8 @@ it yet."
     (with-temp-buffer
       (agent-fleet-mode)
       ;; The interactive `g' action fetches authoritative server state.
-      (cl-letf (((symbol-function 'agent-fleet-list)
+      (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+                ((symbol-function 'agent-fleet-list)
                  (lambda (&optional refresh) (setq fetched refresh) nil))
                 ((symbol-function 'agent-fleet-dashboard--set-entries) #'ignore)
                 ((symbol-function 'agent-fleet-dashboard--update-task-banner) #'ignore)
@@ -659,6 +666,14 @@ it yet."
           (call-interactively #'agent-fleet-dashboard-toggle-task-filter))
         (should-not agent-fleet-dashboard--task-filter)
         (should (= 4 refreshes))))))
+
+(ert-deftest agent-fleet-interactive-dashboard-help ()
+  "Dashboard help enters its transient through the interactive command."
+  (let (prefix)
+    (cl-letf (((symbol-function 'transient-setup)
+               (lambda (command &rest _) (setq prefix command))))
+      (call-interactively #'agent-fleet-dashboard-help))
+    (should (eq 'agent-fleet-dashboard-help prefix))))
 
 (ert-deftest agent-fleet-interactive-dashboard-row-actions ()
   "Every dashboard row command resolves point, reads input and delegates once."

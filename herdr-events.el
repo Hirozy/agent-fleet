@@ -106,7 +106,8 @@ Order: global subscriptions first, then one per-pane block per pane."
 ;; `herdr-model-apply-event' and `herdr--reconcile-panes' (herdr.el).
 
 (defconst herdr-events--rebuild-kinds
-  '("pane_created" "pane_closed" "pane_exited"
+  '("workspace_closed" "tab_closed"
+    "pane_created" "pane_closed" "pane_exited"
     "pane_moved" "pane_agent_detected")
   "Event kinds that change the pane set and so require resubscription.")
 
@@ -181,6 +182,17 @@ Returns the descriptor, or nil if there is no live cache to update."
           (:agent-status
            (run-hook-with-args 'herdr-event-agent-status-hook descriptor))
           (_ nil))
+        ;; A workspace/tab close can remove several agent panes without the
+        ;; server necessarily delivering separate pane_closed frames first.
+        ;; Fan those authoritative removals into the pane lifecycle bus so
+        ;; dashboards/tasks receive the same exit notifications.  Replayed
+        ;; close events carry no cached agents and are skipped.
+        (unless (plist-get descriptor :replayp)
+          (dolist (agent (plist-get descriptor :closed-agents))
+            (run-hook-with-args
+             'herdr-event-pane-hook
+             `(:event ,kind :what :pane-closed :id ,(herdr-agent-id agent)
+               :agentp t :replayp nil :agent ,agent))))
         descriptor))))
 
 
