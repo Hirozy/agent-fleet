@@ -114,23 +114,27 @@ disconnects."
     ;; Always tear down any prior connection (even a half-connected one
     ;; with a pending reconnect timer) before building a new one.
     (herdr-disconnect))
-  (let* ((path (or socket-path (herdr-protocol-socket-path)))
-         (pong (herdr-protocol-ping))
-         (proto (plist-get pong :protocol))
-         (caps (plist-get pong :capabilities))
-         (ver (plist-get pong :version)))
-    (herdr--check-protocol proto)
-    (let* ((snap (herdr-protocol-request "session.snapshot" nil))
-           (session (herdr-model-parse-snapshot snap)))
-      (herdr-model-set-cache session)
-      (let ((conn (make-herdr--connection
-                   :socket-path path :protocol proto
-                   :version ver :capabilities caps
-                   :connected t :reconnect-attempts 0)))
-        (setq herdr--conn conn)
-        (herdr--start-subscription conn)
-        (herdr--log 'info "connected to Herdr %s (protocol %s)" ver proto)
-        t))))
+  (let ((path (or socket-path (herdr-protocol-socket-path))))
+    ;; Every transport primitive discovers its socket through the dynamically
+    ;; scoped `herdr-socket-path'.  Bind the resolved override for the complete
+    ;; bootstrap, then persist it on CONN for requests and reconnects.
+    (let* ((herdr-socket-path path)
+           (pong (herdr-protocol-ping))
+           (proto (plist-get pong :protocol))
+           (caps (plist-get pong :capabilities))
+           (ver (plist-get pong :version)))
+      (herdr--check-protocol proto)
+      (let* ((snap (herdr-protocol-request "session.snapshot" nil))
+             (session (herdr-model-parse-snapshot snap)))
+        (herdr-model-set-cache session)
+        (let ((conn (make-herdr--connection
+                     :socket-path path :protocol proto
+                     :version ver :capabilities caps
+                     :connected t :reconnect-attempts 0)))
+          (setq herdr--conn conn)
+          (herdr--start-subscription conn)
+          (herdr--log 'info "connected to Herdr %s (protocol %s)" ver proto)
+          t)))))
 
 (defun herdr--check-protocol (server-protocol)
   "Signal `herdr-protocol-error' if SERVER-PROTOCOL is too old."
@@ -149,7 +153,9 @@ could not be opened)."
   (let ((old (herdr--connection-subscription-proc conn)))
     (when (herdr-protocol-subscription-alive-p old)
       (herdr-protocol-unsubscribe old)))
-  (let ((subs (herdr-events-subscriptions-for (herdr-model-cache))))
+  (let ((herdr-socket-path (or (herdr--connection-socket-path conn)
+                               herdr-socket-path))
+        (subs (herdr-events-subscriptions-for (herdr-model-cache))))
     (let ((proc (herdr-protocol-subscribe
                  subs
                  #'herdr--on-event
@@ -176,7 +182,11 @@ RPC failures are swallowed: the caller subscribes with the cache as-is,
 and if a stale id still rejects the batch, the subscription-loss path
 schedules a reconnect that retries with a fresh snapshot."
   (ignore-errors
-    (let ((live (make-hash-table :test 'equal)))
+    (let ((herdr-socket-path
+           (or (and herdr--conn
+                    (herdr--connection-socket-path herdr--conn))
+               herdr-socket-path))
+          (live (make-hash-table :test 'equal)))
       (dolist (pn (plist-get (herdr-protocol-request "pane.list" nil) :panes))
         (when-let* ((id (plist-get pn :pane_id)))
           (puthash id t live)))
@@ -223,10 +233,9 @@ real Herdr)."
           (herdr-protocol-unsubscribe old)))
       (herdr--reconcile-panes)
       (herdr--log 'debug "resubscribing (pane set changed)")
-      (let ((proc (herdr-protocol-subscribe
-                   (herdr-events-subscriptions-for (herdr-model-cache))
-                   #'herdr--on-event
-                   #'herdr--on-subscription-lost)))
+      ;; Reuse the connection helper so an explicit socket override remains
+      ;; in force after pane-set changes as well as after full reconnects.
+      (let ((proc (herdr--start-subscription conn)))
         (setf (herdr--connection-subscription-proc conn) proc)))))
 
 (defun herdr--on-subscription-lost (errdata)
@@ -277,7 +286,9 @@ server still reaches `herdr-reconnect-max-attempts' and gives up."
   (let ((conn herdr--conn))
     (when conn
       (condition-case err
-          (progn
+          (let ((herdr-socket-path
+                 (or (herdr--connection-socket-path conn)
+                     herdr-socket-path)))
             (let ((pong (herdr-protocol-ping)))
               (herdr--check-protocol (plist-get pong :protocol))
               (setf (herdr--connection-protocol conn) (plist-get pong :protocol))
@@ -342,24 +353,36 @@ server still reaches `herdr-reconnect-max-attempts' and gives up."
 This does not require an active `herdr-connect' session: it opens a
 fresh connection to the socket, sends METHOD with PARAMS, and returns
 the result.  Signals `herdr-error' conditions on failure."
-  (herdr-protocol-request method params :timeout timeout))
+  (let ((herdr-socket-path
+         (or (and herdr--conn
+                  (herdr--connection-socket-path herdr--conn))
+             herdr-socket-path)))
+    (herdr-protocol-request method params :timeout timeout)))
 
 ;;;###autoload
 (cl-defun herdr-request-async (method params callback &key (timeout herdr-protocol-request-timeout))
   "Send a one-shot Herdr request asynchronously.
 CALLBACK is called as (CALLBACK RESULT) on success or
 \(CALLBACK error ERRDATA) on failure."
-  (herdr-protocol-request-async method params callback :timeout timeout))
+  (let ((herdr-socket-path
+         (or (and herdr--conn
+                  (herdr--connection-socket-path herdr--conn))
+             herdr-socket-path)))
+    (herdr-protocol-request-async method params callback :timeout timeout)))
 
 (defun herdr-ping ()
   "Ping Herdr and return the pong result plist."
-  (herdr-protocol-ping))
+  (let ((herdr-socket-path
+         (or (and herdr--conn
+                  (herdr--connection-socket-path herdr--conn))
+             herdr-socket-path)))
+    (herdr-protocol-ping)))
 
 (defun herdr-snapshot ()
   "Request a fresh `session.snapshot' and return the result plist.
 Note: this returns the raw result; it does NOT replace the live cache.
 Use `herdr-connect' to (re)bootstrap the cache from a snapshot."
-  (herdr-protocol-request "session.snapshot" nil))
+  (herdr-request "session.snapshot" nil))
 
 ;;;###autoload
 (defun herdr-subscribe (subscriptions event-callback &optional error-callback)
@@ -367,7 +390,11 @@ Use `herdr-connect' to (re)bootstrap the cache from a snapshot."
 This is separate from the fleet-managed subscription opened by
 `herdr-connect'; use it for ad-hoc observation.  Returns the process.
 Manage its lifetime with `herdr-protocol-unsubscribe'."
-  (herdr-protocol-subscribe subscriptions event-callback error-callback))
+  (let ((herdr-socket-path
+         (or (and herdr--conn
+                  (herdr--connection-socket-path herdr--conn))
+             herdr-socket-path)))
+    (herdr-protocol-subscribe subscriptions event-callback error-callback)))
 
 
 ;;; --- Cache accessors (delegating to herdr-model) ------------------

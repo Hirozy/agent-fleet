@@ -67,6 +67,70 @@ check mere occurrence."
 
 ;;; --- Start ----------------------------------------------------------
 
+(ert-deftest agent-fleet-provision-pane-stays-in-requested-workspace ()
+  "A globally focused pane in another workspace is never split."
+  (let ((session (herdr-model-parse-snapshot
+                  '(:focused_workspace_id "w1" :focused_tab_id "w1:t1"
+                    :focused_pane_id "w1:p1"
+                    :workspaces ((:workspace_id "w1") (:workspace_id "w2"))
+                    :tabs ()
+                    :panes ((:pane_id "w1:p1" :workspace_id "w1"
+                             :tab_id "w1:t1" :terminal_id "t1"
+                             :focused t :revision 0 :agent_status "idle")
+                            (:pane_id "w2:p1" :workspace_id "w2"
+                             :tab_id "w2:t1" :terminal_id "t2"
+                             :focused :false :revision 0 :agent_status "idle"))
+                    :agents ()))))
+    (let ((herdr-model--cache session)
+          split-params)
+      (cl-letf (((symbol-function 'herdr-request)
+                 (lambda (method &optional params &rest _keys)
+                   (when (equal method "pane.split")
+                     (setq split-params params))
+                   '(:pane_id "w2:p2"))))
+        (should (equal "w2:p2"
+                       (agent-fleet--provision-pane "w2" "/repo" nil))))
+      (should (equal "w2"
+                     (alist-get "workspace_id" split-params nil nil #'equal)))
+      (should (equal "w2:p1"
+                     (alist-get "target_pane_id" split-params nil nil #'equal))))))
+
+(ert-deftest agent-fleet-long-rpcs-expand-transport-timeout ()
+  "Server timeout_ms is always shorter than the socket request timeout."
+  (let ((herdr-model--cache (herdr-model--empty-session))
+        calls)
+    (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+              ((symbol-function 'agent-fleet--resolve-target)
+               (lambda (_agent) "w1:p1"))
+              ((symbol-function 'herdr-request)
+               (lambda (method &optional _params &rest keys)
+                 (push (cons method (plist-get keys :timeout)) calls)
+                 '(:type "agent_info"
+                   :agent (:pane_id "w1:p1" :workspace_id "w1"
+                           :agent "claude" :agent_status "done")))))
+      (agent-fleet-prompt-and-wait "w1:p1" "go" :timeout-ms 9000)
+      (agent-fleet-wait "w1:p1" nil :timeout-ms 11000))
+    (should (= 14.0 (cdr (assoc "agent.prompt" calls))))
+    (should (= 16.0 (cdr (assoc "agent.wait" calls))))))
+
+(ert-deftest agent-fleet-start-expands-transport-timeout ()
+  "agent.start keeps its socket alive beyond the server startup deadline."
+  (let ((herdr-model--cache (herdr-model--empty-session))
+        (agent-fleet-agent-started-hook nil)
+        captured-timeout)
+    (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+              ((symbol-function 'herdr-request)
+               (lambda (method &optional _params &rest keys)
+                 (when (equal method "agent.start")
+                   (setq captured-timeout (plist-get keys :timeout)))
+                 '(:type "agent_started"
+                   :agent (:pane_id "w1:p9" :workspace_id "w1"
+                           :name "slow" :agent "codex"
+                           :agent_status "idle")))))
+      (agent-fleet-start 'codex :name "slow" :workspace "w1"
+                         :pane "w1:p9" :timeout-ms 7000))
+    (should (= 12.0 captured-timeout))))
+
 (ert-deftest agent-fleet-start-provisions-and-caches ()
   "start provisions a pane, calls agent.start, caches the agent, fires the hook."
   (with-agent-fleet-mock path server

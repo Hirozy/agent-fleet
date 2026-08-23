@@ -59,6 +59,26 @@ The dashboard is in `*Agent Fleet*'.  Robust to sort order."
           (should (file-equal-p repo (agent-fleet-project-root-for-cwd sub))))
       (when (file-exists-p repo) (delete-directory repo t)))))
 
+(ert-deftest agent-fleet-project-root-groups-linked-worktrees ()
+  "A linked worktree and its source checkout resolve to one project root."
+  (let ((repo (agent-fleet-project-test--make-git-repo))
+        (worktree (make-temp-name (expand-file-name "af-linked-" temporary-file-directory))))
+    (unwind-protect
+        (progn
+          (should (eq 0 (process-file
+                         "git" nil nil nil "-C" repo
+                         "-c" "user.name=Agent Fleet Test"
+                         "-c" "user.email=agent-fleet@example.invalid"
+                         "commit" "--quiet" "--allow-empty" "-m" "initial")))
+          (should (eq 0 (process-file "git" nil nil nil "-C" repo
+                                     "worktree" "add" "--quiet" "--detach"
+                                     worktree "HEAD")))
+          (should (file-equal-p
+                   (agent-fleet-project-root-for-cwd repo)
+                   (agent-fleet-project-root-for-cwd worktree))))
+      (when (file-exists-p worktree) (delete-directory worktree t))
+      (when (file-exists-p repo) (delete-directory repo t)))))
+
 (ert-deftest agent-fleet-project-root-for-cwd-non-git ()
   "A plain temp dir with no .git has no project root."
   (let ((dir (make-temp-file "af-nogit-" t)))

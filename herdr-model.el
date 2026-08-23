@@ -438,12 +438,14 @@ DATA is the decoded event payload plist.  Returns a descriptor plist
        ;; A move may change the workspace-qualified pane id; drop the
        ;; stale entries from BOTH the panes and agents tables so we do
        ;; not leave an orphaned agent keyed by the old id.
-       (when prev
-         (remhash prev (herdr-session-panes session))
-         (remhash prev (herdr-session-agents session)))
-       (herdr-model--upsert-pane session pn)
-       (herdr-model--maybe-upsert-agent-from-pane session pn)
-       `(:event ,kind :what :pane-updated :id ,id)))
+       (let ((previous-agent
+              (and prev (herdr-model-find-agent session prev))))
+         (when prev
+           (remhash prev (herdr-session-panes session))
+           (remhash prev (herdr-session-agents session)))
+         (herdr-model--upsert-pane session pn)
+         (herdr-model--maybe-upsert-agent-from-pane session pn previous-agent)
+         `(:event ,kind :what :pane-updated :id ,id))))
     ((or "pane_closed" "pane_exited")
      (let ((pid (plist-get data :pane_id)))
        (remhash pid (herdr-session-panes session))
@@ -587,7 +589,7 @@ Keyed by `path'.  No-op if WT has no `:path'."
     (puthash id (herdr-model--parse-pane pn)
              (herdr-session-panes session))))
 
-(defun herdr-model--maybe-upsert-agent-from-pane (session pn)
+(defun herdr-model--maybe-upsert-agent-from-pane (session pn &optional previous-agent)
   "Reconcile SESSION.agents with the agent field of pane plist PN.
 PN is the `:pane' payload of a `pane_created'/`pane_updated'/`pane_moved'
 event (a PaneInfo).  The `:agent' field is `str|null', but an event may
@@ -606,8 +608,22 @@ remhash unconditionally) or a later event carrying `:agent' nil."
   (when-let* ((id (plist-get pn :pane_id)))
     (if (plist-member pn :agent)
         (if (plist-get pn :agent)
-            (puthash id (herdr-model--parse-agent pn)
-                     (herdr-session-agents session))
+            (let* ((old (or (gethash id (herdr-session-agents session))
+                            previous-agent))
+                   (new (herdr-model--parse-agent pn)))
+              ;; PaneInfo does not contain AgentInfo-only identity/lifecycle
+              ;; fields.  Preserve them across pane.updated and pane.moved;
+              ;; replacing the struct wholesale used to erase the live agent
+              ;; name after an ordinary cwd/title/focus update.
+              (when old
+                (setf (herdr-agent-name new) (herdr-agent-name old)
+                      (herdr-agent-state-change-seq new)
+                      (herdr-agent-state-change-seq old)
+                      (herdr-agent-interactive-ready new)
+                      (herdr-agent-interactive-ready old)
+                      (herdr-agent-launch-pending new)
+                      (herdr-agent-launch-pending old)))
+              (puthash id new (herdr-session-agents session)))
           (remhash id (herdr-session-agents session)))
       ;; No :agent key: a partial pane delta — preserve the cached agent.
       nil)))
