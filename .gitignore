@@ -7,3 +7,4 @@
 /test/fixtures/*.elc
 /coverage/
 /.projectile-cache.eld
+/PLAN.md
