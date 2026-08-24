@@ -90,7 +90,12 @@ gate keeps child-frame creation safe when the file is loaded outside the
 package manager or the package requirement changes independently later.")
 
 (defcustom agent-fleet-dashboard-display 'buffer
-  "How `agent-fleet' should display its dashboard.
+  "How the `agent-fleet' command displays its dashboard.
+
+This variable is the sole specifier of how `M-x agent-fleet' presents the
+dashboard; the one-shot `agent-fleet-dashboard-open-buffer',
+`-open-child-frame', and `-open-frame' commands override it per
+invocation.
 
 `buffer' uses an ordinary Emacs window.  `child-frame' uses Emacs's native
 child-frame support when the selected frame is graphical, the running Emacs
@@ -162,10 +167,10 @@ buffer backends are unaffected."
   :type 'integer
   :group 'agent-fleet)
 
-(defcustom agent-fleet-dashboard-child-frame-max-height 40
+(defcustom agent-fleet-dashboard-child-frame-max-height 24
   "Maximum child-frame dashboard height in lines when fit-height is on.
-Caps growth from many parallel agents so the dashboard cannot exceed the
-parent frame."
+Caps growth so the child frame does not cover too much of the parent
+frame's content."
   :type 'integer
   :group 'agent-fleet)
 
@@ -934,15 +939,16 @@ happen inside each backend's own display function)."
     buffer))
 
 ;;;###autoload
-(defun agent-fleet (&optional display)
-  "Open the agent-fleet dashboard using DISPLAY.
+(defun agent-fleet ()
+  "Open the agent-fleet dashboard.
 
-DISPLAY defaults to `agent-fleet-dashboard-display'.  The dashboard lists
-every Herdr-managed agent, refreshes from the event bus, and connects
-according to `agent-fleet-auto-connect'."
+The display form is `agent-fleet-dashboard-display' and only that
+variable selects how this command presents the dashboard; for a one-shot
+override use `agent-fleet-dashboard-open-buffer', `-open-child-frame', or
+`-open-frame'.  The dashboard lists every Herdr-managed agent, refreshes
+from the event bus, and connects according to `agent-fleet-auto-connect'."
   (interactive)
-  (agent-fleet-dashboard--open
-   (or display agent-fleet-dashboard-display)))
+  (agent-fleet-dashboard--open agent-fleet-dashboard-display))
 
 ;;;###autoload
 (defun agent-fleet-dashboard-open-buffer ()
