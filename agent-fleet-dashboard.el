@@ -107,7 +107,7 @@ graphical frame.  Unsupported graphical modes fall back to `buffer'."
                  (const :tag "Standalone frame" frame))
   :group 'agent-fleet)
 
-(defcustom agent-fleet-dashboard-child-frame-parameters
+(defvar agent-fleet-dashboard--child-frame-parameters
   '((width . 0.48)
     (height . 0.55)
     (left . 0.5)
@@ -123,22 +123,18 @@ graphical frame.  Unsupported graphical modes fall back to `buffer'."
     (no-other-frame . t))
   "Frame parameters for the native child-frame dashboard.
 
-`parent-frame' and agent-fleet's private lifecycle parameters are supplied
-at display time and override entries with the same names in this alist."
-  :type '(alist :key-type symbol :value-type sexp)
-  :group 'agent-fleet)
+An internal default, not a user setting: `parent-frame' and agent-fleet's
+private lifecycle parameters are merged on top of it at display time.")
 
-(defcustom agent-fleet-dashboard-frame-parameters
+(defvar agent-fleet-dashboard--frame-parameters
   '((name . "Agent Fleet")
     (width . 92)
     (height . 26)
     (minibuffer . t))
   "Frame parameters for the standalone dashboard frame.
 
-Agent-fleet's private lifecycle parameters are supplied at display time and
-override entries with the same names in this alist."
-  :type '(alist :key-type symbol :value-type sexp)
-  :group 'agent-fleet)
+An internal default, not a user setting: agent-fleet's private lifecycle
+parameters are merged on top of it at display time.")
 
 (defvar agent-fleet-dashboard--standalone-frame nil
   "Live standalone dashboard frame, or nil.")
@@ -155,7 +151,7 @@ Clamped to `agent-fleet-dashboard-child-frame-min-height' and
 `agent-fleet-dashboard-child-frame-max-height'.
 
 Once enabled this overrides the fractional `height' of
-`agent-fleet-dashboard-child-frame-parameters' for the child-frame
+`agent-fleet-dashboard--child-frame-parameters' for the child-frame
 backend: the child no longer keeps its proportion of the parent on resize
 (`keep-ratio' is disregarded for height).  Standalone and ordinary
 buffer backends are unaffected."
@@ -781,7 +777,7 @@ frame) is its own parent."
                         (agent-fleet-dashboard-origin-frame . ,parent)))
              (parameters
               (agent-fleet-dashboard--merge-frame-parameters
-               agent-fleet-dashboard-child-frame-parameters private)))
+               agent-fleet-dashboard--child-frame-parameters private)))
         (condition-case err
             (if-let ((window
                       (display-buffer
@@ -833,7 +829,7 @@ server fetch), so a status-only event recomputes the same height and
                       (agent-fleet-dashboard-origin-frame . ,origin)))
            (parameters
             (agent-fleet-dashboard--merge-frame-parameters
-             agent-fleet-dashboard-frame-parameters private)))
+             agent-fleet-dashboard--frame-parameters private)))
       (condition-case err
           (let ((frame
                  (if (frame-live-p agent-fleet-dashboard--standalone-frame)
