@@ -67,6 +67,10 @@
     (agent-fleet-attach . agent-fleet-interactive-attach)
     (agent-fleet-mode . agent-fleet-interactive-dashboard-entry-and-mode)
     (agent-fleet . agent-fleet-interactive-dashboard-entry-and-mode)
+    (agent-fleet-dashboard-open-buffer . agent-fleet-interactive-dashboard-display-backends)
+    (agent-fleet-dashboard-open-child-frame . agent-fleet-interactive-dashboard-display-backends)
+    (agent-fleet-dashboard-open-frame . agent-fleet-interactive-dashboard-display-backends)
+    (agent-fleet-dashboard-quit . agent-fleet-interactive-dashboard-display-backends)
     (agent-fleet-dashboard-refresh . agent-fleet-interactive-dashboard-refresh-and-filters)
     (agent-fleet-dashboard-toggle-project-filter . agent-fleet-interactive-dashboard-refresh-and-filters)
     (agent-fleet-dashboard-toggle-task-filter . agent-fleet-interactive-dashboard-refresh-and-filters)
@@ -618,6 +622,22 @@ it yet."
             (with-current-buffer buffer
               (should (derived-mode-p 'agent-fleet-mode)))))
       (when (get-buffer buf-name) (kill-buffer buf-name)))))
+
+(ert-deftest agent-fleet-interactive-dashboard-display-backends ()
+  "Explicit display commands select their backend and q quits its window."
+  (let (opened quit)
+    (cl-letf (((symbol-function 'agent-fleet-dashboard--open)
+               (lambda (display) (push display opened)))
+              ((symbol-function 'selected-frame) (lambda () 'ordinary))
+              ((symbol-function 'frame-parameter) (lambda (&rest _) nil))
+              ((symbol-function 'quit-window)
+               (lambda (&rest _) (setq quit t))))
+      (call-interactively #'agent-fleet-dashboard-open-buffer)
+      (call-interactively #'agent-fleet-dashboard-open-child-frame)
+      (call-interactively #'agent-fleet-dashboard-open-frame)
+      (call-interactively #'agent-fleet-dashboard-quit))
+    (should (equal '(frame child-frame buffer) opened))
+    (should quit)))
 
 (ert-deftest agent-fleet-interactive-dashboard-refresh-and-filters ()
   "Dashboard g fetches server state; project/task filters set and prefix-clear."
