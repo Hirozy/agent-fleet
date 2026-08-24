@@ -138,6 +138,37 @@ override entries with the same names in this alist."
 (defvar agent-fleet-dashboard--standalone-frame nil
   "Live standalone dashboard frame, or nil.")
 
+(defcustom agent-fleet-dashboard-child-frame-fit-height nil
+  "If non-nil, fit the child-frame dashboard height to the agent count.
+The frame is resized on each dashboard refresh (agent start/exit and
+status events, all event-driven -- no timer) so every row stays visible
+without scrolling.  Height depends on the agent count only, so a
+status-only change recomputes the same height and never resizes (no
+jitter); `set-frame-size' is also skipped when the count is unchanged.
+
+Clamped to `agent-fleet-dashboard-child-frame-min-height' and
+`agent-fleet-dashboard-child-frame-max-height'.
+
+Once enabled this overrides the fractional `height' of
+`agent-fleet-dashboard-child-frame-parameters' for the child-frame
+backend: the child no longer keeps its proportion of the parent on resize
+(`keep-ratio' is disregarded for height).  Standalone and ordinary
+buffer backends are unaffected."
+  :type 'boolean
+  :group 'agent-fleet)
+
+(defcustom agent-fleet-dashboard-child-frame-min-height 4
+  "Minimum child-frame dashboard height in lines when fit-height is on."
+  :type 'integer
+  :group 'agent-fleet)
+
+(defcustom agent-fleet-dashboard-child-frame-max-height 40
+  "Maximum child-frame dashboard height in lines when fit-height is on.
+Caps growth from many parallel agents so the dashboard cannot exceed the
+parent frame."
+  :type 'integer
+  :group 'agent-fleet)
+
 
 ;;; --- Faces (PLAN.md §28) --------------------------------------------
 
@@ -320,7 +351,9 @@ hooks fire (PLAN.md §25)."
     (agent-fleet-list t))
   (agent-fleet-dashboard--set-entries)
   (agent-fleet-dashboard--update-task-banner)
-  (tabulated-list-print t))
+  (tabulated-list-print t)
+  (when-let ((win (get-buffer-window (current-buffer) t)))
+    (agent-fleet-dashboard--fit-child-frame-height (window-frame win))))
 
 
 ;;; --- Row actions (PLAN.md §27) --------------------------------------
@@ -745,6 +778,7 @@ frame) is its own parent."
                   ;; Reused child frames also receive current lifecycle data.
                   (modify-frame-parameters child private)
                   (select-frame-set-input-focus child)
+                  (agent-fleet-dashboard--fit-child-frame-height child)
                   buffer)
               (agent-fleet-dashboard--fallback-to-buffer
                buffer "Emacs could not create a child frame"))
@@ -752,6 +786,24 @@ frame) is its own parent."
            (agent-fleet-dashboard--fallback-to-buffer
             buffer (format "child-frame creation failed: %s"
                            (error-message-string err)))))))))
+
+(defun agent-fleet-dashboard--fit-child-frame-height (frame)
+  "Resize the child-frame dashboard FRAME to fit the agent row count.
+No-op unless `agent-fleet-dashboard-child-frame-fit-height' is enabled
+and FRAME is a live child-frame dashboard.  The height is a function of
+the cached agent count only (PLAN.md §25: read the post-event cache, no
+server fetch), so a status-only event recomputes the same height and
+`set-frame-size' is skipped when the line count is unchanged."
+  (when (and agent-fleet-dashboard-child-frame-fit-height
+             (frame-live-p frame)
+             (eq (frame-parameter frame 'agent-fleet-dashboard-display)
+                 'child-frame))
+    (let* ((n (length (agent-fleet-list)))
+           (lines (max agent-fleet-dashboard-child-frame-min-height
+                       (min (+ n 3)            ; header + rows + slack
+                            agent-fleet-dashboard-child-frame-max-height))))
+      (unless (= lines (frame-height frame))
+        (set-frame-size frame (frame-width frame) lines)))))
 
 (defun agent-fleet-dashboard--display-in-frame (buffer)
   "Display dashboard BUFFER in a reusable standalone graphical frame."
