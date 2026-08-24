@@ -105,9 +105,9 @@ Emacs's native child-frame support or a standalone graphical frame; set
 `agent-fleet-dashboard-display` accordingly (see
 [Configuration](#configuration)):
 
-- `buffer` (default): a regular window.
-- `child-frame`: a native child frame.
-- `frame`: a standalone operating-system window.
+- `'buffer` (default): a regular window.
+- `'child-frame`: a native child frame.
+- `'frame`: a standalone operating-system window.
 
 Native child-frame display requires Emacs 29.1 or newer, a graphical Emacs
 frame, and `display-buffer-in-child-frame`. If any requirement is unavailable,
@@ -256,8 +256,8 @@ backend's copy or scrollback mode before navigating the buffer.
 
 `agent-fleet-auto-connect` controls when Emacs connects to Herdr:
 
-- `on-demand` (default): connect before the first dashboard or control command.
-- `after-init`: also attempt a connection shortly after Emacs starts.
+- `'on-demand` (default): connect before the first dashboard or control command.
+- `'after-init`: also attempt a connection shortly after Emacs starts.
 - `nil`: require `M-x herdr-connect` explicitly.
 
 Automatic connection does not start or own the Herdr server. If the server is
@@ -286,31 +286,31 @@ groups; set them with `setq` or <kbd>M-x customize-group RET agent-fleet</kbd>.
 | `herdr-reconnect-max-attempts` | `12` | Maximum reconnection attempts before giving up |
 | `herdr-reconnect-delay` | `2.0` | Base delay in seconds between reconnection attempts |
 | `herdr-reconnect-max-delay` | `60.0` | Cap in seconds on the reconnection backoff |
-| `herdr-log-level` | `warn` | Logging verbosity: `error`, `warn`, `info`, `debug`, `trace` (trace records full frames; terminal output may contain secrets) |
+| `herdr-log-level` | `'warn` | Logging verbosity: `'error`, `'warn`, `'info`, `'debug`, `'trace` (trace records full frames; terminal output may contain secrets) |
 | `herdr-log-buffer` | `*herdr-log*` | Name of the Herdr log buffer |
 
 ### Agent control
 
 | Option | Default | Meaning |
 |---|---|---|
-| `agent-fleet-auto-connect` | `on-demand` | When to connect: `nil` (manual), `on-demand`, or `after-init` |
+| `agent-fleet-auto-connect` | `'on-demand` | When to connect: `nil` (manual), `'on-demand`, or `'after-init` |
 | `agent-fleet-auto-connect-delay` | `1.0` | Idle seconds before an `after-init` connection |
 | `agent-fleet-agent-executables` | claude/codex/pi | Known agent kinds and their CLI executables; used by `agent-fleet-doctor` and kind completion |
-| `agent-fleet-default-read-source` | `recent_unwrapped` | Default `agent.read` source: `visible`, `recent`, `recent_unwrapped`, or `detection` |
+| `agent-fleet-default-read-source` | `'recent_unwrapped` | Default `agent.read` source: `'visible`, `'recent`, `'recent_unwrapped`, or `'detection` |
 | `agent-fleet-default-read-lines` | `120` | Default line count for reads and output snapshots |
-| `agent-fleet-default-read-format` | `text` | Default read format: `text` (ANSI stripped) or `ansi` |
+| `agent-fleet-default-read-format` | `'text` | Default read format: `'text` (ANSI stripped) or `'ansi` |
 | `agent-fleet-start-timeout-ms` | `30000` | Startup timeout in ms passed to `agent.start` (Herdr requires 3000–300000) |
 | `agent-fleet-wait-timeout-ms` | `120000` | Default timeout in ms for `agent-fleet-wait` and `-prompt-and-wait` |
-| `agent-fleet-default-wait-until` | `(done blocked)` | Default statuses `wait`/`prompt-and-wait` wait for |
+| `agent-fleet-default-wait-until` | `'(done blocked)` | Default statuses `wait`/`prompt-and-wait` wait for |
 | `agent-fleet-output-buffer-prefix` | `*Agent Output: ` | Prefix for output buffer names (buffer is `PREFIX<name>*`) |
 
 ### Dashboard
 
 | Option | Default | Meaning |
 |---|---|---|
-| `agent-fleet-notify-on` | `(blocked done)` | Agent statuses that trigger a notification; `nil` disables notifications |
+| `agent-fleet-notify-on` | `'(blocked done)` | Agent statuses that trigger a notification; `nil` disables notifications |
 | `agent-fleet-dashboard-buffer-name` | `*Agent Fleet*` | Name of the dashboard buffer |
-| `agent-fleet-dashboard-display` | `buffer` | Display backend: `buffer`, `child-frame`, or `frame` |
+| `agent-fleet-dashboard-display` | `'buffer` | Display backend: `'buffer`, `'child-frame`, or `'frame` |
 | `agent-fleet-dashboard-child-frame-parameters` | alist | Frame parameters for the native child-frame dashboard (size, centering, borders) |
 | `agent-fleet-dashboard-frame-parameters` | alist | Frame parameters for the standalone dashboard frame |
 | `agent-fleet-dashboard-child-frame-fit-height` | `nil` | When non-nil, fit the child-frame height to the agent count (event-driven, idempotent) |
@@ -322,7 +322,7 @@ groups; set them with `setq` or <kbd>M-x customize-group RET agent-fleet</kbd>.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `agent-fleet-attach-backend` | `auto` | Terminal backend: `auto` or `ghostel` |
+| `agent-fleet-attach-backend` | `'auto` | Terminal backend: `'auto` or `'ghostel` |
 | `agent-fleet-attach-buffer-prefix` | `*agent:` | Prefix for attach buffer names (buffer is `PREFIX<name>*`) |
 | `agent-fleet-attach-inhibit-evil-escape` | `t` | Inhibit `evil-escape` locally in attach buffers to avoid duplicated input |
 
