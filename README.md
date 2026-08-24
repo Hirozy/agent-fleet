@@ -18,7 +18,7 @@ interaction is needed.
 - `project.el` integration and per-agent Git worktree isolation.
 - Parallel tasks that run multiple agents in independent worktrees.
 - Magit status and diff commands for an agent's checkout.
-- Interactive terminal attach through Ghostel, Eat, or vterm.
+- Interactive terminal attach through Ghostel.
 - Event-driven state updates, notifications, reconnect, and snapshot recovery.
 
 ## Requirements
@@ -28,8 +28,8 @@ interaction is needed.
 - `transient` 0.7.2 or newer.
 - One or more supported agent CLIs, such as Claude Code, Codex, or Pi.
 - Magit for the optional status and diff integration.
-- Ghostel, Eat, or vterm for an interactive terminal inside Emacs (optional;
-  the core works without any of them installed).
+- Ghostel for an interactive terminal inside Emacs (optional; the core
+  works without it installed).
 
 The core client uses only Emacs built-in libraries. Magit and terminal backends
 are detected when their commands are used.
@@ -223,10 +223,10 @@ Press `a` on a dashboard row or run:
 M-x agent-fleet-attach
 ```
 
-The command runs `herdr agent attach <pane-id>` inside the first available
-backend in this order: Ghostel, Eat, then vterm. The attach buffer is named
-`*agent:NAME*` and is reused for the same pane. Killing the buffer or terminal
-process detaches from the PTY; it does not kill the agent or close its pane.
+The command runs `herdr agent attach <pane-id>` inside the Ghostel terminal
+backend. The attach buffer is named `*agent:NAME*` and is reused for the same
+pane. Killing the buffer or terminal process detaches from the PTY; it does
+not kill the agent or close its pane.
 
 Use a prefix argument to request terminal takeover:
 
@@ -322,7 +322,7 @@ groups; set them with `setq` or <kbd>M-x customize-group RET agent-fleet</kbd>.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `agent-fleet-attach-backend` | `auto` | Terminal backend: `auto`, `ghostel`, `eat`, or `vterm` |
+| `agent-fleet-attach-backend` | `auto` | Terminal backend: `auto` or `ghostel` |
 | `agent-fleet-attach-buffer-prefix` | `*agent:` | Prefix for attach buffer names (buffer is `PREFIX<name>*`) |
 | `agent-fleet-attach-inhibit-evil-escape` | `t` | Inhibit `evil-escape` locally in attach buffers to avoid duplicated input |
 

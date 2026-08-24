@@ -5,7 +5,7 @@
 ;; Phase 8 tests: the backend abstraction (readiness/preference/fallback
 ;; to a nil pick when no backend is ready), the §45.1 stale-module guard,
 ;; argv + buffer-name, target resolution, live-buffer reuse, the
-;; per-backend spawn dispatch, and the dashboard `a' key wiring.  Terminal backends (eat/ghostel/vterm)
+;; per-backend spawn dispatch, and the dashboard `a' key wiring.  ghostel
 ;; are NOT required — they are stubbed via `cl-letf', mirroring how
 ;; `agent-fleet-magit-test' stubs Magit (PLAN §45: optional deps).  Run:
 ;;   emacs -batch -L . -L test -l ert -l herdr -l agent-fleet \
@@ -24,19 +24,6 @@
 (require 'agent-fleet-dashboard)
 (require 'herdr-mock-server)
 (require 'agent-fleet-test)            ; harness: with-agent-fleet-mock, --pump
-
-;; vterm-shell is a defcustom in vterm.el (an optional dep NOT on the test
-;; load-path).  The vterm spawn test reads it dynamically: `--spawn' let-binds
-;; `vterm-shell' to the command string and the stubbed `vterm' must see that
-;; value, so the variable must be SPECIAL here.  A valueless `(defvar)'
-;; does not mark a variable special (and would not propagate from
-;; agent-fleet-attach.el's own declaration), so this test-local declaration
-;; gives it a nil value + specialness.  It never touches real vterm (the stub
-;; replaces `vterm'), so there is no clobbering risk; agent-fleet-attach.el
-;; itself keeps a valueless `(defvar vterm-shell)' to avoid clobbering vterm's
-;; defcustom when that package is loaded for real.
-(defvar vterm-shell nil)
-
 
 ;;; --- argv + buffer-name (pure core) ---------------------------------
 
@@ -67,7 +54,7 @@ the stale-module case (PLAN §45.1).  `module-load' sets the
 `require' is stubbed so ghostel \"loads\" while `featurep' returns nil
 (module not loaded) — ready-p must be nil.  (An earlier version probed a
 symbol `ghostel-make-term' that ghostel does not expose — it was always
-void, so `auto' ALWAYS fell to eat even with a working module; this test
+void, so `auto' always yielded no backend even with a working module; this test
 now pins the real guard.)"
   (let ((real-require (symbol-function 'require))
         (real-featurep (symbol-function 'featurep)))
@@ -115,41 +102,12 @@ non-nil — `auto' picks ghostel (native libghostty-vt, fastest)."
 ;;; --- Backend selection (auto preference + fallbacks) -----------------
 
 (ert-deftest agent-fleet-attach-auto-prefers-ghostel-when-ready ()
-  "With ghostel's module working AND eat available, `auto' prefers ghostel
+  "With ghostel's module working, `auto' picks ghostel
 (highest rendering fidelity, PLAN §45.1)."
   (let ((agent-fleet-attach-backend 'auto))
     (cl-letf (((symbol-function 'agent-fleet-attach--ghostel-ready-p)
-               (lambda () t))
-              ((symbol-function 'agent-fleet-attach--eat-ready-p)
-               (lambda () t))
-              ((symbol-function 'agent-fleet-attach--vterm-ready-p)
                (lambda () t)))
       (should (eq 'ghostel (agent-fleet-attach--pick-backend))))))
-
-(ert-deftest agent-fleet-attach-auto-falls-through-stale-ghostel-to-eat ()
-  "With ghostel's module stale (ready-p nil) but eat available, `auto'
-picks eat — graceful degradation (§45/§45.1; the stale-module risk realized
-in the dev env, here simulated by stubbing the predicate)."
-  (let ((agent-fleet-attach-backend 'auto))
-    (cl-letf (((symbol-function 'agent-fleet-attach--ghostel-ready-p)
-               (lambda () nil))
-              ((symbol-function 'agent-fleet-attach--eat-ready-p)
-               (lambda () t))
-              ((symbol-function 'agent-fleet-attach--vterm-ready-p)
-               (lambda () nil)))
-      (should (eq 'eat (agent-fleet-attach--pick-backend))))))
-
-(ert-deftest agent-fleet-attach-auto-falls-back-to-vterm ()
-  "With ghostel and eat unavailable, `auto' picks vterm (weakest fit, but
-available)."
-  (let ((agent-fleet-attach-backend 'auto))
-    (cl-letf (((symbol-function 'agent-fleet-attach--ghostel-ready-p)
-               (lambda () nil))
-              ((symbol-function 'agent-fleet-attach--eat-ready-p)
-               (lambda () nil))
-              ((symbol-function 'agent-fleet-attach--vterm-ready-p)
-               (lambda () t)))
-      (should (eq 'vterm (agent-fleet-attach--pick-backend))))))
 
 (ert-deftest agent-fleet-attach-auto-with-no-backend-reports-command ()
   "With no Emacs backend ready, `auto' picks nil and the attach command
@@ -168,10 +126,6 @@ run it in their own terminal (§44 path C)."
               ((symbol-function 'agent-fleet-attach--live-buffer-p)
                (lambda (_b _p) nil))
               ((symbol-function 'agent-fleet-attach--ghostel-ready-p)
-               (lambda () nil))
-              ((symbol-function 'agent-fleet-attach--eat-ready-p)
-               (lambda () nil))
-              ((symbol-function 'agent-fleet-attach--vterm-ready-p)
                (lambda () nil)))
       (should-not (agent-fleet-attach--pick-backend))
       (let ((err (should-error (agent-fleet-attach "x")
@@ -197,7 +151,7 @@ silently substituted (set `auto' for graceful fallback)."
 (ert-deftest agent-fleet-attach-resolves-target-and-spawns ()
   "`agent-fleet-attach' resolves a struct/name/symbol/pane-id to a real
 pane-id and dispatches `--spawn' with it.  `--spawn' is stubbed to capture
-the call; readiness is stubbed so `auto' resolves to eat.  No display side
+the call; readiness is stubbed so `auto' resolves to ghostel.  No display side
 effects (the real `--spawn' / `pop-to-buffer' never run)."
   (with-agent-fleet-mock path server
     (let ((agent (agent-fleet-start 'claude :name "arch")))
@@ -205,11 +159,7 @@ effects (the real `--spawn' / `pop-to-buffer' never run)."
       (let ((pid (herdr-agent-id agent))
             captured)
         (cl-letf (((symbol-function 'agent-fleet-attach--ghostel-ready-p)
-                   (lambda () nil))
-                  ((symbol-function 'agent-fleet-attach--eat-ready-p)
                    (lambda () t))
-                  ((symbol-function 'agent-fleet-attach--vterm-ready-p)
-                   (lambda () nil))
                   ((symbol-function 'agent-fleet-attach--spawn)
                    (lambda (backend buf-name pane-id takeover)
                      (push (list backend buf-name pane-id takeover)
@@ -220,7 +170,7 @@ effects (the real `--spawn' / `pop-to-buffer' never run)."
           (agent-fleet-attach pid))         ; by pane-id string
         (should (= 4 (length captured)))
         (dolist (call captured)
-          (should (eq 'eat (nth 0 call)))
+          (should (eq 'ghostel (nth 0 call)))
           (should (equal "*agent:arch*" (nth 1 call)))
           (should (equal pid (nth 2 call)))
           (should-not (nth 3 call)))))))    ; no takeover (no prefix arg)
@@ -246,7 +196,7 @@ effects in batch."
                 (start-process "fake-attach" buf-name "sleep" "30"))
               (should (agent-fleet-attach--live-buffer-p
                        buf-name (herdr-agent-id agent)))
-              (cl-letf (((symbol-function 'agent-fleet-attach--eat-ready-p)
+              (cl-letf (((symbol-function 'agent-fleet-attach--ghostel-ready-p)
                          (lambda () t))
                         ((symbol-function 'agent-fleet-attach--spawn)
                          (lambda (&rest _) (setq spawn-called t)))
@@ -283,7 +233,7 @@ effects in batch."
               (start-process "fake-attach-collision" base "sleep" "30"))
             (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
                       ((symbol-function 'agent-fleet-attach--pick-backend)
-                       (lambda () 'eat))
+                       (lambda () 'ghostel))
                       ((symbol-function 'agent-fleet-attach--spawn)
                        (lambda (_backend buffer pane-id _takeover)
                          (setq captured (list buffer pane-id)))))
@@ -317,7 +267,7 @@ effects in batch."
               (start-process "fake-attach-renamed" old-name "sleep" "30"))
             (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
                       ((symbol-function 'agent-fleet-attach--pick-backend)
-                       (lambda () 'eat))
+                       (lambda () 'ghostel))
                       ((symbol-function 'agent-fleet-attach--spawn)
                        (lambda (&rest _) (setq spawn-called t)))
                       ((symbol-function 'pop-to-buffer)
@@ -372,36 +322,6 @@ ordinary Evil editing buffers."
 
 ;;; --- Spawn dispatch (per backend, entry points stubbed) --------------
 
-(ert-deftest agent-fleet-attach-spawn-via-eat ()
-  "`--spawn' with the eat backend enables `eat-mode' then calls `eat-exec'
-with the buffer, the `herdr' program, and the attach argv.  `eat-mode' and
-`eat-exec' are stubbed so no real terminal/process is spawned."
-  (let ((eat-called nil)
-        (mode-called nil)
-        (pop-inhibited nil)
-        (buf-name "*agent:arch-eat*"))
-    (unwind-protect
-        (cl-letf (((symbol-function 'eat-mode)
-                   (lambda () (setq mode-called t)))
-                  ((symbol-function 'eat-exec)
-                   (lambda (buffer name command startfile switches)
-                     (push (list buffer name command startfile switches)
-                           eat-called)))
-                  ((symbol-function 'pop-to-buffer)
-                   (lambda (buffer &rest _)
-                     (setq pop-inhibited
-                           (buffer-local-value
-                            'evil-escape-inhibit (get-buffer buffer))))))
-          (agent-fleet-attach--spawn 'eat buf-name "w4:p1" nil))
-      (when (get-buffer buf-name) (kill-buffer buf-name)))
-    (should mode-called)
-    (should pop-inhibited)
-    (should (= 1 (length eat-called)))
-    (should (equal buf-name (nth 0 (car eat-called))))     ; buffer
-    (should (equal "herdr"     (nth 2 (car eat-called))))  ; command
-    (should (equal '("agent" "attach" "w4:p1")
-                   (nth 4 (car eat-called))))))            ; switches = argv
-
 (ert-deftest agent-fleet-attach-spawn-via-ghostel ()
   "`--spawn' creates Ghostel's buffer before calling `ghostel-exec'.
 The real `ghostel-exec' starts with `with-current-buffer' and therefore
@@ -432,42 +352,6 @@ both that precondition and the attach argv (TAKEOVER adds `--takeover')."
     (should (equal "herdr" (nth 3 (car ghostel-called))))
     (should (equal '("agent" "attach" "w4:p1" "--takeover")
                    (nth 4 (car ghostel-called))))))
-
-(ert-deftest agent-fleet-attach-spawn-via-vterm ()
-  "`--spawn' with vterm sets `vterm-shell' to the space-joined,
-shell-quoted command string and calls `vterm'.  vterm has no argv launch
-API: it runs `vterm-shell' via `sh -c \"exec <vterm-shell>\"', so the
-command+args are shell-quoted into one string (pane-ids have no spaces)."
-  (let ((buf-name "*agent:arch-vterm*")
-        vterm-shell-seen vterm-called pop-inhibited)
-    (unwind-protect
-        (cl-letf (((symbol-function 'vterm)
-                   (lambda (&optional buffer)
-                     (get-buffer-create buffer)
-                     (setq vterm-shell-seen vterm-shell
-                           vterm-called t)))
-                  ((symbol-function 'pop-to-buffer)
-                   (lambda (buffer &rest _)
-                     (setq pop-inhibited
-                           (buffer-local-value
-                            'evil-escape-inhibit (get-buffer buffer))))))
-          ;; `vterm-shell' is declared special in agent-fleet-attach.el, so
-          ;; this binding is dynamic and visible to the stubbed `vterm'.
-          (let ((vterm-shell "sentinel"))
-            (agent-fleet-attach--spawn 'vterm buf-name "w4:p1" nil)))
-      (when (get-buffer buf-name) (kill-buffer buf-name)))
-    (should vterm-called)
-    (should pop-inhibited)
-    (should (stringp vterm-shell-seen))
-    (should (string-match-p "herdr" vterm-shell-seen))
-    (should (string-match-p "agent" vterm-shell-seen))
-    (should (string-match-p "attach" vterm-shell-seen))
-    ;; pane-id shell-quoted by `shell-quote-argument' (the colon may be
-    ;; backslash-escaped or quote-wrapped depending on the platform; both
-    ;; are sh-safe), so match the pane id with an optional backslash before
-    ;; the colon.
-    (should (string-match-p "w4\\\\?:p1" vterm-shell-seen))
-    (should-not (string-match-p "sentinel" vterm-shell-seen))))
 
 
 ;;; --- Dashboard `a' key wiring ---------------------------------------
