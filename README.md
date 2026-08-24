@@ -279,7 +279,6 @@ groups; set them with `setq` or <kbd>M-x customize-group RET agent-fleet</kbd>.
 | Option | Default | Meaning |
 |---|---|---|
 | `herdr-socket-path` | `nil` | Herdr Unix socket path; `nil` auto-discovers from `HERDR_SOCKET_PATH`, `herdr status`, then `~/.config/herdr/herdr.sock` |
-| `herdr-required-protocol-version` | `19` | Minimum server protocol from `ping`; `nil` skips the check (client verified against protocol 20) |
 | `herdr-protocol-request-timeout` | `5.0` | Default timeout in seconds for a synchronous Herdr request |
 | `herdr-protocol-ping-timeout` | `3.0` | Timeout in seconds for a `ping` |
 | `herdr-subscription-start-timeout` | `3.0` | Seconds to wait for the `subscription_started` acknowledgement |
