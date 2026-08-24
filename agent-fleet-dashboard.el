@@ -31,8 +31,8 @@
 ;;   §25  event-driven; NO timer polling.  The buffer rebuilds only when an
 ;;        `agent-fleet-agent-{started,status-changed,exited}-hook' fires.
 ;;   §27  columns Project / Agent / Kind / State / Task; row keys
-;;        RET p o i k r g P T w d m a h (`a' = live attach, Phase 8/§73;
-;;        `h' = transient command help).
+;;        RET p o i k r g P T w d m a h q (`a' = live attach, Phase 8/§73;
+;;        `h' = transient command help; `q' closes the display container).
 ;;   §28  one face per status; blocked is the most prominent.
 ;;   §29  optional notifications on working→blocked / working→done, gated by
 ;;        `agent-fleet-notify-on'.
@@ -81,6 +81,62 @@ Set to nil to disable notifications entirely."
   "Name of the agent-fleet dashboard buffer."
   :type 'string
   :group 'agent-fleet)
+
+(defconst agent-fleet-dashboard-child-frame-minimum-emacs-version "29.1"
+  "Minimum Emacs version supported by the child-frame dashboard.
+
+The package itself requires this Emacs version, but the explicit feature
+gate keeps child-frame creation safe when the file is loaded outside the
+package manager or the package requirement changes independently later.")
+
+(defcustom agent-fleet-dashboard-display 'buffer
+  "How `agent-fleet' should display its dashboard.
+
+`buffer' uses an ordinary Emacs window.  `child-frame' uses Emacs's native
+child-frame support when the selected frame is graphical, the running Emacs
+is at least `agent-fleet-dashboard-child-frame-minimum-emacs-version', and
+`display-buffer-in-child-frame' is available.  `frame' uses a standalone
+graphical frame.  Unsupported graphical modes fall back to `buffer'."
+  :type '(choice (const :tag "Regular buffer" buffer)
+                 (const :tag "Native child frame" child-frame)
+                 (const :tag "Standalone frame" frame))
+  :group 'agent-fleet)
+
+(defcustom agent-fleet-dashboard-child-frame-parameters
+  '((width . 0.48)
+    (height . 0.55)
+    (left . 0.5)
+    (top . 0.5)
+    (keep-ratio . t)
+    (undecorated . t)
+    (minibuffer . nil)
+    (menu-bar-lines . 0)
+    (tool-bar-lines . 0)
+    (vertical-scroll-bars . nil)
+    (horizontal-scroll-bars . nil)
+    (child-frame-border-width . 1)
+    (no-other-frame . t))
+  "Frame parameters for the native child-frame dashboard.
+
+`parent-frame' and agent-fleet's private lifecycle parameters are supplied
+at display time and override entries with the same names in this alist."
+  :type '(alist :key-type symbol :value-type sexp)
+  :group 'agent-fleet)
+
+(defcustom agent-fleet-dashboard-frame-parameters
+  '((name . "Agent Fleet")
+    (width . 92)
+    (height . 26)
+    (minibuffer . t))
+  "Frame parameters for the standalone dashboard frame.
+
+Agent-fleet's private lifecycle parameters are supplied at display time and
+override entries with the same names in this alist."
+  :type '(alist :key-type symbol :value-type sexp)
+  :group 'agent-fleet)
+
+(defvar agent-fleet-dashboard--standalone-frame nil
+  "Live standalone dashboard frame, or nil.")
 
 
 ;;; --- Faces (PLAN.md §28) --------------------------------------------
@@ -274,6 +330,58 @@ hooks fire (PLAN.md §25)."
   (or (tabulated-list-get-id)
       (user-error "No agent on this line")))
 
+(defun agent-fleet-dashboard--origin-frame (&optional frame)
+  "Return FRAME's live non-dashboard origin frame, or nil.
+
+For child frames, the native parent is the origin.  Standalone dashboards
+store the frame from which they were opened."
+  (let* ((frame (or frame (selected-frame)))
+         (origin (or (frame-parameter
+                      frame 'agent-fleet-dashboard-origin-frame)
+                     (frame-parent frame))))
+    (and (frame-live-p origin) origin)))
+
+(defun agent-fleet-dashboard--select-origin-frame ()
+  "Select the current dashboard's origin frame when it is live."
+  (when-let ((origin (agent-fleet-dashboard--origin-frame)))
+    (unless (eq origin (selected-frame))
+      (select-frame-set-input-focus origin)))
+  (selected-frame))
+
+(defun agent-fleet-dashboard--visit-external-interface
+    (thunk &optional display-action)
+  "Run THUNK from the dashboard's origin frame.
+
+When called from a child dashboard, delete that child after THUNK returns a
+non-nil result, which indicates that the requested external interface was
+opened.  If THUNK errors or returns nil, keep the child and restore its focus.
+DISPLAY-ACTION, when non-nil, temporarily becomes
+`display-buffer-overriding-action'; attach uses this to replace the parent's
+current window.  Ordinary and standalone dashboards keep their existing
+lifecycle behavior."
+  (let* ((dashboard-frame (selected-frame))
+         (child-frame-p
+          (eq (frame-parameter dashboard-frame
+                               'agent-fleet-dashboard-display)
+              'child-frame)))
+    (agent-fleet-dashboard--select-origin-frame)
+    (condition-case err
+        (let ((result
+               (if display-action
+                   (let ((display-buffer-overriding-action display-action))
+                     (funcall thunk))
+                 (funcall thunk))))
+          (cond
+           ((and child-frame-p result (frame-live-p dashboard-frame))
+            (delete-frame dashboard-frame))
+           ((and child-frame-p (frame-live-p dashboard-frame))
+            (select-frame-set-input-focus dashboard-frame)))
+          result)
+      (error
+       (when (and child-frame-p (frame-live-p dashboard-frame))
+         (select-frame-set-input-focus dashboard-frame))
+       (signal (car err) (cdr err))))))
+
 ;;; --- Project filter (PLAN.md §69) -----------------------------------
 
 (defun agent-fleet-dashboard-toggle-project-filter (&optional arg)
@@ -349,20 +457,25 @@ is computed fresh each time by `agent-fleet-task-state'."
 Some actions (rename) update the cache without firing a status hook; a
 local reprint reflects them immediately.  Kill's exited-hook handles its
 own refresh, but reprinting is harmless and gives instant feedback."
-  (agent-fleet-dashboard-refresh))
+  (if-let ((buffer (get-buffer agent-fleet-dashboard-buffer-name)))
+      (with-current-buffer buffer
+        (agent-fleet-dashboard-refresh))
+    (agent-fleet-dashboard-refresh)))
 
 (defun agent-fleet-dashboard-inspect ()
   "Show the agent at point's output as a read snapshot (PLAN.md §23)."
   (interactive)
-  (agent-fleet-show-output (agent-fleet-dashboard--agent-at-point)))
+  (let ((pane-id (agent-fleet-dashboard--agent-at-point)))
+    (agent-fleet-dashboard--visit-external-interface
+     (lambda () (agent-fleet-show-output pane-id)))))
 
 (defun agent-fleet-dashboard-prompt ()
   "Prompt the agent at point (PLAN.md §18)."
   (interactive)
-  (let* ((pane-id (agent-fleet-dashboard--agent-at-point))
-         (text (read-string "Prompt: ")))
-    (unless (string-empty-p text)
-      (agent-fleet-prompt pane-id text))))
+  (let ((pane-id (agent-fleet-dashboard--agent-at-point)))
+    (let ((text (read-string "Prompt: ")))
+      (unless (string-empty-p text)
+        (agent-fleet-prompt pane-id text)))))
 
 (defun agent-fleet-dashboard-interrupt ()
   "Send Ctrl-C to the agent at point (PLAN.md §21)."
@@ -382,30 +495,36 @@ own refresh, but reprinting is harmless and gives instant feedback."
   (interactive)
   (let* ((pane-id (agent-fleet-dashboard--agent-at-point))
          (cur (let ((a (agent-fleet--find-agent pane-id)))
-                (or (and a (herdr-agent-display-name a)) pane-id)))
-         (name (read-string "New name: " cur)))
-    (unless (or (null name) (string-empty-p name))
-      (agent-fleet-rename pane-id name)
-      (agent-fleet-dashboard--after-row-change))))
+                (or (and a (herdr-agent-display-name a)) pane-id))))
+    (let ((name (read-string "New name: " cur)))
+      (unless (or (null name) (string-empty-p name))
+        (agent-fleet-rename pane-id name)
+        (agent-fleet-dashboard--after-row-change)))))
 
 (defun agent-fleet-dashboard-worktree ()
   "Show the worktree status for the agent at point (PLAN.md §34 `w').
 Displays the worktree path/branch/repo/metadata read-only (§46/§23: no
 pane output).  Delegates to `agent-fleet-worktree-status'."
   (interactive)
-  (agent-fleet-worktree-status (agent-fleet-dashboard--agent-at-point)))
+  (let ((pane-id (agent-fleet-dashboard--agent-at-point)))
+    (agent-fleet-dashboard--visit-external-interface
+     (lambda () (agent-fleet-worktree-status pane-id)))))
 
 (defun agent-fleet-dashboard-diff ()
   "Show the working-tree diff for the agent at point (PLAN.md §71 `d').
 Delegates to `agent-fleet-magit-diff' (Magit optional, PLAN §55)."
   (interactive)
-  (agent-fleet-magit-diff (agent-fleet-dashboard--agent-at-point)))
+  (let ((pane-id (agent-fleet-dashboard--agent-at-point)))
+    (agent-fleet-dashboard--visit-external-interface
+     (lambda () (agent-fleet-magit-diff pane-id)))))
 
 (defun agent-fleet-dashboard-magit ()
   "Open Magit status for the agent at point (PLAN.md §36/§71 `m').
 Delegates to `agent-fleet-magit-status' (Magit optional, PLAN §55)."
   (interactive)
-  (agent-fleet-magit-status (agent-fleet-dashboard--agent-at-point)))
+  (let ((pane-id (agent-fleet-dashboard--agent-at-point)))
+    (agent-fleet-dashboard--visit-external-interface
+     (lambda () (agent-fleet-magit-status pane-id)))))
 
 (defun agent-fleet-dashboard-attach ()
   "Attach live to the agent at point's terminal (PLAN.md §73 `a').
@@ -415,10 +534,18 @@ driven without leaving Emacs.  Unlike `o' (a read-only read-snapshot, §23),
 this is a live interactive session: the buffer is transient (not persisted
 or mirrored, §46/§23); killing the process detaches and the agent is
 preserved (§79).  A prefix arg passes `--takeover' to the attach CLI.
-Delegates to `agent-fleet-attach' (terminal backends optional, PLAN §45)."
+From a child dashboard, replace the parent frame's current window with the
+attach buffer and delete the child after attach succeeds.  Delegates to
+`agent-fleet-attach' (terminal backends optional, PLAN §45)."
   (interactive)
-  (agent-fleet-attach (agent-fleet-dashboard--agent-at-point)
-                      current-prefix-arg))
+  (let ((pane-id (agent-fleet-dashboard--agent-at-point))
+        (takeover current-prefix-arg))
+    ;; `agent-fleet-attach' ultimately calls `pop-to-buffer'.  Force it into
+    ;; the origin frame's selected window; the shared visitor then closes a
+    ;; child dashboard only after that interface opened successfully.
+    (agent-fleet-dashboard--visit-external-interface
+     (lambda () (agent-fleet-attach pane-id takeover))
+     '((display-buffer-same-window)))))
 
 
 ;;; --- Command help ---------------------------------------------------
@@ -441,7 +568,8 @@ Delegates to `agent-fleet-attach' (terminal backends optional, PLAN §45)."
     ("d" "Working-tree diff" agent-fleet-dashboard-diff)
     ("m" "Magit status" agent-fleet-dashboard-magit)]
    ["Session"
-    ("a" "Attach terminal" agent-fleet-dashboard-attach)]])
+    ("a" "Attach terminal" agent-fleet-dashboard-attach)
+    ("q" "Close dashboard" agent-fleet-dashboard-quit)]])
 
 (defconst agent-fleet-dashboard--bindings
   '(("RET" . agent-fleet-dashboard-inspect)
@@ -457,7 +585,8 @@ Delegates to `agent-fleet-attach' (terminal backends optional, PLAN §45)."
     ("d"   . agent-fleet-dashboard-diff)
     ("m"   . agent-fleet-dashboard-magit)
     ("a"   . agent-fleet-dashboard-attach)
-    ("h"   . agent-fleet-dashboard-help))
+    ("h"   . agent-fleet-dashboard-help)
+    ("q"   . agent-fleet-dashboard-quit))
   "Documented key bindings for `agent-fleet-mode'.")
 
 (defvaralias 'agent-fleet-dashboard-mode-map 'agent-fleet-mode-map
@@ -523,19 +652,201 @@ narrows the list to one parallel task's agents and shows that task's title
 
 ;;; --- Entry command --------------------------------------------------
 
-;;;###autoload
-(defun agent-fleet ()
-  "Open the agent-fleet dashboard (PLAN.md Phase 3, §27/§68).
-Lists every Herdr-managed agent with its state and refreshes live from
-the event bus.  Connects according to `agent-fleet-auto-connect'."
-  (interactive)
-  (agent-fleet--ensure-connected)
-  (let ((buf (get-buffer-create agent-fleet-dashboard-buffer-name)))
-    (with-current-buffer buf
-      (agent-fleet-mode)
+(defun agent-fleet-dashboard-child-frame-available-p (&optional parent-frame)
+  "Return non-nil when a child dashboard can use PARENT-FRAME.
+
+Availability requires Emacs
+`agent-fleet-dashboard-child-frame-minimum-emacs-version' or newer, a
+graphical parent frame, and the native `display-buffer-in-child-frame'
+action function.  PARENT-FRAME defaults to the selected frame."
+  (and (version<= agent-fleet-dashboard-child-frame-minimum-emacs-version
+                  emacs-version)
+       (fboundp 'display-buffer-in-child-frame)
+       (display-graphic-p (or parent-frame (selected-frame)))))
+
+(defun agent-fleet-dashboard--child-frame-unavailable-reason
+    (&optional parent-frame)
+  "Explain why a child dashboard cannot use PARENT-FRAME, or return nil."
+  (cond
+   ((version< emacs-version
+              agent-fleet-dashboard-child-frame-minimum-emacs-version)
+    (format "native child frames require Emacs %s or newer (running %s)"
+            agent-fleet-dashboard-child-frame-minimum-emacs-version
+            emacs-version))
+   ((not (fboundp 'display-buffer-in-child-frame))
+    "this Emacs lacks display-buffer-in-child-frame")
+   ((not (display-graphic-p (or parent-frame (selected-frame))))
+    "native child frames require a graphical Emacs frame")))
+
+(defun agent-fleet-dashboard--merge-frame-parameters (base overrides)
+  "Return a copy of frame parameter alist BASE updated by OVERRIDES."
+  (let ((parameters (copy-tree base)))
+    (dolist (entry overrides)
+      (setq parameters (assq-delete-all (car entry) parameters))
+      (push (cons (car entry) (cdr entry)) parameters))
+    parameters))
+
+(defun agent-fleet-dashboard--prepare-buffer ()
+  "Create, initialize and refresh the shared dashboard buffer."
+  (let ((buffer (get-buffer-create agent-fleet-dashboard-buffer-name)))
+    (with-current-buffer buffer
+      ;; Preserve buffer-local project/task filters when reopening a live
+      ;; dashboard.  Calling the major mode again would erase them.
+      (unless (derived-mode-p 'agent-fleet-mode)
+        (agent-fleet-mode))
       (agent-fleet-dashboard-refresh))
-    (pop-to-buffer buf)
-    buf))
+    buffer))
+
+(defun agent-fleet-dashboard--display-in-buffer (buffer)
+  "Display dashboard BUFFER in an ordinary Emacs window."
+  (pop-to-buffer buffer)
+  buffer)
+
+(defun agent-fleet-dashboard--fallback-to-buffer (buffer reason)
+  "Display dashboard BUFFER normally and report fallback REASON."
+  (message "agent-fleet: %s; using a regular buffer" reason)
+  (agent-fleet-dashboard--display-in-buffer buffer))
+
+(defun agent-fleet-dashboard--child-parent-frame (&optional frame)
+  "Return the parent to use for a child dashboard opened from FRAME.
+
+Reopening from an existing agent-fleet child dashboard uses that child's
+parent instead of creating recursively nested child frames."
+  (let ((frame (or frame (selected-frame))))
+    (if (eq (frame-parameter frame 'agent-fleet-dashboard-display)
+            'child-frame)
+        (or (frame-parent frame)
+            (frame-parameter frame 'agent-fleet-dashboard-origin-frame)
+            frame)
+      frame)))
+
+(defun agent-fleet-dashboard--display-in-child-frame (buffer)
+  "Display dashboard BUFFER in a native child frame, or fall back safely."
+  (let* ((parent (agent-fleet-dashboard--child-parent-frame))
+         (reason (agent-fleet-dashboard--child-frame-unavailable-reason
+                  parent)))
+    (if reason
+        (agent-fleet-dashboard--fallback-to-buffer buffer reason)
+      (let* ((private `((parent-frame . ,parent)
+                        (agent-fleet-dashboard-display . child-frame)
+                        (agent-fleet-dashboard-origin-frame . ,parent)))
+             (parameters
+              (agent-fleet-dashboard--merge-frame-parameters
+               agent-fleet-dashboard-child-frame-parameters private)))
+        (condition-case err
+            (if-let ((window
+                      (display-buffer
+                       buffer
+                       `((display-buffer-in-child-frame)
+                         (child-frame-parameters . ,parameters)))))
+                (let ((child (window-frame window)))
+                  ;; Reused child frames also receive current lifecycle data.
+                  (modify-frame-parameters child private)
+                  (select-frame-set-input-focus child)
+                  buffer)
+              (agent-fleet-dashboard--fallback-to-buffer
+               buffer "Emacs could not create a child frame"))
+          (error
+           (agent-fleet-dashboard--fallback-to-buffer
+            buffer (format "child-frame creation failed: %s"
+                           (error-message-string err)))))))))
+
+(defun agent-fleet-dashboard--display-in-frame (buffer)
+  "Display dashboard BUFFER in a reusable standalone graphical frame."
+  (if (not (display-graphic-p (selected-frame)))
+      (agent-fleet-dashboard--fallback-to-buffer
+       buffer "a standalone dashboard requires a graphical Emacs frame")
+    (let* ((selected (selected-frame))
+           (origin (or (frame-parameter
+                        selected 'agent-fleet-dashboard-origin-frame)
+                       selected))
+           (private `((agent-fleet-dashboard-display . frame)
+                      (agent-fleet-dashboard-origin-frame . ,origin)))
+           (parameters
+            (agent-fleet-dashboard--merge-frame-parameters
+             agent-fleet-dashboard-frame-parameters private)))
+      (condition-case err
+          (let ((frame
+                 (if (frame-live-p agent-fleet-dashboard--standalone-frame)
+                     agent-fleet-dashboard--standalone-frame
+                   (setq agent-fleet-dashboard--standalone-frame
+                         (make-frame parameters)))))
+            (modify-frame-parameters frame private)
+            (set-window-buffer (frame-selected-window frame) buffer)
+            (select-frame-set-input-focus frame)
+            buffer)
+        (error
+         (setq agent-fleet-dashboard--standalone-frame nil)
+         (agent-fleet-dashboard--fallback-to-buffer
+          buffer (format "standalone frame creation failed: %s"
+                         (error-message-string err))))))))
+
+(defun agent-fleet-dashboard--display (buffer display)
+  "Display dashboard BUFFER using DISPLAY backend."
+  (pcase display
+    ('buffer (agent-fleet-dashboard--display-in-buffer buffer))
+    ('child-frame (agent-fleet-dashboard--display-in-child-frame buffer))
+    ('frame (agent-fleet-dashboard--display-in-frame buffer))
+    (_ (user-error "Unknown agent-fleet dashboard display backend: %S"
+                   display))))
+
+(defun agent-fleet-dashboard--open (display)
+  "Connect, prepare and open the dashboard using DISPLAY backend."
+  (agent-fleet--ensure-connected)
+  (let ((buffer (agent-fleet-dashboard--prepare-buffer)))
+    (agent-fleet-dashboard--display buffer display)
+    buffer))
+
+;;;###autoload
+(defun agent-fleet (&optional display)
+  "Open the agent-fleet dashboard using DISPLAY.
+
+DISPLAY defaults to `agent-fleet-dashboard-display'.  The dashboard lists
+every Herdr-managed agent, refreshes from the event bus, and connects
+according to `agent-fleet-auto-connect'."
+  (interactive)
+  (agent-fleet-dashboard--open
+   (or display agent-fleet-dashboard-display)))
+
+;;;###autoload
+(defun agent-fleet-dashboard-open-buffer ()
+  "Open the agent-fleet dashboard in an ordinary Emacs window."
+  (interactive)
+  (agent-fleet-dashboard--open 'buffer))
+
+;;;###autoload
+(defun agent-fleet-dashboard-open-child-frame ()
+  "Open the agent-fleet dashboard in a native child frame when supported.
+
+The feature requires Emacs
+`agent-fleet-dashboard-child-frame-minimum-emacs-version' or newer, a
+graphical selected frame, and native child-frame display support.  It falls
+back to an ordinary buffer when any requirement is not met."
+  (interactive)
+  (agent-fleet-dashboard--open 'child-frame))
+
+;;;###autoload
+(defun agent-fleet-dashboard-open-frame ()
+  "Open the agent-fleet dashboard in a standalone graphical frame."
+  (interactive)
+  (agent-fleet-dashboard--open 'frame))
+
+(defun agent-fleet-dashboard-quit ()
+  "Close the dashboard's current display container.
+
+Delete an agent-fleet child or standalone frame.  In an ordinary window,
+use `quit-window'.  The shared dashboard buffer, Herdr connection and all
+agents remain alive."
+  (interactive)
+  (let* ((frame (selected-frame))
+         (display (frame-parameter frame
+                                   'agent-fleet-dashboard-display)))
+    (if (memq display '(child-frame frame))
+        (progn
+          (when (eq frame agent-fleet-dashboard--standalone-frame)
+            (setq agent-fleet-dashboard--standalone-frame nil))
+          (delete-frame frame))
+      (quit-window))))
 
 
 ;;; --- Event-driven refresh (PLAN.md §25) -----------------------------

@@ -118,6 +118,40 @@ periodically poll the server.
 | `m` | Open Magit status |
 | `a` | Attach to the live terminal |
 | `h` | Open the transient help menu |
+| `q` | Close the dashboard window or frame |
+
+The dashboard normally opens in an ordinary Emacs window. It can instead use
+Emacs's native child-frame support or a standalone graphical frame:
+
+```elisp
+;; Float the dashboard over the current Emacs frame.
+(setq agent-fleet-dashboard-display 'child-frame)
+
+;; Or use an independent operating-system window.
+(setq agent-fleet-dashboard-display 'frame)
+```
+
+Native child-frame display requires Emacs 29.1 or newer, a graphical Emacs
+frame, and `display-buffer-in-child-frame`. If any requirement is unavailable,
+agent-fleet reports the reason and opens the regular dashboard buffer instead.
+The package's overall minimum supported Emacs version is also 29.1.
+
+The configured default can be bypassed for one invocation:
+
+```text
+M-x agent-fleet-dashboard-open-buffer
+M-x agent-fleet-dashboard-open-child-frame
+M-x agent-fleet-dashboard-open-frame
+```
+
+Child dashboards open in the center of their parent frame and retain
+proportional size and position when it is resized. Opening output, worktree
+status, Magit, a diff, or a terminal attach uses the originating main frame and
+closes the child dashboard after the destination opens successfully. Attach
+additionally replaces that frame's current window with the live terminal.
+Refresh, filters, prompt, interrupt, kill, rename, and transient help remain in
+the child dashboard. Closing a dashboard frame does not disconnect Herdr or
+stop agents.
 
 The dashboard supports its keys in normal and motion states when Evil is
 loaded. Notifications are enabled for `blocked` and `done` by default:
