@@ -310,8 +310,6 @@ groups; set them with `setq` or <kbd>M-x customize-group RET agent-fleet</kbd>.
 | `agent-fleet-notify-on` | `'(blocked done)` | Agent statuses that trigger a notification; `nil` disables notifications |
 | `agent-fleet-dashboard-buffer-name` | `*Agent Fleet*` | Name of the dashboard buffer |
 | `agent-fleet-dashboard-display` | `'buffer` | Display backend: `'buffer`, `'child-frame`, or `'frame` |
-| `agent-fleet-dashboard-child-frame-parameters` | alist | Frame parameters for the native child-frame dashboard (size, centering, borders) |
-| `agent-fleet-dashboard-frame-parameters` | alist | Frame parameters for the standalone dashboard frame |
 | `agent-fleet-dashboard-child-frame-fit-height` | `nil` | When non-nil, fit the child-frame height to the agent count (event-driven, idempotent) |
 | `agent-fleet-dashboard-child-frame-min-height` | `4` | Minimum child-frame height in lines when fit-height is on |
 | `agent-fleet-dashboard-child-frame-max-height` | `24` | Maximum child-frame height in lines when fit-height is on |
