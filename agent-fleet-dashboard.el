@@ -352,18 +352,17 @@ store the frame from which they were opened."
     (thunk &optional display-action)
   "Run THUNK from the dashboard's origin frame.
 
-When called from a child dashboard, delete that child after THUNK returns a
-non-nil result, which indicates that the requested external interface was
-opened.  If THUNK errors or returns nil, keep the child and restore its focus.
-DISPLAY-ACTION, when non-nil, temporarily becomes
-`display-buffer-overriding-action'; attach uses this to replace the parent's
-current window.  Ordinary and standalone dashboards keep their existing
-lifecycle behavior."
+When called from a dashboard whose backend auto-closes (the native
+child-frame backend), close that container after THUNK returns a
+non-nil result, which indicates that the requested external interface
+was opened.  If THUNK errors or returns nil, keep the container and
+restore its focus.  DISPLAY-ACTION, when non-nil, temporarily becomes
+`display-buffer-overriding-action'; attach uses this to replace the
+parent's current window.  Ordinary and standalone dashboards keep
+their existing lifecycle behavior."
   (let* ((dashboard-frame (selected-frame))
-         (child-frame-p
-          (eq (frame-parameter dashboard-frame
-                               'agent-fleet-dashboard-display)
-              'child-frame)))
+         (auto-close-p (agent-fleet-dashboard--auto-close-p
+                        dashboard-frame)))
     (agent-fleet-dashboard--select-origin-frame)
     (condition-case err
         (let ((result
@@ -372,13 +371,13 @@ lifecycle behavior."
                      (funcall thunk))
                  (funcall thunk))))
           (cond
-           ((and child-frame-p result (frame-live-p dashboard-frame))
-            (delete-frame dashboard-frame))
-           ((and child-frame-p (frame-live-p dashboard-frame))
+           ((and auto-close-p result (frame-live-p dashboard-frame))
+            (agent-fleet-dashboard--close-container dashboard-frame))
+           ((and auto-close-p (frame-live-p dashboard-frame))
             (select-frame-set-input-focus dashboard-frame)))
           result)
       (error
-       (when (and child-frame-p (frame-live-p dashboard-frame))
+       (when (and auto-close-p (frame-live-p dashboard-frame))
          (select-frame-set-input-focus dashboard-frame))
        (signal (car err) (cdr err))))))
 
@@ -710,11 +709,14 @@ action function.  PARENT-FRAME defaults to the selected frame."
 (defun agent-fleet-dashboard--child-parent-frame (&optional frame)
   "Return the parent to use for a child dashboard opened from FRAME.
 
-Reopening from an existing agent-fleet child dashboard uses that child's
-parent instead of creating recursively nested child frames."
+Reopening from an existing agent-fleet dashboard whose backend is
+parented (the native child-frame backend) uses that dashboard's native
+parent instead of creating recursively nested child frames.  A frame
+whose backend is not parented (a standalone dashboard or an ordinary
+frame) is its own parent."
   (let ((frame (or frame (selected-frame))))
-    (if (eq (frame-parameter frame 'agent-fleet-dashboard-display)
-            'child-frame)
+    (if (agent-fleet-dashboard--backend-property
+         (frame-parameter frame 'agent-fleet-dashboard-display) :parented)
         (or (frame-parent frame)
             (frame-parameter frame 'agent-fleet-dashboard-origin-frame)
             frame)
@@ -781,14 +783,86 @@ parent instead of creating recursively nested child frames."
           buffer (format "standalone frame creation failed: %s"
                          (error-message-string err))))))))
 
+;;; --- Backend registry -----------------------------------------------
+
+(defvar agent-fleet-dashboard--backends
+  (list
+   (list 'buffer
+         :display #'agent-fleet-dashboard--display-in-buffer
+         :container nil :auto-close nil :parented nil :close nil)
+   (list 'child-frame
+         :display #'agent-fleet-dashboard--display-in-child-frame
+         :container t :auto-close t :parented t :close #'delete-frame)
+   (list 'frame
+         :display #'agent-fleet-dashboard--display-in-frame
+         :container t :auto-close nil :parented nil :close #'delete-frame))
+  "Registry of dashboard display backends.
+
+Each entry is (SYMBOL . PLIST) where PLIST keys are:
+  :display     function called with the dashboard buffer;
+  :container   non-nil when the backend owns a frame that `q' must
+               delete rather than `quit-window';
+  :auto-close  non-nil when an external action that opens successfully
+               should close the dashboard container (the child-frame
+               lifecycle); standalone frames are reusable and stay open;
+  :parented    non-nil when the backend creates a frame with a
+               `parent-frame'; reopening from such a dashboard reuses
+               its parent instead of nesting a child under a child;
+  :close       function called with the container frame to dispose of
+               it, or nil to fall back to `delete-frame'.
+
+Adding a backend is one entry here plus its `:display' function and a
+choice in `agent-fleet-dashboard-display'; the lifecycle code below
+needs no further edits.")
+
+(defun agent-fleet-dashboard--backend-plist (symbol)
+  "Return the metadata plist for backend SYMBOL, or nil if unregistered."
+  (cdr (assq symbol agent-fleet-dashboard--backends)))
+
+(defun agent-fleet-dashboard--backend-property (symbol property)
+  "Return backend SYMBOL's metadata PROPERTY, or nil if unknown."
+  (plist-get (agent-fleet-dashboard--backend-plist symbol) property))
+
+(defun agent-fleet-dashboard--display-backend (symbol)
+  "Return the display function for backend SYMBOL, or nil."
+  (agent-fleet-dashboard--backend-property symbol :display))
+
+(defun agent-fleet-dashboard--container-p (&optional frame)
+  "Return non-nil if FRAME's backend owns a deletable display container.
+FRAME defaults to the selected frame; an unregistered display is nil."
+  (agent-fleet-dashboard--backend-property
+   (frame-parameter (or frame (selected-frame))
+                    'agent-fleet-dashboard-display)
+   :container))
+
+(defun agent-fleet-dashboard--auto-close-p (&optional frame)
+  "Return non-nil if FRAME's backend closes after a successful external action.
+FRAME defaults to the selected frame."
+  (agent-fleet-dashboard--backend-property
+   (frame-parameter (or frame (selected-frame))
+                    'agent-fleet-dashboard-display)
+   :auto-close))
+
+(defun agent-fleet-dashboard--close-container (frame)
+  "Close the dashboard display container FRAME via its backend's path.
+Built-in backends delete the frame directly.  This helper is the single
+seam through which a container is disposed of, so callers never invoke
+`delete-frame' on a dashboard frame themselves."
+  (let ((close (agent-fleet-dashboard--backend-property
+                (frame-parameter frame 'agent-fleet-dashboard-display) :close)))
+    (if close
+        (funcall close frame)
+      (delete-frame frame))))
+
 (defun agent-fleet-dashboard--display (buffer display)
-  "Display dashboard BUFFER using DISPLAY backend."
-  (pcase display
-    ('buffer (agent-fleet-dashboard--display-in-buffer buffer))
-    ('child-frame (agent-fleet-dashboard--display-in-child-frame buffer))
-    ('frame (agent-fleet-dashboard--display-in-frame buffer))
-    (_ (user-error "Unknown agent-fleet dashboard display backend: %S"
-                   display))))
+  "Display dashboard BUFFER using backend DISPLAY.
+The backend is looked up in `agent-fleet-dashboard--backends'; an
+unknown symbol is a programming error, not a fallback case (fallbacks
+happen inside each backend's own display function)."
+  (if-let ((fn (agent-fleet-dashboard--display-backend display)))
+      (funcall fn buffer)
+    (user-error "Unknown agent-fleet dashboard display backend: %S"
+                display)))
 
 (defun agent-fleet-dashboard--open (display)
   "Connect, prepare and open the dashboard using DISPLAY backend."
@@ -838,14 +912,12 @@ Delete an agent-fleet child or standalone frame.  In an ordinary window,
 use `quit-window'.  The shared dashboard buffer, Herdr connection and all
 agents remain alive."
   (interactive)
-  (let* ((frame (selected-frame))
-         (display (frame-parameter frame
-                                   'agent-fleet-dashboard-display)))
-    (if (memq display '(child-frame frame))
+  (let ((frame (selected-frame)))
+    (if (agent-fleet-dashboard--container-p frame)
         (progn
           (when (eq frame agent-fleet-dashboard--standalone-frame)
             (setq agent-fleet-dashboard--standalone-frame nil))
-          (delete-frame frame))
+          (agent-fleet-dashboard--close-container frame))
       (quit-window))))
 
 

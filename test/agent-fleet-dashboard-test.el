@@ -128,6 +128,24 @@ Columns: 0 Project, 1 Agent, 2 Kind, 3 State, 4 Task."
              (alist-get 'top
                         agent-fleet-dashboard-child-frame-parameters))))
 
+(ert-deftest agent-fleet-dashboard-backends-registry-classifies-backends ()
+  "The backend registry tags each display backend with its lifecycle role.
+Locks the refactor that replaced scattered `child-frame' symbol checks with
+a metadata table; adding a backend must not change these classifications."
+  (should (equal '(buffer child-frame frame)
+                 (mapcar #'car agent-fleet-dashboard--backends)))
+  (should-not (agent-fleet-dashboard--backend-property 'buffer :container))
+  (should-not (agent-fleet-dashboard--backend-property 'buffer :auto-close))
+  (should-not (agent-fleet-dashboard--backend-property 'buffer :parented))
+  (should (agent-fleet-dashboard--backend-property 'child-frame :container))
+  (should (agent-fleet-dashboard--backend-property 'child-frame :auto-close))
+  (should (agent-fleet-dashboard--backend-property 'child-frame :parented))
+  (should (agent-fleet-dashboard--backend-property 'frame :container))
+  (should-not (agent-fleet-dashboard--backend-property 'frame :auto-close))
+  (should-not (agent-fleet-dashboard--backend-property 'frame :parented))
+  (should (eq #'agent-fleet-dashboard--display-in-buffer
+             (agent-fleet-dashboard--display-backend 'buffer))))
+
 (ert-deftest agent-fleet-dashboard-child-frame-uses-native-display-action ()
   "Child display injects the selected parent and private lifecycle markers."
   (let ((agent-fleet-dashboard-child-frame-parameters
