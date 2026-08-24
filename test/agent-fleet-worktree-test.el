@@ -67,6 +67,27 @@ a source repo).  No RPC is issued."
                   :type 'agent-fleet-provisioning-failed)
     (should-not (agent-fleet-test--saw-request-p server "worktree.create"))))
 
+(ert-deftest agent-fleet-start-failure-rolls-back-provisioned-worktree ()
+  "A failed agent.start closes its pane and removes its fresh worktree."
+  (with-agent-fleet-mock path server
+    (let ((handlers
+           (mapcar
+            (lambda (cell)
+              (if (equal (car cell) "agent.start")
+                  (cons "agent.start"
+                        (lambda (_params)
+                          (list 'error "start_failed" "cannot launch")))
+                cell))
+            (herdr-mock-default-agent-handlers))))
+      (herdr-mock-set-handlers server handlers)
+      (should-error
+       (agent-fleet-start 'claude :name "broken" :worktree t
+                          :cwd "/tmp/repo")
+       :type 'herdr-request-error)
+      (should (agent-fleet-test--saw-request-p server "pane.close"))
+      (should (agent-fleet-test--saw-request-p server "worktree.remove"))
+      (should-not (herdr-model-worktrees)))))
+
 
 ;;; --- list / remove / status ----------------------------------------
 
@@ -88,6 +109,16 @@ worktree dropped from the cache is restored."
           (should (cl-some (lambda (s) (equal (herdr-worktree-path s) path))
                            structs)))
         (should (herdr-model-find-worktree path))))))
+
+(ert-deftest agent-fleet-worktree-list-removes-stale-unscoped-cache ()
+  "An unscoped worktree.list replaces, rather than only extends, the cache."
+  (with-agent-fleet-mock path server
+    (herdr-model-upsert-worktree
+     '(:path "/tmp/gone-worktree" :branch "gone"
+       :open_workspace_id "gone"))
+    (should (herdr-model-find-worktree "/tmp/gone-worktree"))
+    (agent-fleet-worktree-list)
+    (should-not (herdr-model-find-worktree "/tmp/gone-worktree"))))
 
 (ert-deftest agent-fleet-worktree-remove-cleans-up ()
   "`worktree-remove' calls worktree.remove with the workspace id and drops

@@ -9,7 +9,7 @@ Claude Code, Codex, Pi (and any future CLI agents) keep running in their real
 PTY/TUI inside Herdr; Emacs sees them, organizes them, controls them, and reviews
 the code they produce — over Herdr's socket API.
 
-This repository implements **Phase 1** through **Phase 7** of the plan in
+This repository implements **Phase 1** through **Phase 8** of the plan in
 `PLAN.md`: the low-level, async, event-driven Herdr client (`herdr.el` and
 friends), the agent-facing control layer (`agent-fleet.el`) that turns
 Emacs into a supervisor over Herdr-managed agents — start, prompt, read,
@@ -52,7 +52,8 @@ orchestration is a later phase.
 | Broadcast / pipeline | — | ⏳ later phases |
 
 Verified against **Herdr 0.8.2** (protocol 20). All source byte-compiles with
-zero warnings; 150 unit tests (mock) + 4 live integration tests pass.
+zero warnings; the complete mock regression suite and live integration suite
+are run by `make test` and `make test-live`.
 Magit is an optional dependency (PLAN §55); the Magit layer `user-error's
 clearly when it is absent. Terminal backends (eat/ghostel/vterm) are likewise
 optional (PLAN §45); `agent-fleet-attach` degrades gracefully when none is
@@ -63,6 +64,7 @@ installed.
 - Emacs **29.1** or newer (developed on 30.2).
 - Herdr installed and its server reachable on the local Unix socket.
 - Phase 1 depends only on built-in packages: `json`, `cl-lib`, `subr-x`.
+- The package entry point/dashboard requires `transient` 0.7.2 or newer.
 
 ## Architecture
 
@@ -88,12 +90,12 @@ Herdr Server  ── real PTY runtime ──▶  Claude Code / Codex / Pi
 ```
 
 The authoritative protocol reference — captured by reverse-engineering a live
-Herdr 0.8.0 server — lives in [`docs/PROTOCOL.md`](docs/PROTOCOL.md). Read it
+Herdr 0.8.2 server — lives in [`docs/PROTOCOL.md`](docs/PROTOCOL.md). Read it
 before touching `herdr-protocol.el`.
 
 ### Connection model (important)
 
-Verified empirically against Herdr 0.8.0:
+Verified empirically against Herdr 0.8.2:
 
 - **Request connections are one-shot**: open a socket, send one
   `{"id","method","params"}` request, read one `{"id","result"}` (or
@@ -115,9 +117,25 @@ This is an Emacs-Lisp package (no build step). Put the `.el` files on your
 
 ```elisp
 (add-to-list 'load-path "/path/to/agent-fleet")
-(require 'herdr)
-(global-set-key (kbd "C-c h") (make-sparse-keymap))   ; bind to taste
+(require 'agent-fleet)          ; loads control plane, dashboard, and commands
+(global-set-key (kbd "C-c a") agent-fleet-command-map) ; optional prefix
 ```
+
+Supervisor commands and the dashboard connect to Herdr automatically on first
+use by default (`agent-fleet-auto-connect' is `on-demand').  The Herdr server
+must already be running; agent-fleet does not launch or own it.  To pre-connect
+after Emacs starts, configure this before loading the package:
+
+```elisp
+(setq agent-fleet-auto-connect 'after-init
+      agent-fleet-auto-connect-delay 1.0)
+(require 'agent-fleet)
+```
+
+Set `agent-fleet-auto-connect' to nil to retain manual-only
+`M-x herdr-connect' behavior.  If changing the policy after the package is
+loaded, use `M-x customize-option RET agent-fleet-auto-connect' so startup
+timers are reconfigured immediately.
 
 ## Usage (Phase 1)
 
@@ -143,7 +161,7 @@ M-x herdr-doctor
 ## Usage (Phase 2 — agent control)
 
 ```elisp
-(herdr-connect)                       ; Phase 1 bootstrap (ping/snapshot/subscribe)
+;; The first supervisor operation connects automatically by default.
 
 ;; Start a Claude agent (provisions a pane, calls agent.start):
 (setq arch (agent-fleet-start 'claude :name "arch"))
@@ -182,7 +200,6 @@ read-snapshot of a pane — it does not persist or mirror pane output
 ## Usage (Phase 3 — dashboard)
 
 ```elisp
-(herdr-connect)
 M-x agent-fleet            ; opens *Agent Fleet*, live-updating
 ```
 
@@ -202,6 +219,7 @@ w         worktree status (path/branch/repo, read-only — §46)
 d         diff (working-tree, via Magit — §71)
 m         magit status on the agent's checkout (§36/§71)
 a         attach live to the agent's terminal (Phase 8, §73; prefix = --takeover)
+h         command help and dispatcher (transient)
 P         narrow to the project at point (§69; re-press/prefix to clear)
 T         narrow to the parallel task at point (Phase 7, §72; re-press/prefix to clear)
 ```
@@ -229,8 +247,6 @@ signal of current activity; for an agent launched by `agent-fleet-parallel`
 ## Usage (Phase 4 — projects)
 
 ```elisp
-(herdr-connect)
-
 ;; Start an agent in the current project (finds/creates a workspace, starts
 ;; the pane at the project root):
 (agent-fleet-start-for-project 'claude :name "arch")
@@ -264,8 +280,6 @@ Start an agent in an isolated worktree — a separate checkout of the repo —
 so multiple agents don't modify the same working tree (PLAN.md §34/§70):
 
 ```elisp
-(herdr-connect)
-
 ;; From a project buffer: the project root is the worktree source repo.
 ;; Herdr decides the branch; the agent starts in a fresh checkout.
 (agent-fleet-start-for-project 'claude :name "backend" :worktree t)
@@ -301,8 +315,6 @@ Open Magit on an agent's checkout directly from the dashboard (PLAN.md
 cherry-pick UI:
 
 ```elisp
-(herdr-connect)
-
 ;; Dashboard keys (agent at point):
 ;;   m  magit-status on the agent's checkout (worktree root, or main repo)
 ;;   d  working-tree diff (uncommitted changes the agent is making now)
@@ -342,8 +354,6 @@ worktree and its own prompt; they run concurrently and their aggregate
 status is tracked live from the event bus:
 
 ```elisp
-(herdr-connect)
-
 ;; Fire-and-forget: spawns 3 worktree agents, prompts each, returns at once.
 (setq task
       (agent-fleet-parallel
@@ -388,8 +398,6 @@ Attach live to an agent's pane inside an Emacs terminal so you can drive its
 real PTY/TUI without leaving Emacs (PLAN.md §43/§44/§73/§79):
 
 ```elisp
-(herdr-connect)
-
 ;; From the dashboard: put point on an agent, press `a'.
 ;; Or via M-x / a call, prompting for an agent:
 M-x agent-fleet-attach
@@ -418,6 +426,14 @@ preferred only when its dynamic module actually loaded (`featurep
 missing libghostty-vt dependency) leaves that feature unset, so `auto`
 falls through to eat (set `agent-fleet-attach-backend` to an explicit symbol
 to force one).
+
+Attach buffers inhibit `evil-escape` locally by default.  Its synthetic
+first-key insertion conflicts with terminal key forwarding (for example, a
+`jk` escape sequence can send a plain `j` twice in Ghostel).  This does not
+change Evil behavior in ordinary buffers; inside attach, the sequence is sent
+literally and ESC should be handled by the terminal backend's Evil integration.
+Set `agent-fleet-attach-inhibit-evil-escape` to `nil` only if that integration
+is known to handle `evil-escape` without synthetic insertion.
 
 This is a **live interactive session**, not a persisted or mirrored view
 (§46/§23): the buffer is transient — killing the process **detaches** and

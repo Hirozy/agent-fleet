@@ -65,7 +65,10 @@ nothing), so this focuses a different workspace and then restores the
 original focus.  Skips when fewer than two workspaces are live (no focus
 change can be generated)."
   (skip-unless (herdr-integration-test--livep))
-  (let (events original-focus other)
+  (let (events original-focus other
+        ;; Never leave the test callback installed in the user's live Emacs
+        ;; hook state (or in a later ERT case in the same batch).
+        (herdr-event-hook nil))
     (unwind-protect
         (progn
           (herdr-connect)

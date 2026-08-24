@@ -212,8 +212,7 @@ no project can be resolved."
                                :worktree worktree :branch branch :base base)
       (let ((ws (or (agent-fleet--workspace-for-root root)
                     (when (herdr-focused-workspace)
-                      (herdr-workspace-id (herdr-focused-workspace)))
-                    (agent-fleet--create-workspace root))))
+                      (herdr-workspace-id (herdr-focused-workspace))))))
         (agent-fleet-start kind :name name :cwd root :workspace ws
                                :args args :timeout-ms timeout-ms :focus focus)))))
 

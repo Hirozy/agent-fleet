@@ -39,7 +39,76 @@ Columns: 0 Project, 1 Agent, 2 Kind, 3 State, 4 Task."
      ,@body))
 
 
+;;; --- Command help ---------------------------------------------------
+
+(ert-deftest agent-fleet-dashboard-help-is-transient ()
+  "Dashboard `h' opens a transient containing every documented row action."
+  ;; Check the map that `define-derived-mode' actually activates, then check
+  ;; an initialized buffer.  Inspecting the former dashboard-named map alone
+  ;; missed a regression where no dashboard bindings were active at all.
+  (should (eq #'agent-fleet-dashboard-help
+              (lookup-key agent-fleet-mode-map (kbd "h"))))
+  (with-temp-buffer
+    (agent-fleet-mode)
+    (should (eq #'agent-fleet-dashboard-help (key-binding (kbd "h")))))
+  (dolist (entry '(("RET" . agent-fleet-dashboard-inspect)
+                   ("o" . agent-fleet-dashboard-inspect)
+                   ("p" . agent-fleet-dashboard-prompt)
+                   ("i" . agent-fleet-dashboard-interrupt)
+                   ("k" . agent-fleet-dashboard-kill)
+                   ("r" . agent-fleet-dashboard-rename)
+                   ("g" . agent-fleet-dashboard-refresh)
+                   ("P" . agent-fleet-dashboard-toggle-project-filter)
+                   ("T" . agent-fleet-dashboard-toggle-task-filter)
+                   ("w" . agent-fleet-dashboard-worktree)
+                   ("d" . agent-fleet-dashboard-diff)
+                   ("m" . agent-fleet-dashboard-magit)
+                   ("a" . agent-fleet-dashboard-attach)))
+    (let ((suffix (transient-get-suffix
+                   'agent-fleet-dashboard-help (car entry))))
+      ;; Transient 0.7 returns its raw (LEVEL CLASS PLIST) layout entry;
+      ;; newer releases may return the original vector specification.
+      (should (eq (cdr entry)
+                  (if (vectorp suffix)
+                      (aref suffix 2)
+                    (plist-get (nth 2 suffix) :command)))))))
+
+(ert-deftest agent-fleet-dashboard-installs-bindings-for-evil-states ()
+  "Dashboard commands override Evil normal/motion keys when Evil is present."
+  (let (states map evil-bindings)
+    (cl-letf (((symbol-function 'evil-define-key*)
+               (lambda (arg-states arg-map &rest bindings)
+                 (setq states arg-states
+                       map arg-map
+                       evil-bindings bindings))))
+      (agent-fleet-dashboard--install-key-bindings))
+    (should (equal states '(normal motion)))
+    (should (eq map agent-fleet-mode-map))
+    (dolist (binding agent-fleet-dashboard--bindings)
+      (should (eq (cdr binding)
+                  (cadr (member (kbd (car binding)) evil-bindings)))))))
+
+(ert-deftest agent-fleet-dashboard-reload-updates-existing-mode-map ()
+  "Reinstalling bindings repairs a mode map created by an older load."
+  (let ((agent-fleet-mode-map (make-sparse-keymap)))
+    (should-not (lookup-key agent-fleet-mode-map (kbd "h")))
+    (agent-fleet-dashboard--install-key-bindings)
+    (should (eq #'agent-fleet-dashboard-help
+                (lookup-key agent-fleet-mode-map (kbd "h"))))))
+
+
 ;;; --- Rendering + event-driven refresh -------------------------------
+
+(ert-deftest agent-fleet-dashboard-entry-ensures-connection ()
+  "Opening the dashboard uses the same connection gate as control commands."
+  (with-dashboard-fresh
+    (let ((herdr-model--cache (herdr-model--empty-session))
+          checked)
+      (cl-letf (((symbol-function 'agent-fleet--ensure-connected)
+                 (lambda () (setq checked t)))
+                ((symbol-function 'pop-to-buffer) #'ignore))
+        (agent-fleet))
+      (should checked))))
 
 (ert-deftest agent-fleet-dashboard-opens-and-lists-agents ()
   "`M-x agent-fleet' opens the dashboard with the cached agent."
@@ -278,9 +347,9 @@ following `pane.agent_status_changed' (dotted per-pane kind, §7.3) event."
   "The dashboard binds `d' to the diff command and `m' to the magit command
 \(Phase 6), not the old `--not-yet' stubs."
   (should (eq #'agent-fleet-dashboard-diff
-              (lookup-key agent-fleet-dashboard-mode-map "d")))
+              (lookup-key agent-fleet-mode-map "d")))
   (should (eq #'agent-fleet-dashboard-magit
-              (lookup-key agent-fleet-dashboard-mode-map "m"))))
+              (lookup-key agent-fleet-mode-map "m"))))
 
 
 ;;; --- Task column + T filter (Phase 7, §72) ---------------------------
@@ -288,9 +357,9 @@ following `pane.agent_status_changed' (dotted per-pane kind, §7.3) event."
 (ert-deftest agent-fleet-dashboard-row-keys-t-and-p ()
   "`T' narrows to a task (Phase 7, §72); `P' narrows to a project (§69)."
   (should (eq #'agent-fleet-dashboard-toggle-task-filter
-              (lookup-key agent-fleet-dashboard-mode-map "T")))
+              (lookup-key agent-fleet-mode-map "T")))
   (should (eq #'agent-fleet-dashboard-toggle-project-filter
-              (lookup-key agent-fleet-dashboard-mode-map "P"))))
+              (lookup-key agent-fleet-mode-map "P"))))
 
 (ert-deftest agent-fleet-dashboard-task-filter-and-column ()
   "The Task column shows a task agent's task title; the `T' filter narrows
@@ -324,6 +393,24 @@ state (§72)."
         (with-current-buffer "*Agent Fleet*"
           (should (string-match-p "rev" (or agent-fleet-dashboard--task-banner "")))
           (should (string-match-p "done" agent-fleet-dashboard--task-banner)))))))
+
+(ert-deftest agent-fleet-dashboard-task-column-refreshes-on-registration ()
+  "Task metadata refreshes the dashboard even without a later status event."
+  (with-agent-fleet-mock path server
+    (with-dashboard-fresh
+      (let ((agent-fleet--tasks nil)
+            (agent-fleet--agent-tasks (make-hash-table :test 'equal)))
+        (agent-fleet)
+        (agent-fleet-test--pump)
+        ;; Suppress prompt-driven status events: the task-created hook is the
+        ;; only event capable of refreshing the just-established task mapping.
+        (cl-letf (((symbol-function 'agent-fleet-prompt)
+                   (lambda (&rest _) '(:agent_status "idle"))))
+          (let* ((task (agent-fleet-parallel
+                        '((claude . "quiet")) :title "quiet-task" :cwd "/tmp"))
+                 (pid (car (agent-fleet-task-agents task))))
+            (should (equal "quiet-task"
+                           (agent-fleet-dashboard-test--cell pid 4)))))))))
 
 
 (provide 'agent-fleet-dashboard-test)

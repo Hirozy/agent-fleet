@@ -82,6 +82,14 @@ post-pass freezes LABEL as `custom-name' (a pre-connect rename)."
                   (herdr-model-parse-snapshot (herdr-model-test--snapshot))))))
     (should (equal (herdr-workspace-label ws) "demo"))))
 
+(ert-deftest herdr-model-parse-snapshot-rejects-malformed-results ()
+  "A missing collection is a protocol failure, not a valid empty session."
+  (should-error (herdr-model-parse-snapshot nil) :type 'herdr-protocol-error)
+  (should-error
+   (herdr-model-parse-snapshot
+    '(:protocol 20 :workspaces () :tabs () :panes ()))
+   :type 'herdr-protocol-error))
+
 (ert-deftest herdr-model-find-agent ()
   "find-agent returns the agent struct by pane id."
   (let ((session (herdr-model-parse-snapshot (herdr-model-test--snapshot))))
@@ -90,12 +98,107 @@ post-pass freezes LABEL as `custom-name' (a pre-connect rename)."
       (should (equal (herdr-agent-agent a) "claude"))
       (should (equal (herdr-agent-agent-status a) "working")))))
 
+(ert-deftest herdr-model-agent-status-race-creates-minimal-agent ()
+  "A status event arriving before detection still populates the agent cache."
+  (let ((session (herdr-model--empty-session)))
+    (herdr-model--upsert-pane
+     session '(:pane_id "w1:p9" :workspace_id "w1" :tab_id "w1:t1"
+               :cwd "/repo" :agent nil :agent_status "idle"))
+    (herdr-model-apply-event
+     session "pane_agent_status_changed"
+     '(:pane_id "w1:p9" :agent "codex" :agent_status "working"))
+    (let ((agent (herdr-model-find-agent session "w1:p9")))
+      (should agent)
+      (should (equal "w1" (herdr-agent-workspace-id agent)))
+      (should (equal "codex" (herdr-agent-agent agent)))
+      (should (equal "working" (herdr-agent-agent-status agent))))))
+
 (ert-deftest herdr-model-apply-event-workspace-focused ()
-  "A workspace_focused event updates the focused workspace id."
+  "A workspace_focused event updates the id and focused flags."
   (let ((session (herdr-model-parse-snapshot (herdr-model-test--snapshot))))
+    (herdr-model--upsert-workspace
+     session '(:workspace_id "w2" :label "two" :focused :false))
     (herdr-model-apply-event session "workspace_focused"
                              '(:workspace_id "w2"))
-    (should (equal (herdr-session-focused-workspace-id session) "w2"))))
+    (should (equal (herdr-session-focused-workspace-id session) "w2"))
+    (should (herdr-workspace-focused
+             (herdr-model-find-workspace session "w2")))
+    (should-not (herdr-workspace-focused
+                 (herdr-model-find-workspace session "w1")))))
+
+(ert-deftest herdr-model-focus-events-update-all-related-flags ()
+  "Pane focus makes workspace/tab/pane and agent focus mutually consistent."
+  (let ((session (herdr-model-parse-snapshot (herdr-model-test--snapshot))))
+    (herdr-model--upsert-workspace
+     session '(:workspace_id "w2" :label "two" :focused :false))
+    (herdr-model--upsert-tab
+     session '(:tab_id "w2:t1" :workspace_id "w2" :focused :false))
+    (herdr-model--upsert-pane
+     session '(:pane_id "w2:p1" :workspace_id "w2" :tab_id "w2:t1"
+               :focused :false :agent "codex" :agent_status "idle"))
+    (herdr-model--maybe-upsert-agent-from-pane
+     session '(:pane_id "w2:p1" :workspace_id "w2" :tab_id "w2:t1"
+               :focused :false :agent "codex" :agent_status "idle"))
+    (herdr-model-apply-event session "pane_focused"
+                             '(:pane_id "w2:p1" :workspace_id "w2"))
+    (should (equal "w2" (herdr-session-focused-workspace-id session)))
+    (should (equal "w2:t1" (herdr-session-focused-tab-id session)))
+    (should (equal "w2:p1" (herdr-session-focused-pane-id session)))
+    (should (herdr-pane-focused (herdr-model-find-pane session "w2:p1")))
+    (should (herdr-agent-focused (herdr-model-find-agent session "w2:p1")))
+    (should-not (herdr-pane-focused (herdr-model-find-pane session "w1:p1")))
+    (should-not (herdr-agent-focused
+                 (herdr-model-find-agent session "w1:p1")))))
+
+(ert-deftest herdr-model-tab-close-cascades-pane-and-agent-removal ()
+  "Closing a tab cannot leave child panes or agents in the cache."
+  (let ((session (herdr-model-parse-snapshot (herdr-model-test--snapshot))))
+    (let ((descriptor
+           (herdr-model-apply-event
+            session "tab_closed" '(:tab_id "w1:t1" :workspace_id "w1"))))
+      (should-not (plist-get descriptor :replayp))
+      (should (= 1 (length (plist-get descriptor :closed-agents)))))
+    (should-not (herdr-model-find-tab session "w1:t1"))
+    (should-not (herdr-model-find-pane session "w1:p1"))
+    (should-not (herdr-model-find-agent session "w1:p1"))
+    (should (gethash "w1:p1" (herdr-session-gone-panes session)))
+    (should-not (herdr-session-focused-tab-id session))
+    (should-not (herdr-session-focused-pane-id session))
+    (should (plist-get
+             (herdr-model-apply-event
+              session "tab_closed" '(:tab_id "w1:t1" :workspace_id "w1"))
+             :replayp))))
+
+(ert-deftest herdr-model-workspace-close-cascades-all-descendants ()
+  "Closing a workspace clears every cached entity owned by it."
+  (let ((session (herdr-model-parse-snapshot (herdr-model-test--snapshot))))
+    (herdr-model-apply-event session "workspace_closed"
+                             '(:workspace_id "w1"))
+    (should-not (herdr-model-find-workspace session "w1"))
+    (should-not (herdr-model-find-tab session "w1:t1"))
+    (should-not (herdr-model-find-pane session "w1:p1"))
+    (should-not (herdr-model-find-agent session "w1:p1"))
+    (should-not (herdr-session-focused-workspace-id session))
+    (should-not (herdr-session-focused-tab-id session))
+    (should-not (herdr-session-focused-pane-id session))))
+
+(ert-deftest herdr-model-tab-rename-and-move-apply-payloads ()
+  "Rename and move events mutate tab structs instead of only notifying."
+  (let ((session (herdr-model-parse-snapshot (herdr-model-test--snapshot))))
+    (herdr-model-apply-event session "tab_renamed"
+                             '(:tab_id "w1:t1" :workspace_id "w1"
+                               :label "Review"))
+    (should (equal "Review"
+                   (herdr-tab-label
+                    (herdr-model-find-tab session "w1:t1"))))
+    (herdr-model-apply-event
+     session "tab_moved"
+     '(:tab_id "w1:t1" :workspace_id "w1" :insert_index 1
+       :tabs ((:tab_id "w1:t1" :workspace_id "w1" :label "Review"
+               :number 2 :focused t :pane_count 1
+               :agent_status "working"))))
+    (should (= 2 (herdr-tab-number
+                  (herdr-model-find-tab session "w1:t1"))))))
 
 (ert-deftest herdr-model-apply-event-agent-status ()
   "An agent_status_changed event patches the cached agent in place.
@@ -137,10 +240,28 @@ struct that wiped the cached identity (agent id → nil)."
                                       :agent_status "idle" :cwd "/x")))
     (should (= 2 (length (herdr-model-panes session))))
     (should (herdr-model-find-agent session "w2:p1"))
-    (herdr-model-apply-event session "pane_closed"
-                             '(:pane_id "w2:p1"))
+    (let ((descriptor
+           (herdr-model-apply-event session "pane_closed"
+                                    '(:pane_id "w2:p1"))))
+      (should (plist-get descriptor :agentp))
+      (should-not (plist-get descriptor :replayp)))
     (should (= 1 (length (herdr-model-panes session))))
-    (should-not (herdr-model-find-agent session "w2:p1"))))
+    (should-not (herdr-model-find-agent session "w2:p1"))
+    (should (gethash "w2:p1" (herdr-session-gone-panes session)))
+    ;; The same close from a replay is idempotent and explicitly marked so
+    ;; downstream lifecycle hooks do not fire twice.
+    (let ((descriptor
+           (herdr-model-apply-event session "pane_closed"
+                                    '(:pane_id "w2:p1"))))
+      (should (plist-get descriptor :replayp)))
+    ;; A replayed creation can no longer resurrect the closed pane.
+    (should (plist-get
+             (herdr-model-apply-event
+              session "pane_created"
+              '(:pane (:pane_id "w2:p1" :workspace_id "w2"
+                       :tab_id "w2:t1" :agent "codex")))
+             :replayp))
+    (should-not (herdr-model-find-pane session "w2:p1"))))
 
 (ert-deftest herdr-model-pane-created-without-agent-preserves-cached-agent ()
   "A pane_created/pane_updated event with NO :agent key must not evict a
@@ -197,9 +318,16 @@ key is silent (PLAN.md §25 — the cache stays post-event-correct)."
               :terminal_id "t1" :cwd "/new" :focused t :revision 5
               :agent "claude" :agent_status "working")))
     (should-not (herdr-model-find-agent session "w1:p1"))
+    (should (gethash "w1:p1" (herdr-session-gone-panes session)))
     (should (equal "architect"
                    (herdr-agent-name
-                    (herdr-model-find-agent session "w2:p2"))))))
+                    (herdr-model-find-agent session "w2:p2"))))
+    (should (plist-get
+             (herdr-model-apply-event
+              session "pane_updated"
+              '(:pane (:pane_id "w1:p1" :workspace_id "w1"
+                       :tab_id "w1:t1" :agent "claude")))
+             :replayp))))
 
 (ert-deftest herdr-model-pane-created-replay-guard-skips-cached ()
   "A replayed `pane_created' for an already-cached pane adds no pane.

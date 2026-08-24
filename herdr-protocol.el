@@ -215,8 +215,11 @@ Returns nil if STRING is empty or unparseable."
 Order: `herdr-socket-path' user var, `HERDR_SOCKET_PATH' env,
 `herdr status' socket line, default `~/.config/herdr/herdr.sock'.
 Signals `herdr-connection-error' if no usable socket is found."
-  (or herdr-socket-path
-      (getenv "HERDR_SOCKET_PATH")
+  (or (and (stringp herdr-socket-path)
+           (not (string-empty-p herdr-socket-path))
+           herdr-socket-path)
+      (let ((env-path (getenv "HERDR_SOCKET_PATH")))
+        (and env-path (not (string-empty-p env-path)) env-path))
       (herdr-protocol--socket-path-from-status)
       (let ((default (expand-file-name "~/.config/herdr/herdr.sock")))
         (if (file-exists-p default)
@@ -255,7 +258,13 @@ immediate connect failure."
          :family 'local
          :service path
          :noquery t)
-      (file-error
+      (error
+       ;; The process buffer is allocated before `make-network-process'.
+       ;; An immediate connect failure never gives callers a process to pass
+       ;; through `herdr-protocol--close-socket', so release it here instead
+       ;; of leaking one hidden buffer per failed request/reconnect attempt.
+       (when (buffer-live-p buf)
+         (kill-buffer buf))
        (let ((data (list :reason 'connect-refused :path path
                          :detail (error-message-string err))))
          (herdr--log 'error "connect failed: %S" data)
@@ -500,7 +509,7 @@ connection could not be opened (ERROR-CALLBACK is still invoked)."
          (state (list :pending "" :started nil :error nil :id id
                       :event-callback event-callback
                       :error-callback error-callback
-                      :closing nil :dead nil))
+                      :closing nil :dead nil :proc nil))
          proc)
     (herdr--log 'debug "subscribe %s (%d subs)" id (length subscriptions))
     (herdr--log 'trace "subscribe frame: %s" (string-trim-right payload "\n"))
@@ -512,6 +521,7 @@ connection could not be opened (ERROR-CALLBACK is still invoked)."
                   (list :type 'closed :reason 'connect-failed
                         :detail (cdr conn-err))))
        (cl-return-from herdr-protocol-subscribe nil)))
+    (plist-put state :proc proc)
     (herdr-protocol--put-process-state proc state)
     (set-process-filter proc
       (lambda (p s) (herdr-protocol--sub-filter p s state)))
@@ -582,23 +592,47 @@ connection could not be opened (ERROR-CALLBACK is still invoked)."
                          :message (plist-get e :message)))
         (herdr--log 'error "subscribe rejected: %s / %s"
                     (plist-get e :code) (plist-get e :message))
-        (when-let* ((cb (plist-get state :error-callback)))
-          (funcall cb (plist-get state :error)))))
-     ((plist-get msg :result)
-      (plist-put state :started t)
-      (herdr--log 'info "subscription started"))
+        (unwind-protect
+            (when-let* ((cb (plist-get state :error-callback)))
+              (funcall cb (plist-get state :error)))
+          ;; A rejected subscribe batch is terminal even when the server
+          ;; keeps the socket open.  Close it here; otherwise every stale
+          ;; per-pane rejection leaks a process buffer until Emacs exits.
+          (herdr-protocol--close-socket (plist-get state :proc)))))
+     ((plist-member msg :result)
+      (let ((result (plist-get msg :result)))
+        (if (and (listp result)
+                 (equal (plist-get result :type) "subscription_started"))
+            (progn
+              (plist-put state :started t)
+              (herdr--log 'info "subscription started"))
+          ;; Do not report a usable fleet connection for an arbitrary success
+          ;; envelope (for example `ok').  Only `subscription_started' changes
+          ;; this one-request socket into the documented push stream.
+          (plist-put state :dead t)
+          (plist-put state :error
+                     (list :type 'rejected :code "invalid_subscription_ack"
+                           :message (format "unexpected result: %S" result)))
+          (unwind-protect
+              (when-let* ((cb (plist-get state :error-callback)))
+                (funcall cb (plist-get state :error)))
+            (herdr-protocol--close-socket (plist-get state :proc))))))
      (t
       (herdr--log 'warn "unrecognized sub frame: %s" line)))))
 
 (defun herdr-protocol--sub-sentinel (proc event state)
   "Sentinel for the subscription connection: report loss unless user-closed."
-  (when (and (not (plist-get state :closing))
-             (not (plist-get state :dead))
-             (not (memq (process-status proc) '(open connect listen))))
-    (plist-put state :dead t)
-    (herdr--log 'warn "subscription closed: %s" event)
-    (when-let* ((cb (plist-get state :error-callback)))
-      (funcall cb (list :type 'closed :event event)))))
+  (when (not (memq (process-status proc) '(open connect listen)))
+    (unwind-protect
+        (when (and (not (plist-get state :closing))
+                   (not (plist-get state :dead)))
+          (plist-put state :dead t)
+          (herdr--log 'warn "subscription closed: %s" event)
+          (when-let* ((cb (plist-get state :error-callback)))
+            (funcall cb (list :type 'closed :event event))))
+      ;; `delete-process' does not kill its process buffer.  Both expected
+      ;; and unexpected subscription shutdowns must release that buffer.
+      (herdr-protocol--close-socket proc))))
 
 (defun herdr-protocol-unsubscribe (proc)
   "Close a subscription connection opened by `herdr-protocol-subscribe'.
@@ -610,6 +644,12 @@ Does not invoke the error callback (this is a user-initiated close)."
 (defun herdr-protocol-subscription-alive-p (proc)
   "Return non-nil if PROC is a live subscription connection."
   (and proc (processp proc) (memq (process-status proc) '(open connect))))
+
+(defun herdr-protocol-subscription-started-p (proc)
+  "Return non-nil if PROC received its `subscription_started' ack."
+  (and (herdr-protocol-subscription-alive-p proc)
+       (when-let* ((state (herdr-protocol--get-process-state proc)))
+         (plist-get state :started))))
 
 
 ;;; --- Process state bookkeeping -------------------------------------

@@ -37,7 +37,7 @@
 ;;        task is `done' only when ALL agents are done.
 ;;   §40  NO result extraction.  Agents are persistent interactive workers,
 ;;        not RPC functions; `agent.read' is terminal state, never a
-;;        structured final answer.  `task-wait' returns STATUS only.
+;;        structured final answer.  `task-wait' returns the task model only.
 ;;   §25  no timer polling.  `task-wait' pumps `accept-process-output'
 ;;        (event-driven I/O, like `agent-fleet-wait'); aggregate status is
 ;;        driven by the status-changed hook, never a timer.
@@ -53,9 +53,9 @@
 ;; Task ≠ Herdr agent (§41): an agent can run many tasks; this is fleet-side
 ;; metadata, kept in a registry here, not on the Herdr-mirrored agent struct.
 ;;
-;; This file requires `agent-fleet', `agent-fleet-project', and
-;; `agent-fleet-worktree' one-way; `agent-fleet.el' does NOT require it, so
-;; there is no load cycle (mirrors `agent-fleet-worktree.el' / `-magit.el').
+;; The package entry point loads this feature module through the dashboard
+;; after providing `agent-fleet', so its control/project/worktree requires do
+;; not create a load cycle.
 
 ;;; Code:
 
@@ -78,8 +78,10 @@
   "A parallel task: N isolated agents working on one logical job (PLAN §41).
 AGENTS is a list of pane-id strings.  PROMPT is the shared task description
 (each agent may have received a distinct prompt text; this is the label).
-STARTED-AT / FINISHED-AT are float seconds (nil until the task is done)."
-  id title prompt agents started-at finished-at)
+STARTED-AT / FINISHED-AT are float seconds (nil until the task is done).
+WORKSPACES maps pane ids to their created workspace ids, so cleanup still
+works after a closed pane has disappeared from the live agent cache."
+  id title prompt agents workspaces started-at finished-at)
 
 
 ;;; --- Registry (fleet-side metadata) ---------------------------------
@@ -94,6 +96,12 @@ Populated by `agent-fleet-parallel'; cleared by `agent-fleet-task-cleanup'.")
 
 (defvar agent-fleet--task-id-counter 0
   "Monotonic counter for `task-N' ids (mirrors `agent-fleet--name-counter').")
+
+(defvar agent-fleet-task-changed-hook nil
+  "Hook run after task registry membership changes.
+Each function receives the affected `agent-fleet-task'.  This lets views
+refresh the Task column immediately after creation/cleanup without polling or
+misrepresenting a metadata change as an agent status transition.")
 
 (defun agent-fleet--fresh-task-id ()
   "Return a fresh task id string `task-N'."
@@ -187,9 +195,9 @@ failure is caught and reported; the task records the agents that did launch."
       (signal 'agent-fleet-provisioning-failed
               (list :step 'parallel-cwd :cwd repo)))
     (let ((task-id (agent-fleet--fresh-task-id))
-          (task-title (or title (agent-fleet--fresh-task-id)))
           (started (float-time))
-          spawned failures)
+          spawned workspace-map failures)
+      (let ((task-title (or title task-id)))
       ;; Spawn + prompt each agent.  A failure in one does not abort the rest.
       (dolist (spec specs)
         (let* ((kind (car spec))
@@ -200,25 +208,46 @@ failure is caught and reported; the task records the agents that did launch."
                              kind :worktree t :cwd repo :name name
                              :branch branch :base base :focus focus))
                      (pane-id (herdr-agent-id agent)))
-                (agent-fleet-prompt agent text)
-                (push pane-id spawned))
+                ;; Record a successfully started agent before prompting it.
+                ;; If the prompt RPC fails, the live agent/worktree still
+                ;; exists and must remain visible to task status + cleanup.
+                (push pane-id spawned)
+                (push (cons pane-id (herdr-agent-workspace-id agent))
+                      workspace-map)
+                (condition-case prompt-err
+                    (agent-fleet-prompt agent text)
+                  (error (push (cons name prompt-err) failures))))
             (error
              (push (cons name err) failures)))))
       (unless spawned
         (signal 'agent-fleet-provisioning-failed
                 (list :step 'parallel-spawn :failures failures)))
       (let ((task (make-agent-fleet-task
-                   :id task-id :title task-title :prompt "parallel task"
+                   :id task-id :title task-title
+                   :prompt (let ((prompts (delete-dups
+                                           (mapcar #'cdr specs))))
+                             (if (= (length prompts) 1)
+                                 (car prompts)
+                               "parallel task"))
                    :agents (nreverse spawned)
+                   :workspaces (nreverse workspace-map)
                    :started-at started)))
-        (push task agent-fleet--tasks)
+        ;; Match `agent-fleet-task-list''s documented oldest-to-newest order.
+        (setq agent-fleet--tasks (append agent-fleet--tasks (list task)))
         (dolist (pid (agent-fleet-task-agents task))
           (puthash pid task-id agent-fleet--agent-tasks))
+        ;; Status events can arrive while the serial start/prompt acknowledgments
+        ;; are still being collected, before the pane->task map exists.  Record
+        ;; an already-complete task now so later pane cleanup cannot turn it into
+        ;; a spurious `failed' task merely because that final hook was missed.
+        (when (eq 'done (agent-fleet-task-state task))
+          (setf (agent-fleet-task-finished-at task) (float-time)))
+        (run-hook-with-args 'agent-fleet-task-changed-hook task)
         (when failures
           (message "agent-fleet: task %s started, %d agent(s) failed: %s"
                    task-title (length failures)
                    (mapconcat #'car failures ", ")))
-        task))))
+        task)))))
 
 
 ;;; --- Wait (§38/§25) --------------------------------------------------
@@ -257,7 +286,7 @@ agent finishing early does NOT end the wait (it ends only when the task as a
 whole reaches an `until' state).
 
 Returns TASK (its state is now terminal, or whatever it reached at timeout).
-NO result extraction (§40): returns status only, never agent output — use
+NO result extraction (§40): returns task metadata only, never agent output — use
 `agent-fleet-read' separately to inspect a finished agent."
   (interactive
    (list (or (agent-fleet-task-for-agent
@@ -304,22 +333,50 @@ of worktrees removed."
                                 (agent-fleet-task-title task)
                                 (agent-fleet-task-state task)
                                 (length agents))))
-      (let (removed)
-        (dolist (pid agents)
-          (when-let* ((a (agent-fleet--find-agent pid))
-                      (ws-id (herdr-agent-workspace-id a)))
-            (condition-case _err
-                (progn (agent-fleet-worktree-remove ws-id)
-                       (push pid removed))
-              (error nil))))
-        ;; Drop the task + its agent map entries.
-        (setq agent-fleet--tasks (delq task agent-fleet--tasks))
-        (dolist (pid agents)
-          (remhash pid agent-fleet--agent-tasks))
-        (message "agent-fleet: removed %d/%d worktree(s) for task %s"
-                 (length removed) (length agents)
-                 (agent-fleet-task-title task))
-        (length removed)))))
+      (let* ((resolved
+              (mapcar
+               (lambda (pid)
+                 (let ((agent (agent-fleet--find-agent pid)))
+                   (cons pid
+                         (or (and agent (herdr-agent-workspace-id agent))
+                             (cdr (assoc pid
+                                         (agent-fleet-task-workspaces task)))))))
+               agents))
+             (seen-workspaces (make-hash-table :test 'equal))
+             removed-workspaces failed-workspaces)
+        (dolist (entry resolved)
+          (let ((ws-id (cdr entry)))
+            (when (and ws-id (not (gethash ws-id seen-workspaces)))
+              (puthash ws-id t seen-workspaces)
+              (condition-case _err
+                  (progn
+                    (agent-fleet-worktree-remove ws-id)
+                    (push ws-id removed-workspaces))
+                (error (push ws-id failed-workspaces))))))
+        ;; Forget only members whose worktree was actually removed.  Failed or
+        ;; unresolved members retain their task/workspace metadata so cleanup
+        ;; can be retried after the user resolves dirty-worktree conflicts.
+        (let* ((retained
+                (cl-remove-if
+                 (lambda (entry) (member (cdr entry) removed-workspaces))
+                 resolved))
+               (retained-pids (mapcar #'car retained)))
+          (dolist (entry resolved)
+            (unless (member (car entry) retained-pids)
+              (remhash (car entry) agent-fleet--agent-tasks)))
+          (if retained
+              (setf (agent-fleet-task-agents task) retained-pids
+                    (agent-fleet-task-workspaces task) retained)
+            (setq agent-fleet--tasks (delq task agent-fleet--tasks)))
+          (run-hook-with-args 'agent-fleet-task-changed-hook task)
+          (message "agent-fleet: removed %d/%d worktree(s) for task %s%s"
+                   (length removed-workspaces)
+                   (hash-table-count seen-workspaces)
+                   (agent-fleet-task-title task)
+                   (if (or failed-workspaces retained)
+                       "; failed members retained for retry"
+                     ""))
+          (length removed-workspaces))))))
 
 
 ;;; --- Live status tracking (hook) ------------------------------------

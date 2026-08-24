@@ -11,7 +11,9 @@ assumed — but Herdr may change between versions, so the client must always:
 - discover the socket and protocol version at runtime (`ping`, `herdr status`),
 - tolerate unknown JSON fields (Herdr protocol clients are expected to be
   forward-compatible),
-- treat `session.snapshot` as the canonical resync, never replay events.
+- treat `session.snapshot` as the canonical resync; never synthesize a
+  client-side missed-event replay. Herdr may still drain its bounded EventHub
+  buffer on subscribe, so event application must be idempotent.
 
 ---
 
@@ -311,7 +313,7 @@ require a real `pane_id`.
 
 | Method | Request params | Result (`{type, ...}`) |
 |---|---|---|
-| `agent.start` | `{name?, kind?, pane_id, args, timeout_ms?, wait?}` | `agent_started` → `{agent: AgentInfo, argv: [str]}` |
+| `agent.start` | `{name, kind, pane_id, args?, timeout_ms?}` | `agent_started` → `{agent: AgentInfo, argv: [str]}` |
 | `agent.prompt` | `{target, text}` | `agent_prompted` → `{agent: AgentInfo}` |
 | `agent.prompt` (wait) | `{target, text, wait:{until, timeout_ms}}` | success: `agent_prompted` → `{agent: AgentInfo}`; failure: error `timeout`/`agent_prompt_stalled`/`agent_not_running` |
 | `agent.wait` | `{target, until, timeout_ms}` | `agent_info` → `{agent: AgentInfo}` |
@@ -323,14 +325,15 @@ require a real `pane_id`.
 | `agent.get` | `{target}` | `agent_info` → `{agent: AgentInfo}` |
 
 Notes on params:
-- `agent.start` **`args` is a required `Vec<String>`** (the agent's argv),
-  not optional; `name`/`kind` are `Option`. `target` (for the other `agent.*`
-  methods) is a name *or* pane id, resolved by the server (PLAN.md §11).
+- `agent.start` requires `name`, `kind`, and `pane_id`; `args` is an optional
+  list of extra CLI arguments. `target` (for the other `agent.*` methods) is
+  a name *or* pane id, resolved by the server (PLAN.md §11).
 
 Provisioning / teardown (used by `agent-fleet-start` / `-kill`):
 
 | Method | Request params | Result (`{type, ...}`) |
 |---|---|---|
+| `workspace.create` | `{cwd?, focus?, label?, env?}` | `workspace_created` → `{workspace: WorkspaceInfo, tab: TabInfo, root_pane: PaneInfo}` |
 | `pane.split` | `{workspace_id?, target_pane_id?, direction, ratio?, cwd?, focus?, right_click?, env?}` | `pane_info` → `{pane: PaneInfo}` |
 | `tab.create` | `{workspace_id, cwd?}` | `tab_created` → `{tab: TabInfo, root_pane: PaneInfo}` |
 | `pane.current` | `{}` | `pane_info` → `{pane: PaneInfo}` (focused pane) |
@@ -338,6 +341,9 @@ Provisioning / teardown (used by `agent-fleet-start` / `-kill`):
 
 Notes:
 
+- **`workspace.create` returns a ready root pane.** The client targets that
+  pane directly for `agent.start`; creating another tab would leak an unused
+  shell and was previously hidden by an unfaithful mock response.
 - **`pane.split` has no `tab_id`.** The required field is `direction`
   (`"right"`\|`"down"`, a `SplitDirection` enum), not `split_direction`.
   `target_pane_id` selects the pane to split from (defaulting to the focused
@@ -347,8 +353,6 @@ Notes:
   and `:root_pane` (a shell PaneInfo at the tab cwd); the client targets
   `root_pane.pane_id` for `agent.start` — no separate `pane.split`
   (PLAN.md §16).
-
-Notes:
 
 - **`wait` field** on `agent.prompt` makes submit+wait a single atomic RPC,
   avoiding the race where the agent finishes between a separate prompt and
@@ -378,8 +382,8 @@ adds no protocol — it reuses the Phase 2 RPCs above:
 
 - `agent-fleet-start-for-project` resolves `(project-current)`, then calls
   `workspace.create` (with `cwd=root`, already documented) when no existing
-  workspace hosts the project, and `agent.start` at `cwd=root` (via
-  `pane.split {cwd?}`, §8.1) so the association is immediate.
+  workspace hosts the project, and targets its returned `root_pane` directly.
+  When reusing an existing workspace it provisions via `pane.split {cwd?}`.
 - `agent-fleet-project-agents` and the dashboard `P` filter match agents by
   the canonical root of their `cwd` (an `AgentInfo`/`PaneInfo` field), so
   multiple workspaces per repo (worktrees, §32) all resolve to one project.
@@ -518,8 +522,10 @@ Herdr server → one live agent pane
 - On reconnect: `ping` (check protocol) → `session.snapshot` → **replace**
   local cache wholesale → re-`events.subscribe` with the recomputed
   subscription set.
-- **Do not replay missed events.** Snapshot is the canonical resync; any
-  in-flight per-pane subscriptions are rebuilt from the fresh snapshot.
+- **Do not synthesize missed events client-side.** Snapshot is the canonical
+  resync; any in-flight per-pane subscriptions are rebuilt from it. Herdr's
+  own bounded buffered-event drain may follow the subscribe ack, and those
+  frames are reconciled idempotently against the snapshot.
 - **Workspace labels are derived, not stored.** The server computes a
   workspace's `label` live every frame (`display_name_from`:
   `custom_name` → basename of the first tab's root-pane cwd → `"workspace"`),
