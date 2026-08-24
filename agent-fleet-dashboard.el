@@ -169,6 +169,15 @@ parent frame."
   :type 'integer
   :group 'agent-fleet)
 
+(defcustom agent-fleet-dashboard-child-frame-help-height 8
+  "Bottom lines reserved inside the child-frame dashboard for the help page.
+The transient help (`agent-fleet-dashboard-help', bound to `h') lists
+every dashboard key; reserving space keeps it visible instead of
+overflowing or pushing agent rows out of view.  Added on top of the
+agent rows and the header/mode lines."
+  :type 'integer
+  :group 'agent-fleet)
+
 
 ;;; --- Faces (PLAN.md §28) --------------------------------------------
 
@@ -800,7 +809,8 @@ server fetch), so a status-only event recomputes the same height and
                  'child-frame))
     (let* ((n (length (agent-fleet-list)))
            (lines (max agent-fleet-dashboard-child-frame-min-height
-                       (min (+ n 3)            ; header + rows + slack
+                       (min (+ n 2                  ; header + mode line
+                               agent-fleet-dashboard-child-frame-help-height)
                             agent-fleet-dashboard-child-frame-max-height))))
       (unless (= lines (frame-height frame))
         (set-frame-size frame (frame-width frame) lines)))))
