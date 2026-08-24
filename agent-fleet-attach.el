@@ -43,12 +43,12 @@
 ;; Terminal backends are OPTIONAL dependencies (PLAN §45): the core control
 ;; plane works with none of them installed.  `agent-fleet-attach-backend'
 ;; defaults to `auto', which picks the first ready backend in preference
-;; order (ghostel > eat > vterm > external).  ghostel is preferred (highest
-;; rendering fidelity, §45.1) but only when its dynamic module is actually
-;; loaded and current — a stale/older module leaves ghostel's terminal
-;; functions void, so `auto' falls through to eat (pure Elisp, no module).
-;; `external' (§44 path C) tells the user to run the attach CLI in their own
-;; terminal when no Emacs backend is available.
+;; order (ghostel > eat > vterm).  ghostel is preferred (highest rendering
+;; fidelity, §45.1) but only when its dynamic module is actually loaded and
+;; current — a stale/older module leaves ghostel's terminal functions void,
+;; so `auto' falls through to eat (pure Elisp, no module).  When no backend
+;; is available, attach reports the `herdr agent attach' command to run in
+;; the user's own terminal instead of a synthetic `external' backend.
 ;;
 ;; Security (PLAN §46/§23, unchanged): attach is user-initiated interactive
 ;; viewing — the terminal buffer is transient, NOT persisted or continuously
@@ -94,14 +94,14 @@
 (defcustom agent-fleet-attach-backend 'auto
   "Terminal backend for `agent-fleet-attach' (PLAN §45/§73).
 `auto' (default) picks the first ready backend in preference order:
-ghostel (highest fidelity, §45.1) > eat (pure Elisp) > vterm > external.
-An explicit symbol (`ghostel'/`eat'/`vterm'/`external') uses that backend
-when ready, else `user-error's — an explicit unavailable choice is reported
+ghostel (highest fidelity, §45.1) > eat (pure Elisp) > vterm.
+An explicit symbol (`ghostel'/`eat'/`vterm') uses that backend when
+ready, else `user-error's — an explicit unavailable choice is reported
 rather than silently substituted (set `auto' for graceful fallback).
-`external' is always ready: it prints the `herdr agent attach' command for
-the user to run in their own terminal (§44 path C)."
+When no backend is ready, `agent-fleet-attach' reports the
+`herdr agent attach' command to run in the user's own terminal."
   :type '(choice (const auto) (const ghostel) (const eat)
-                 (const vterm) (const external))
+                 (const vterm))
   :group 'agent-fleet)
 
 (defcustom agent-fleet-attach-buffer-prefix "*agent:"
@@ -127,9 +127,9 @@ and evil-escape integration is known to avoid synthetic insertion."
   :group 'agent-fleet)
 
 ;; Preference order for `auto' (PLAN §45.1: ghostel preferred; §79: eat as the
-;; reliable Elisp fallback; vterm next; external the floor).
+;; reliable Elisp fallback; vterm next).
 (defconst agent-fleet-attach--backend-preference
-  '(ghostel eat vterm external)
+  '(ghostel eat vterm)
   "Backend probe order for `agent-fleet-attach-backend' = `auto'.")
 
 
@@ -166,15 +166,15 @@ in some dev envs)."
     ('ghostel (agent-fleet-attach--ghostel-ready-p))
     ('eat     (agent-fleet-attach--eat-ready-p))
     ('vterm   (agent-fleet-attach--vterm-ready-p))
-    ('external t)
     (_ nil)))
 
 (defun agent-fleet-attach--pick-backend ()
   "Return the backend symbol to use, honoring `agent-fleet-attach-backend'.
-For `auto', the first ready backend in `agent-fleet-attach--backend-preference'
-(`external' is the floor, so `auto' always yields a backend).  For an explicit
-symbol, that backend if ready, else `user-error' (report an explicit
-unavailable choice rather than silently substituting)."
+For `auto', return the first ready backend in
+`agent-fleet-attach--backend-preference', or nil when none is ready
+(the caller reports the attach command then).  For an explicit symbol,
+that backend if ready, else `user-error' (report an explicit unavailable
+choice rather than silently substituting)."
   (let ((choice agent-fleet-attach-backend))
     (cond
      ((eq choice 'auto)
@@ -289,11 +289,6 @@ agent (PLAN §79)."
          (vterm buf-name))
        (agent-fleet-attach--prepare-buffer buf-name pane-id)
        (pop-to-buffer buf-name))
-      ('external
-       (user-error
-        "No Emacs terminal backend found (install eat, ghostel, or vterm).  \
-Run in your terminal: herdr agent attach %s%s"
-        pane-id (if takeover " --takeover" "")))
       (_ (error "Unknown attach backend %S" backend)))))
 
 
@@ -314,8 +309,9 @@ preserved (PLAN §79 — detach does NOT close the pane).  With a prefix arg
 \(TAKEOVER), passes `--takeover' to the attach CLI.
 
 No socket RPC is involved: there is no `agent.attach' method (§43); this is a
-client-side PTY bridge over the `herdr' CLI.  `user-error's if no backend is
-available (set `agent-fleet-attach-backend' to `external' for the command text)."
+client-side PTY bridge over the `herdr' CLI.  If no Emacs terminal backend is
+ready, `user-error's with the `herdr agent attach' command to run in the
+user's own terminal."
   (interactive (list (agent-fleet--read-agent-name "Attach to agent")
                      current-prefix-arg))
   (agent-fleet--ensure-connected)
@@ -335,7 +331,12 @@ available (set `agent-fleet-attach-backend' to `external' for the command text).
           ;; added, or buffers whose local value was changed after spawning.
           (agent-fleet-attach--prepare-buffer buf-name pane-id)
           (pop-to-buffer buf-name))
-      (agent-fleet-attach--spawn backend buf-name pane-id takeover))))
+      (if backend
+          (agent-fleet-attach--spawn backend buf-name pane-id takeover)
+        (user-error
+         "No Emacs terminal backend found (install eat, ghostel, or vterm).  \
+Run in your terminal: herdr agent attach %s%s"
+         pane-id (if takeover " --takeover" ""))))))
 
 (provide 'agent-fleet-attach)
 ;;; agent-fleet-attach.el ends here
