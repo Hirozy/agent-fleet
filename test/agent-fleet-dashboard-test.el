@@ -146,12 +146,14 @@ a metadata table; adding a backend must not change these classifications."
   (should (eq #'agent-fleet-dashboard--display-in-buffer
              (agent-fleet-dashboard--display-backend 'buffer))))
 
-(defun agent-fleet-dashboard-test--fit (agents)
+(defun agent-fleet-dashboard-test--fit (agents &optional help-height)
   "Run `--fit-child-frame-height' against a mocked child frame with AGENTS.
-Returns the (WIDTH . HEIGHT) passed to `set-frame-size', or nil."
+HELP-HEIGHT (default 0) sets the reserved help lines.  Returns the
+\(WIDTH . HEIGHT) passed to `set-frame-size', or nil."
   (let ((agent-fleet-dashboard-child-frame-fit-height t)
         (agent-fleet-dashboard-child-frame-min-height 4)
         (agent-fleet-dashboard-child-frame-max-height 40)
+        (agent-fleet-dashboard-child-frame-help-height (or help-height 0))
         resized)
     (cl-letf* (((symbol-function 'frame-live-p) (lambda (_) t))
                ((symbol-function 'frame-parameter)
@@ -170,9 +172,9 @@ Returns the (WIDTH . HEIGHT) passed to `set-frame-size', or nil."
 
 (ert-deftest agent-fleet-dashboard-child-frame-fit-height-tracks-count ()
   "An enabled child dashboard resizes its height to the agent count."
-  (should (equal '(80 . 8)     ; 5 agents + header + slack
+  (should (equal '(80 . 7)     ; 5 agents + header + mode line
                  (agent-fleet-dashboard-test--fit 5)))
-  (should (equal '(80 . 13)
+  (should (equal '(80 . 12)
                  (agent-fleet-dashboard-test--fit 10))))
 
 (ert-deftest agent-fleet-dashboard-child-frame-fit-height-clamps ()
@@ -181,6 +183,13 @@ Returns the (WIDTH . HEIGHT) passed to `set-frame-size', or nil."
                  (agent-fleet-dashboard-test--fit 0)))
   (should (equal '(80 . 40)    ; 60 agents -> max
                  (agent-fleet-dashboard-test--fit 60))))
+
+(ert-deftest agent-fleet-dashboard-child-frame-fit-height-reserves-help ()
+  "Reserved help lines add to the agent-derived height."
+  (should (equal '(80 . 13)   ; 5 + 2 + 6
+                 (agent-fleet-dashboard-test--fit 5 6)))
+  (should (equal '(80 . 7)     ; no reservation
+                 (agent-fleet-dashboard-test--fit 5 0))))
 
 (ert-deftest agent-fleet-dashboard-child-frame-fit-height-is-off-by-default ()
   "With fit-height disabled, no resize happens on a child dashboard."
@@ -222,6 +231,7 @@ Returns the (WIDTH . HEIGHT) passed to `set-frame-size', or nil."
   (let ((agent-fleet-dashboard-child-frame-fit-height t)
         (agent-fleet-dashboard-child-frame-min-height 4)
         (agent-fleet-dashboard-child-frame-max-height 40)
+        (agent-fleet-dashboard-child-frame-help-height 0)
         resized)
     (cl-letf* (((symbol-function 'frame-live-p) (lambda (_) t))
                ((symbol-function 'frame-parameter)
@@ -229,8 +239,8 @@ Returns the (WIDTH . HEIGHT) passed to `set-frame-size', or nil."
                   (and (eq param 'agent-fleet-dashboard-display)
                        'child-frame)))
                ((symbol-function 'agent-fleet-list)
-                (lambda () (make-list 5 nil)))     ; 5 -> 8 lines
-               ((symbol-function 'frame-height) (lambda (_) 8)) ; already 8
+                (lambda () (make-list 5 nil)))     ; 5 -> 7 lines
+               ((symbol-function 'frame-height) (lambda (_) 7)) ; already 7
                ((symbol-function 'frame-width) (lambda (_) 80))
                ((symbol-function 'set-frame-size)
                 (lambda (&rest _) (setq resized t))))
