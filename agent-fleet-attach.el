@@ -31,24 +31,22 @@
 ;; Attach is NOT a socket RPC: there is no `agent.attach' method (§43).
 ;; `herdr agent attach <pane-id>' is a CLI helper that bridges a single live
 ;; pane as an interactive PTY client (§44 path A).  This layer spawns that
-;; CLI inside a terminal backend (eat / ghostel / vterm) and pops the buffer.
+;; CLI inside the ghostel terminal backend and pops the buffer.
 ;; Killing the process detaches; the agent is preserved (it is NOT closed).
 ;;
-;;   Emacs terminal backend (eat/ghostel/vterm)
+;;   ghostel terminal backend
 ;;     ↓  PTY
 ;;   herdr agent attach <pane-id>
 ;;     ↓  socket
 ;;   Herdr server → one live agent pane
 ;;
-;; Terminal backends are OPTIONAL dependencies (PLAN §45): the core control
-;; plane works with none of them installed.  `agent-fleet-attach-backend'
-;; defaults to `auto', which picks the first ready backend in preference
-;; order (ghostel > eat > vterm).  ghostel is preferred (highest rendering
-;; fidelity, §45.1) but only when its dynamic module is actually loaded and
-;; current — a stale/older module leaves ghostel's terminal functions void,
-;; so `auto' falls through to eat (pure Elisp, no module).  When no backend
-;; is available, attach reports the `herdr agent attach' command to run in
-;; the user's own terminal instead of a synthetic `external' backend.
+;; ghostel is an OPTIONAL dependency (PLAN §45): the core control plane works
+;; without it installed.  `agent-fleet-attach-backend' defaults to `auto',
+;; which uses ghostel when its dynamic module is actually loaded and current
+;; — a stale/older module leaves ghostel's terminal functions void, so `auto'
+;; yields no backend rather than calling a `ghostel-exec' that would crash.
+;; When ghostel is not available, attach reports the `herdr agent attach'
+;; command to run in the user's own terminal.
 ;;
 ;; Security (PLAN §46/§23, unchanged): attach is user-initiated interactive
 ;; viewing — the terminal buffer is transient, NOT persisted or continuously
@@ -64,21 +62,11 @@
 (require 'subr-x)
 (require 'agent-fleet)
 
-;; Terminal backends are optional (PLAN §45): declare the public entry points
-;; so the byte-compiler does not warn, without forcing a top-level `require`.
-;; `ghostel-exec' is what `--spawn' calls; ghostel's dynamic module is probed
-;; at runtime via `featurep 'ghostel-module' (a stale/missing module leaves the
-;; feature unset even when the lisp `require's), which is how
-;; `--ghostel-ready-p' tells a working ghostel from a lisp-only one.
-(declare-function eat-exec "eat" (buffer name command startfile switches))
-(declare-function eat-mode "eat" ())
+;; ghostel is an optional backend (PLAN §45): declare its public entry
+;; point so the byte-compiler does not warn, without forcing a top-level
+;; `require'.  `ghostel-exec' is what `--spawn' calls; the working-module
+;; probe lives in `agent-fleet-attach--ghostel-ready-p'.
 (declare-function ghostel-exec "ghostel" (buffer program &optional args))
-(declare-function vterm "vterm" (&optional arg))
-;; Marked special (no value) so the byte-compiler treats a `let'-binding of
-;; `vterm-shell' as dynamic, not lexical — vterm.el defines it as a defcustom,
-;; but is an optional dep that may not be loaded at byte-compile time.  The
-;; vterm launch reads `vterm-shell' dynamically via `sh -c "exec <vterm-shell>"'.
-(defvar vterm-shell)
 ;; Optional evil-escape dependency.  Its global pre-command hook consults
 ;; this variable dynamically, so a buffer-local value can safely protect an
 ;; attach terminal without loading evil-escape or changing the user's global
@@ -93,15 +81,12 @@
 
 (defcustom agent-fleet-attach-backend 'auto
   "Terminal backend for `agent-fleet-attach' (PLAN §45/§73).
-`auto' (default) picks the first ready backend in preference order:
-ghostel (highest fidelity, §45.1) > eat (pure Elisp) > vterm.
-An explicit symbol (`ghostel'/`eat'/`vterm') uses that backend when
-ready, else `user-error's — an explicit unavailable choice is reported
-rather than silently substituted (set `auto' for graceful fallback).
-When no backend is ready, `agent-fleet-attach' reports the
-`herdr agent attach' command to run in the user's own terminal."
-  :type '(choice (const auto) (const ghostel) (const eat)
-                 (const vterm))
+`auto' (default) uses ghostel when its dynamic module is loaded and
+current.  An explicit `ghostel' uses that backend when ready, else
+`user-error's (set `auto' for graceful fallback).  When ghostel is not
+ready, `agent-fleet-attach' reports the `herdr agent attach' command to
+run in the user's own terminal."
+  :type '(choice (const auto) (const ghostel))
   :group 'agent-fleet)
 
 (defcustom agent-fleet-attach-buffer-prefix "*agent:"
@@ -126,10 +111,10 @@ and evil-escape integration is known to avoid synthetic insertion."
   :type 'boolean
   :group 'agent-fleet)
 
-;; Preference order for `auto' (PLAN §45.1: ghostel preferred; §79: eat as the
-;; reliable Elisp fallback; vterm next).
+;; `auto' probes only ghostel (PLAN §45.1); when its module is not ready,
+;; `auto' yields nil and the attach command reports the CLI instead.
 (defconst agent-fleet-attach--backend-preference
-  '(ghostel eat vterm)
+  '(ghostel)
   "Backend probe order for `agent-fleet-attach-backend' = `auto'.")
 
 
@@ -142,30 +127,17 @@ older/broken on-disk module, or a missing libghostty-vt dependency): at
 ghostel.el load time the module loader calls module-load, which provides
 the ghostel-module feature ONLY on success.  So checking that feature is
 the staleness signal — nil when the lisp loaded but the module did not
-take.  This lets auto fall through to eat rather than calling ghostel-exec
+take.  This lets `auto' yield no backend rather than calling `ghostel-exec'
 when it would crash at runtime (the §45.1 module-dependency risk, realized
 in some dev envs)."
   (and (require 'ghostel nil t)
        (featurep 'ghostel-module)
        (fboundp 'ghostel-exec)))
 
-(defun agent-fleet-attach--eat-ready-p ()
-  "Return non-nil if Eat is loaded or loadable (pure Elisp, no module)."
-  (and (or (featurep 'eat) (require 'eat nil t))
-       (fboundp 'eat-mode)
-       (fboundp 'eat-exec)))
-
-(defun agent-fleet-attach--vterm-ready-p ()
-  "Return non-nil if vterm is loaded or loadable."
-  (and (or (featurep 'vterm) (require 'vterm nil t))
-       (fboundp 'vterm)))
-
 (defun agent-fleet-attach--ready-p (backend)
   "Return non-nil if BACKEND is usable in this Emacs."
   (pcase backend
     ('ghostel (agent-fleet-attach--ghostel-ready-p))
-    ('eat     (agent-fleet-attach--eat-ready-p))
-    ('vterm   (agent-fleet-attach--vterm-ready-p))
     (_ nil)))
 
 (defun agent-fleet-attach--pick-backend ()
@@ -264,12 +236,6 @@ transient interactive view; killing the process detaches and preserves the
 agent (PLAN §79)."
   (let ((argv (agent-fleet-attach--argv pane-id takeover)))
     (pcase backend
-      ('eat
-       (with-current-buffer (get-buffer-create buf-name)
-         (eat-mode)
-         (eat-exec buf-name "herdr-attach" "herdr" nil argv))
-       (agent-fleet-attach--prepare-buffer buf-name pane-id)
-       (pop-to-buffer buf-name))
       ('ghostel
        ;; Unlike the interactive `ghostel' entry point, `ghostel-exec'
        ;; requires BUFFER to exist already (`with-current-buffer' is its
@@ -279,16 +245,6 @@ agent (PLAN §79)."
          (ghostel-exec buffer "herdr" argv)
          (agent-fleet-attach--prepare-buffer buffer pane-id)
          (pop-to-buffer buffer)))
-      ('vterm
-       ;; vterm has no argv launch API: it runs `vterm-shell' via
-       ;; `sh -c "...; exec <vterm-shell>"', so a command string is parsed
-       ;; by the shell.  Build it as a quoted shell command.
-       (let ((vterm-shell (mapconcat
-                           #'shell-quote-argument
-                           (append '("herdr") argv) " ")))
-         (vterm buf-name))
-       (agent-fleet-attach--prepare-buffer buf-name pane-id)
-       (pop-to-buffer buf-name))
       (_ (error "Unknown attach backend %S" backend)))))
 
 
@@ -334,7 +290,7 @@ user's own terminal."
       (if backend
           (agent-fleet-attach--spawn backend buf-name pane-id takeover)
         (user-error
-         "No Emacs terminal backend found (install eat, ghostel, or vterm).  \
+         "No Emacs terminal backend found (install ghostel).  \
 Run in your terminal: herdr agent attach %s%s"
          pane-id (if takeover " --takeover" ""))))))
 
