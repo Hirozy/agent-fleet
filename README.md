@@ -86,9 +86,9 @@ periodically poll the server.
 | Key | Action |
 |---|---|
 | `RET` or `o` | Inspect recent output |
-| `p` | Send a prompt |
+| `s` | Send a prompt |
 | `i` | Send `Ctrl-C` |
-| `k` | Kill the agent |
+| `x` | Kill the agent |
 | `r` | Rename the agent |
 | `g` | Refresh from the server |
 | `P` | Toggle a project filter |
@@ -98,6 +98,8 @@ periodically poll the server.
 | `m` | Open Magit status |
 | `a` | Attach to the live terminal |
 | `h` | Open the transient help menu |
+| `p` / `k` | Move up a row |
+| `n` / `j` | Move down a row |
 | `q` | Close the dashboard window or frame |
 
 The dashboard normally opens in an ordinary Emacs window. It can instead use
