@@ -87,15 +87,22 @@ Columns: 0 Project, 1 Agent, 2 Kind, 3 State, 4 Task."
     (should (eq map agent-fleet-mode-map))
     (dolist (binding agent-fleet-dashboard--bindings)
       (should (eq (cdr binding)
-                  (cadr (member (kbd (car binding)) evil-bindings)))))))
+                  (cadr (member (kbd (car binding)) evil-bindings)))))
+    (dolist (key agent-fleet-dashboard--retired-bindings)
+      (let ((entry (member (kbd key) evil-bindings)))
+        (should entry)
+        (should-not (cadr entry))))))
 
 (ert-deftest agent-fleet-dashboard-reload-updates-existing-mode-map ()
-  "Reinstalling bindings repairs a mode map created by an older load."
+  "Reinstalling bindings repairs additions and removals in an older map."
   (let ((agent-fleet-mode-map (make-sparse-keymap)))
+    (define-key agent-fleet-mode-map (kbd "RET")
+                #'agent-fleet-dashboard-inspect)
     (should-not (lookup-key agent-fleet-mode-map (kbd "h")))
     (agent-fleet-dashboard--install-key-bindings)
     (should (eq #'agent-fleet-dashboard-help
-                (lookup-key agent-fleet-mode-map (kbd "h"))))))
+                (lookup-key agent-fleet-mode-map (kbd "h"))))
+    (should-not (lookup-key agent-fleet-mode-map (kbd "RET")))))
 
 
 ;;; --- Display backends ----------------------------------------------
@@ -242,6 +249,67 @@ a metadata table; adding a backend must not change these classifications."
         ;; A resize of an unrelated frame does not touch the child.
         (agent-fleet-dashboard--recenter-on-parent-resize 'other)
         (should (= 1 calls))))))
+
+(ert-deftest agent-fleet-dashboard-frame-callbacks-use-real-hook-lists ()
+  "Frame lifecycle callbacks are installed as hooks and dispatch safely.
+This exercises `run-hook-with-args' itself; directly calling the callbacks
+would not catch an accidental `add-function' wrapper around a nil hook."
+  (dolist (entry
+           '((window-size-change-functions
+              . agent-fleet-dashboard--recenter-on-parent-resize)
+             (delete-frame-functions
+              . agent-fleet-dashboard--forget-centered-child)))
+    (let ((value (default-value (car entry))))
+      (should (listp value))
+      (should (memq (cdr entry) value))))
+  (let ((window-size-change-functions
+         (list #'agent-fleet-dashboard--recenter-on-parent-resize))
+        (delete-frame-functions
+         (list #'agent-fleet-dashboard--forget-centered-child))
+        (agent-fleet-dashboard--centered-children nil))
+    (should
+     (eq 'ok
+         (condition-case nil
+             (progn
+               (run-hook-with-args 'window-size-change-functions
+                                   (selected-frame))
+               (run-hook-with-args 'delete-frame-functions
+                                   (selected-frame))
+               'ok)
+           (error 'failed))))))
+
+(ert-deftest agent-fleet-dashboard-frame-hooks-repair-old-function-wrapper ()
+  "Reloading repairs hook values composed by the former `add-function' bug."
+  (let ((window-size-change-functions nil)
+        (delete-frame-functions nil)
+        (agent-fleet-dashboard--centered-children nil))
+    ;; Reproduce the old top-level registration exactly.  Each hook becomes
+    ;; a single advice wrapper whose original function is nil.
+    (add-function :after (default-value 'window-size-change-functions)
+                  #'agent-fleet-dashboard--recenter-on-parent-resize)
+    (add-function :after (default-value 'delete-frame-functions)
+                  #'agent-fleet-dashboard--forget-centered-child)
+    (should-not (listp (default-value 'window-size-change-functions)))
+    (should-not (listp (default-value 'delete-frame-functions)))
+    (agent-fleet-dashboard--setup-frame-hooks)
+    (dolist (entry
+             '((window-size-change-functions
+                . agent-fleet-dashboard--recenter-on-parent-resize)
+               (delete-frame-functions
+                . agent-fleet-dashboard--forget-centered-child)))
+      (let ((value (default-value (car entry))))
+        (should (listp value))
+        (should (memq (cdr entry) value))))
+    (should
+     (eq 'ok
+         (condition-case nil
+             (progn
+               (run-hook-with-args 'window-size-change-functions
+                                   (selected-frame))
+               (run-hook-with-args 'delete-frame-functions
+                                   (selected-frame))
+               'ok)
+           (error 'failed))))))
 
 (ert-deftest agent-fleet-dashboard-child-frame-reopen-avoids-nesting ()
   "Reopening from the dashboard child uses its existing native parent."
@@ -755,7 +823,7 @@ following `pane.agent_status_changed' (dotted per-pane kind) event."
     (should (eq 'agent-fleet-unknown-face (get-text-property 0 'face cell)))))
 
 
-;;; --- Column fallbacks (provisional) ----------------
+;;; --- Column fallbacks ----------------------------------------------
 
 (ert-deftest agent-fleet-dashboard-columns ()
   "Project/Kind/Task/State helpers fall back gracefully."

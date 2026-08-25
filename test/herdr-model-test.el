@@ -384,10 +384,9 @@ and skips the upsert."
       (should-not (herdr-model-find-pane session "w2:p1")))))
 
 (ert-deftest herdr-model-workspace-created-replay-preserves-snapshot-label ()
-  "Workspace labels are derived live (方案 A), so a replayed
+  "Workspace labels are derived live, so a replayed
 `workspace_created' for an already-cached workspace cannot stale the
-display name: the snapshot is canonical (reconnect contract,
-docs/PROTOCOL.md ) and the creation is skipped, and — because
+display name: the snapshot is canonical and the creation is skipped, and — because
 `herdr-workspace-label' prefers `custom-name' then root-pane cwd then
 `cached-label' — neither a replayed creation nor a `workspace_updated'
 overrides a frozen `custom-name'.  Only `workspace_renamed' changes the
@@ -452,7 +451,7 @@ custom name."
 `pane_updated' that changes the root pane's cwd changes the label with
 NO workspace event arriving.  The server pushes cwd changes only as
 `pane_updated' (never a workspace event), so a cached-label design goes
-stale here; this is the behavior that distinguishes 方案 A."
+stale here; this distinguishes the live-derived-label behavior."
   (let ((session (herdr-model-parse-snapshot
                   (herdr-model-test--snapshot-with "w1" "proj-a" "/work/proj-a"))))
     (herdr-model-set-cache session)

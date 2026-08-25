@@ -685,7 +685,7 @@ Returns the live envelope `(:type \"agent_info\" :agent <AgentInfo>)'."
 
 (defun herdr-mock--h-pane-split (params)
   "Mock pane.split: allocate a fresh pane id and return a pane info.
-Honors the `cwd' param (PROTOCOL.md : `pane.split {cwd?}'), defaulting
+Honors the optional `cwd' parameter, defaulting
 to \"/tmp\" when absent.  Pushes a `pane_created' event (as a real Herdr
 would) so the client's cache gains the pane and its per-pane status
 subscription is rebuilt.  Records the pane so `agent.start' can inherit

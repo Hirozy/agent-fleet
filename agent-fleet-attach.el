@@ -128,7 +128,7 @@ ghostel.el load time the module loader calls module-load, which provides
 the ghostel-module feature ONLY on success.  So checking that feature is
 the staleness signal — nil when the lisp loaded but the module did not
 take.  This lets `auto' yield no backend rather than calling `ghostel-exec'
-when it would crash at runtime (the  module-dependency risk, realized
+when it would crash at runtime (the module-dependency risk, realized
 in some dev envs)."
   (and (require 'ghostel nil t)
        (featurep 'ghostel-module)
@@ -235,8 +235,19 @@ takes over the current window rather than splitting the frame — the
 terminal fills the window the user just acted from.  Every attach entry
 point (`M-x agent-fleet-attach', the dashboard `a' key, and the
 auto-attach after `agent-fleet-start') goes through here, so they all
-present the same way."
-  (display-buffer buffer '(display-buffer-same-window)))
+present the same way.  A dedicated selected window is replaced directly
+and remains dedicated to the attach buffer; no display fallback may create
+a split or resize another terminal window."
+  (let* ((window (selected-window))
+         (dedicated (window-dedicated-p window)))
+    (when dedicated
+      (set-window-dedicated-p window nil))
+    (unwind-protect
+        (progn
+          (set-window-buffer window buffer)
+          window)
+      (when (window-live-p window)
+        (set-window-dedicated-p window dedicated)))))
 
 ;;; --- Spawn (backend dispatch) ---------------------------------------
 
