@@ -592,14 +592,14 @@ it yet."
                (lambda (_) "w1:p1"))
               ((symbol-function 'agent-fleet--ensure-connected) #'ignore)
               ((symbol-function 'agent-fleet-attach--pick-backend)
-               (lambda () 'eat))
+               (lambda () 'ghostel))
               ((symbol-function 'agent-fleet-attach--live-buffer-p)
                (lambda (_buffer &optional _pane-id) nil))
               ((symbol-function 'agent-fleet-attach--spawn)
                (lambda (&rest args) (setq captured args))))
       (let ((current-prefix-arg '(4)))
         (call-interactively #'agent-fleet-attach)))
-    (should (equal '(eat "*agent:arch*" "w1:p1" (4)) captured))))
+    (should (equal '(ghostel "*agent:arch*" "w1:p1" (4)) captured))))
 
 
 ;;; --- Dashboard -------------------------------------------------------
