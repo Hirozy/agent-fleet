@@ -214,30 +214,30 @@ Shows worktree METADATA only.  SOURCE
 is a `WorktreeSourceInfo' plist or nil."
   (let ((buf (get-buffer-create "*Agent Fleet Worktree*")))
     (with-current-buffer buf
-      (read-only-mode -1)
-      (erase-buffer)
-      (insert (format "Worktree for workspace %s\n\n" (or ws-id "?")))
-      (agent-fleet-worktree--insert-field "Path" (or (herdr-worktree-path wt) "?"))
-      (agent-fleet-worktree--insert-field
-       "Branch" (or (herdr-worktree-branch wt) "(detached)"))
-      (agent-fleet-worktree--insert-field
-       "Label" (or (herdr-worktree-label wt) "—"))
-      (agent-fleet-worktree--insert-field
-       "Repo" (or (plist-get source :repo_name)
-                  (plist-get source :repo_root)
-                  "—"))
-      (agent-fleet-worktree--insert-field
-       "Linked" (if (herdr-worktree-is-linked-worktree wt) "yes" "no"))
-      (agent-fleet-worktree--insert-field
-       "Bare" (if (herdr-worktree-is-bare wt) "yes" "no"))
-      (agent-fleet-worktree--insert-field
-       "Detached" (if (herdr-worktree-is-detached wt) "yes" "no"))
-      (agent-fleet-worktree--insert-field
-       "Prunable" (if (herdr-worktree-is-prunable wt) "yes" "no"))
-      (goto-char (point-min))
-      (read-only-mode 1)
-      (set-buffer-modified-p nil))
-    (display-buffer buf)))
+      (special-mode)                 ; read-only view: `q' quits, etc.
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (format "Worktree for workspace %s\n\n" (or ws-id "?")))
+        (agent-fleet-worktree--insert-field "Path" (or (herdr-worktree-path wt) "?"))
+        (agent-fleet-worktree--insert-field
+         "Branch" (or (herdr-worktree-branch wt) "(detached)"))
+        (agent-fleet-worktree--insert-field
+         "Label" (or (herdr-worktree-label wt) "—"))
+        (agent-fleet-worktree--insert-field
+         "Repo" (or (plist-get source :repo_name)
+                    (plist-get source :repo_root)
+                    "—"))
+        (agent-fleet-worktree--insert-field
+         "Linked" (if (herdr-worktree-is-linked-worktree wt) "yes" "no"))
+        (agent-fleet-worktree--insert-field
+         "Bare" (if (herdr-worktree-is-bare wt) "yes" "no"))
+        (agent-fleet-worktree--insert-field
+         "Detached" (if (herdr-worktree-is-detached wt) "yes" "no"))
+        (agent-fleet-worktree--insert-field
+         "Prunable" (if (herdr-worktree-is-prunable wt) "yes" "no"))
+        (goto-char (point-min))
+        (set-buffer-modified-p nil)))
+    (pop-to-buffer buf)))            ; select the worktree window
 
 ;;;###autoload
 (defun agent-fleet-worktree-status (target)

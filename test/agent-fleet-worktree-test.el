@@ -169,6 +169,8 @@ read-only, and returns the struct.  Metadata only (§46/§23: no pane output)."
               (should (get-buffer buf-name))
               (with-current-buffer buf-name
                 (should buffer-read-only)
+                (should (eq 'quit-window
+                            (lookup-key (current-local-map) (kbd "q"))))
                 (should (string-match-p (herdr-worktree-path wt)
                                         (buffer-string)))
                 ;; repo source is present (from the worktree.list refresh).
