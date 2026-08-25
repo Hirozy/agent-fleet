@@ -424,9 +424,12 @@ a metadata table; adding a backend must not change these classifications."
     (should (equal '(rename interrupt prompt) calls))))
 
 (ert-deftest agent-fleet-dashboard-child-attach-replaces-parent-and-closes ()
-  "Child attach replaces the parent's current window then deletes the child."
+  "Child attach selects the parent frame, delegates to `agent-fleet-attach'
+(which itself displays same-window), then deletes the child dashboard.
+The visitor selects the origin frame first so the attach buffer lands in
+the parent's window, not the child dashboard."
   (let ((current-frame 'child)
-        attached action deleted)
+        attached deleted)
     (cl-letf (((symbol-function 'agent-fleet-dashboard--agent-at-point)
                (lambda () "w1:p1"))
               ((symbol-function 'selected-frame)
@@ -449,15 +452,13 @@ a metadata table; adding a backend must not change these classifications."
                (lambda (frame) (setq current-frame frame)))
               ((symbol-function 'agent-fleet-attach)
                (lambda (pane-id &optional takeover)
-                 (setq attached (list pane-id takeover)
-                       action display-buffer-overriding-action)
+                 (setq attached (list pane-id takeover))
                  'attached))
               ((symbol-function 'delete-frame)
                (lambda (frame &optional _force) (setq deleted frame))))
       (should (eq 'attached (agent-fleet-dashboard-attach))))
     (should (equal '("w1:p1" nil) attached))
     (should (eq current-frame 'parent))
-    (should (equal '((display-buffer-same-window)) action))
     (should (eq deleted 'child))))
 
 (ert-deftest agent-fleet-dashboard-child-attach-error-keeps-dashboard ()

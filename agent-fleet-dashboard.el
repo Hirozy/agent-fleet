@@ -539,12 +539,12 @@ attach buffer and delete the child after attach succeeds.  Delegates to
   (interactive)
   (let ((pane-id (agent-fleet-dashboard--agent-at-point))
         (takeover current-prefix-arg))
-    ;; `agent-fleet-attach' ultimately calls `pop-to-buffer'.  Force it into
-    ;; the origin frame's selected window; the shared visitor then closes a
-    ;; child dashboard only after that interface opened successfully.
+    ;; `agent-fleet-attach' displays its buffer in the selected window
+    ;; (same-window); the visitor first selects the origin frame so that
+    ;; window is the parent's, then closes a child dashboard only after
+    ;; the attach opened successfully.
     (agent-fleet-dashboard--visit-external-interface
-     (lambda () (agent-fleet-attach pane-id takeover))
-     '((display-buffer-same-window)))))
+     (lambda () (agent-fleet-attach pane-id takeover)))))
 
 
 ;;; --- Command help ---------------------------------------------------

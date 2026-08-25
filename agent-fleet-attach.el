@@ -226,6 +226,18 @@ variables."
     buf))
 
 
+;;; --- Presentation (same-window display) -----------------------------
+
+(defun agent-fleet-attach--display (buffer)
+  "Display BUFFER in the selected window, replacing its contents.
+An attach buffer is the surface for driving a live agent terminal, so it
+takes over the current window rather than splitting the frame — the
+terminal fills the window the user just acted from.  Every attach entry
+point (`M-x agent-fleet-attach', the dashboard `a' key, and the
+auto-attach after `agent-fleet-start') goes through here, so they all
+present the same way."
+  (display-buffer buffer '(display-buffer-same-window)))
+
 ;;; --- Spawn (backend dispatch) ---------------------------------------
 
 (defun agent-fleet-attach--spawn (backend buf-name pane-id takeover)
@@ -244,7 +256,7 @@ agent; detaching never closes the pane."
        (let ((buffer (get-buffer-create buf-name)))
          (ghostel-exec buffer "herdr" argv)
          (agent-fleet-attach--prepare-buffer buffer pane-id)
-         (pop-to-buffer buffer)))
+         (agent-fleet-attach--display buffer)))
       (_ (error "Unknown attach backend %S" backend)))))
 
 
@@ -256,8 +268,9 @@ agent; detaching never closes the pane."
 TARGET is an agent name, pane id, symbol, or `herdr-agent' struct, resolved
 to a real pane id.  Spawns the attach CLI inside the chosen terminal backend
 (`agent-fleet-attach-backend', default `auto') in a `*agent:NAME*' buffer and
-pops it so the live agent PTY/TUI can be driven from Emacs.  If a live attach
-buffer for the agent already exists, reuses it instead of double-attaching.
+displays it in the selected window (replacing its contents) so the live
+agent PTY/TUI can be driven from Emacs.  If a live attach buffer for the
+agent already exists, reuses it instead of double-attaching.
 
 This is a live interactive session, NOT a persisted or mirrored view (§46/§23):
 the buffer is transient; killing the process detaches and the agent is
@@ -286,7 +299,7 @@ user's own terminal."
           ;; Also repair attach buffers created before this safeguard was
           ;; added, or buffers whose local value was changed after spawning.
           (agent-fleet-attach--prepare-buffer buf-name pane-id)
-          (pop-to-buffer buf-name))
+          (agent-fleet-attach--display buf-name))
       (if backend
           (agent-fleet-attach--spawn backend buf-name pane-id takeover)
         (user-error
