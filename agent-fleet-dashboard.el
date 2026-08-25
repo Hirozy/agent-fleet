@@ -759,6 +759,7 @@ frame) is its own parent."
                   ;; Reused child frames also receive current lifecycle data.
                   (modify-frame-parameters child private)
                   (select-frame-set-input-focus child)
+                  (agent-fleet-dashboard--center-child-frame child parent)
                   buffer)
               (agent-fleet-dashboard--fallback-to-buffer
                buffer "Emacs could not create a child frame"))
@@ -766,6 +767,53 @@ frame) is its own parent."
            (agent-fleet-dashboard--fallback-to-buffer
             buffer (format "child-frame creation failed: %s"
                            (error-message-string err)))))))))
+
+(defvar agent-fleet-dashboard--centered-children nil
+  "Alist (CHILD-FRAME . PARENT-FRAME) for centered child dashboards.
+Used by the parent-resize hook to re-center a child after its parent is
+resized, since fractional `left'/`top' position parameters are not
+reliably applied on every build.")
+
+(defun agent-fleet-dashboard--center-child-frame (frame parent)
+  "Center child FRAME within PARENT in pixels.
+The fractional `left'/`top' parameters should center a child frame per
+the Emacs manual, but some builds (notably macOS) do not apply them at
+creation.  Compute the center in pixels and call `set-frame-position'
+explicitly so the dashboard is reliably centered within its parent."
+  (when (and (frame-live-p frame)
+             (frame-live-p parent)
+             (display-graphic-p parent))
+    (let* ((pw (frame-pixel-width parent))
+           (ph (frame-pixel-height parent))
+           (cw (frame-pixel-width frame))
+           (ch (frame-pixel-height frame))
+           (left (max 0 (/ (- pw cw) 2)))
+           (top  (max 0 (/ (- ph ch) 2))))
+      (set-frame-position frame left top)
+      (setf (alist-get frame agent-fleet-dashboard--centered-children) parent))))
+
+(defun agent-fleet-dashboard--recenter-on-parent-resize (frame)
+  "Re-center child dashboards whose parent is FRAME after it resizes."
+  (when (and (display-graphic-p frame)
+             agent-fleet-dashboard--centered-children)
+    (dolist (cell agent-fleet-dashboard--centered-children)
+      (let ((child (car cell))
+            (parent (cdr cell)))
+        (when (and (eq parent frame)
+                   (frame-live-p child)
+                   (eq (frame-parameter child 'agent-fleet-dashboard-display)
+                       'child-frame))
+          (agent-fleet-dashboard--center-child-frame child parent))))))
+
+(defun agent-fleet-dashboard--forget-centered-child (frame)
+  "Drop FRAME from the centered-children tracking when it is deleted."
+  (setq agent-fleet-dashboard--centered-children
+        (assq-delete-all frame agent-fleet-dashboard--centered-children)))
+
+(add-function :after (default-value 'window-size-change-functions)
+              #'agent-fleet-dashboard--recenter-on-parent-resize)
+(add-function :after (default-value 'delete-frame-functions)
+              #'agent-fleet-dashboard--forget-centered-child)
 
 (defun agent-fleet-dashboard--display-in-frame (buffer)
   "Display dashboard BUFFER in a reusable standalone graphical frame."
