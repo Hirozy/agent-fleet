@@ -22,7 +22,7 @@
 
 ;;; Commentary:
 
-;; The Magit layer (PLAN.md Phase 6, §36/§71).  Opens Magit's own status /
+;; The Magit layer.  Opens Magit's own status /
 ;; diff buffers scoped to an agent's checkout — it does NOT reinvent a diff
 ;; or cherry-pick UI (§36 "不需要重新发明 diff viewer"; §71 "尽量全部调用
 ;; Magit public API").  Cherry-pick, merge, and worktree deletion are reached
@@ -32,7 +32,7 @@
 ;;   `agent-fleet-magit-status'  -> `magit-status' on the agent's repo root
 ;;   `agent-fleet-magit-diff'    -> `magit-diff-working-tree' (uncommitted)
 ;;
-;; Magit is an OPTIONAL dependency (PLAN §55/§62; the doctor already reports
+;; Magit is an OPTIONAL dependency (§55/§62; the doctor already reports
 ;; availability at `herdr.el').  Entry points `user-error' clearly when Magit
 ;; is absent; `declare-function' silences the byte-compiler without a top-level
 ;; `require', so the package loads and compiles with no Magit installed.
@@ -49,7 +49,7 @@
 (require 'agent-fleet-project)
 (require 'agent-fleet-worktree)
 
-;; Magit is optional (PLAN §55): declare the public entry points so the
+;; Magit is optional: declare the public entry points so the
 ;; byte-compiler does not warn, without forcing a top-level `require'.
 (declare-function magit-status "magit-status" (&optional directory))
 (declare-function magit-diff-working-tree "magit-diff" (&optional range args files))
@@ -59,7 +59,7 @@
 
 (defun agent-fleet-magit--available-p ()
   "Return non-nil if Magit is loaded or loadable.
-Magit is an optional dependency (PLAN §55); this loads it on demand so the
+Magit is an optional dependency; this loads it on demand so the
 rest of the package compiles and loads without it.  Returning nil (Magit
 not installed) causes the entry points to `user-error' with install advice."
   (or (featurep 'magit) (require 'magit nil t)))
@@ -85,7 +85,7 @@ is inside a worktree, the root is that worktree's root; for a bare agent
 it is the main repo root.  Resolution is by canonical cwd
 (`agent-fleet-project-root-for-cwd', Phase 4 §32), reusing its nil/empty/
 non-existent-cwd guards.  When the agent has no usable cwd but a worktree
-is cached, the worktree path is the fallback (PLAN §36 \"open agent
+is cached, the worktree path is the fallback (§36 \"open agent
 worktree in Magit\").  Returns nil if no directory is reachable."
   (when-let* ((a (agent-fleet--find-agent agent)))
     (or (agent-fleet-magit--checkout-root-for-cwd (herdr-agent-cwd a))
@@ -99,7 +99,7 @@ worktree in Magit\").  Returns nil if no directory is reachable."
 
 (defun agent-fleet-magit--with-root (target label open-fn)
   "Resolve TARGET to a git root and call OPEN-FN with it.
-Guards Magit availability (PLAN §55): `user-error' when Magit is absent.
+Guards Magit availability: `user-error' when Magit is absent.
 Messages and returns nil when TARGET is unresolvable or has no reachable
 git root.  OPEN-FN is called as (funcall OPEN-FN ROOT) with
 `default-directory' let-bound to ROOT, so Magit commands that read it
@@ -108,7 +108,7 @@ names the action in the no-root message."
   (unless (agent-fleet-magit--available-p)
     (user-error
      "Magit is not installed (M-x package-install RET magit); \
-it is an optional dependency (PLAN §55)"))
+it is an optional dependency"))
   (let* ((agent (agent-fleet--find-agent target))
          (root (and agent (agent-fleet-magit--root-for-agent agent))))
     (if (null root)
@@ -125,11 +125,11 @@ it is an optional dependency (PLAN §55)"))
 
 ;;;###autoload
 (defun agent-fleet-magit-status (target)
-  "Open Magit status on TARGET's checkout (PLAN §36; the dashboard `m').
+  "Open Magit status on TARGET's checkout.
 TARGET is an agent name, pane id, symbol, or `herdr-agent' struct.  For a
 worktree agent, status opens on the worktree root; for a bare agent, the
 main repo root.  Cherry-pick, merge, and worktree deletion are then
-Magit's own keys inside the status buffer (PLAN §71: use Magit public
+Magit's own keys inside the status buffer (§71: use Magit public
 API, do not reinvent).  `user-error's if Magit is not installed."
   (interactive (list (agent-fleet--read-agent-name "Magit status for agent")))
   (agent-fleet-magit--with-root
@@ -138,7 +138,7 @@ API, do not reinvent).  `user-error's if Magit is not installed."
 
 ;;;###autoload
 (defun agent-fleet-magit-diff (target)
-  "Show TARGET's working-tree diff (PLAN §71; the dashboard `d').
+  "Show TARGET's working-tree diff.
 Opens `magit-diff-working-tree' scoped to TARGET's checkout — the
 uncommitted changes the agent is making right now (HEAD vs working tree).
 The branch-vs-base review diff is reachable by opening Magit status (`m')

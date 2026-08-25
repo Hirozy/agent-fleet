@@ -673,7 +673,7 @@ following `pane.agent_status_changed' (dotted per-pane kind, §7.3) event."
       (should (agent-fleet-dashboard-test--cell "w1:p1" 3)))))
 
 (ert-deftest agent-fleet-dashboard-blocked-sorts-first ()
-  "Blocked agents sort above working agents (PLAN.md §28: most prominent)."
+  "Blocked agents sort above working agents."
   (with-agent-fleet-mock path server
     (with-dashboard-fresh
       (agent-fleet)
@@ -695,7 +695,7 @@ following `pane.agent_status_changed' (dotted per-pane kind, §7.3) event."
         (should (equal "w1:p2" (car ids)))))))      ; blocked first
 
 
-;;; --- Faces (PLAN.md §28) --------------------------------------------
+;;; --- Faces --------------------------------------------
 
 (ert-deftest agent-fleet-dashboard-state-face ()
   "Each status symbol maps to its face; nil/unknown map to the unknown face."
@@ -723,7 +723,7 @@ following `pane.agent_status_changed' (dotted per-pane kind, §7.3) event."
     (should (eq 'agent-fleet-unknown-face (get-text-property 0 'face cell)))))
 
 
-;;; --- Column fallbacks (provisional, PLAN.md §27/§69) ----------------
+;;; --- Column fallbacks (provisional, §27/§69) ----------------
 
 (ert-deftest agent-fleet-dashboard-columns ()
   "Project/Kind/Task/State helpers fall back gracefully."
@@ -765,7 +765,7 @@ following `pane.agent_status_changed' (dotted per-pane kind, §7.3) event."
                   (make-herdr-agent) "arch"))))
 
 
-;;; --- Notifications (PLAN.md §29) ------------------------------------
+;;; --- Notifications ------------------------------------
 
 (ert-deftest agent-fleet-dashboard-notify-gated ()
   "Notifications fire only for statuses in `agent-fleet-notify-on'."
@@ -794,15 +794,15 @@ following `pane.agent_status_changed' (dotted per-pane kind, §7.3) event."
                    '(:status "blocked" :name "demo"))))))
 
 
-;;; --- Command map (PLAN.md §53) --------------------------------------
+;;; --- Command map --------------------------------------
 
 (ert-deftest agent-fleet-command-map-has-no-global-binding ()
-  "The package must not bind a global key (PLAN.md §53)."
+  "The package must not bind a global key."
   ;; Loading the feature should not have installed any C-c a binding.
   (should-not (where-is-internal 'agent-fleet global-map)))
 
 (ert-deftest agent-fleet-command-map-keys ()
-  "The prefix map binds the documented commands (PLAN.md §53)."
+  "The prefix map binds the documented commands."
   (should (eq (lookup-key agent-fleet-command-map "a") #'agent-fleet))
   (should (eq (lookup-key agent-fleet-command-map "s") #'agent-fleet-start))
   (should (eq (lookup-key agent-fleet-command-map "p") #'agent-fleet-prompt))
@@ -818,7 +818,7 @@ following `pane.agent_status_changed' (dotted per-pane kind, §7.3) event."
     (should (eq (lookup-key map (kbd "C-c a p")) #'agent-fleet-prompt))))
 
 
-;;; --- Row keys (PLAN.md §27) -----------------------------------------
+;;; --- Row keys -----------------------------------------
 
 (ert-deftest agent-fleet-dashboard-row-keys-d-and-m ()
   "The dashboard binds `d' to the diff command and `m' to the magit command
