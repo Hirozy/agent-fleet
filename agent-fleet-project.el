@@ -182,6 +182,11 @@ normal working tree.  Optional BRANCH/BASE override the
 default branch selection.  When `:worktree t' is set, the workspace/pane
 resolution above is skipped — `worktree.create' provisions both.
 
+When called interactively, if no workspace serves this project and none
+is focused, the user is prompted to pick an existing workspace; the
+agent's terminal is then attached automatically after start (see
+`agent-fleet-attach').
+
 KIND is a symbol like `claude' (see `agent-fleet-agent-executables').
 Keyword args:
   :name        agent name (auto-generated if nil)
@@ -196,25 +201,33 @@ Keyword args:
 Returns the `herdr-agent' for the started agent.  Signals `user-error' if
 no project can be resolved."
   (interactive
-   (let* ((kinds (mapcar #'car agent-fleet-agent-executables))
-          (kind (intern (completing-read "Agent kind: " kinds nil t)))
+   (let* ((choices (agent-fleet--kind-choices))
+          (sel (completing-read "Agent kind: " (mapcar #'car choices) nil t))
+          (kind (cdr (assoc sel choices #'equal)))
           (nm (read-string "Name (empty for auto): ")))
      (list kind :name (and (not (string-empty-p nm)) nm))))
   (agent-fleet--ensure-connected)
   (let ((root (agent-fleet--project-root (or project (project-current)))))
     (unless root
       (user-error "No current project; call from a project buffer or pass :project"))
-    (if worktree
-        ;; A worktree start provisions its own workspace + pane via
-        ;; `worktree.create' (Phase 5); the project root is the source repo.
-        (agent-fleet-start kind :name name :cwd root :args args
-                               :timeout-ms timeout-ms :focus focus
-                               :worktree worktree :branch branch :base base)
-      (let ((ws (or (agent-fleet--workspace-for-root root)
-                    (when (herdr-focused-workspace)
-                      (herdr-workspace-id (herdr-focused-workspace))))))
-        (agent-fleet-start kind :name name :cwd root :workspace ws
-                               :args args :timeout-ms timeout-ms :focus focus)))))
+    (let ((interactive-p (called-interactively-p 'interactive)))
+      (if worktree
+          ;; A worktree start provisions its own workspace + pane via
+          ;; `worktree.create'; the project root is the source repo.
+          (agent-fleet-start kind :name name :cwd root :args args
+                                 :timeout-ms timeout-ms :focus focus
+                                 :worktree worktree :branch branch :base base
+                                 :attach interactive-p)
+        (let ((ws (or (agent-fleet--workspace-for-root root)
+                      (when (herdr-focused-workspace)
+                        (herdr-workspace-id (herdr-focused-workspace)))
+                      ;; Interactive with no project/focused workspace: pick
+                      ;; an existing one instead of silently creating a frame.
+                      (when interactive-p
+                        (agent-fleet--read-workspace "Start in workspace: ")))))
+          (agent-fleet-start kind :name name :cwd root :workspace ws
+                                 :args args :timeout-ms timeout-ms :focus focus
+                                 :attach interactive-p))))))
 
 
 (provide 'agent-fleet-project)
