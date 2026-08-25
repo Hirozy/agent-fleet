@@ -568,12 +568,7 @@ attach buffer and delete the child after attach succeeds.  Delegates to
     ("m" "Magit status" agent-fleet-dashboard-magit)]
    ["Session"
     ("a" "Attach terminal" agent-fleet-dashboard-attach)
-    ("q" "Close dashboard" agent-fleet-dashboard-quit)]
-   ["Navigate"
-    ("p" "Up"   transient-backward-button)
-    ("k" "Up"   transient-backward-button)
-    ("n" "Down" transient-forward-button)
-    ("j" "Down" transient-forward-button)]])
+    ("q" "Close dashboard" agent-fleet-dashboard-quit)]])
 
 (defconst agent-fleet-dashboard--bindings
   '(("RET" . agent-fleet-dashboard-inspect)
