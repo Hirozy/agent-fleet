@@ -31,8 +31,9 @@
 ;;   §25  event-driven; NO timer polling.  The buffer rebuilds only when an
 ;;        `agent-fleet-agent-{started,status-changed,exited}-hook' fires.
 ;;   §27  columns Project / Agent / Kind / State / Task; row keys
-;;        RET p o i k r g P T w d m a h q (`a' = live attach, Phase 8/§73;
-;;        `h' = transient command help; `q' closes the display container).
+;;        RET o s i x r g P T w d m a h q (`a' = live attach, Phase 8/§73;
+;;        `h' = transient command help; `q' closes the display container;
+;;        `p'/`n'/`j'/`k' navigate rows up/down).
 ;;   §28  one face per status; blocked is the most prominent.
 ;;   §29  optional notifications on working→blocked / working→done, gated by
 ;;        `agent-fleet-notify-on'.
@@ -525,7 +526,7 @@ own refresh, but reprinting is harmless and gives instant feedback."
   (agent-fleet-interrupt (agent-fleet-dashboard--agent-at-point)))
 
 (defun agent-fleet-dashboard-kill ()
-  "Kill the agent at point by closing its pane (PLAN.md §27 `k')."
+  "Kill the agent at point by closing its pane (PLAN.md §27 `x')."
   (interactive)
   (let ((pane-id (agent-fleet-dashboard--agent-at-point)))
     (when (y-or-n-p (format "Kill agent %s? " pane-id))
@@ -597,9 +598,9 @@ attach buffer and delete the child after attach succeeds.  Delegates to
   [["Agent"
     ("RET" "Inspect output" agent-fleet-dashboard-inspect)
     ("o"   "Inspect output" agent-fleet-dashboard-inspect)
-    ("p"   "Prompt" agent-fleet-dashboard-prompt)
+    ("s"   "Prompt" agent-fleet-dashboard-prompt)
     ("i"   "Interrupt" agent-fleet-dashboard-interrupt)
-    ("k"   "Kill" agent-fleet-dashboard-kill)
+    ("x"   "Kill" agent-fleet-dashboard-kill)
     ("r"   "Rename" agent-fleet-dashboard-rename)]
    ["View / Filter"
     ("g" "Refresh from server" agent-fleet-dashboard-refresh)
@@ -611,14 +612,19 @@ attach buffer and delete the child after attach succeeds.  Delegates to
     ("m" "Magit status" agent-fleet-dashboard-magit)]
    ["Session"
     ("a" "Attach terminal" agent-fleet-dashboard-attach)
-    ("q" "Close dashboard" agent-fleet-dashboard-quit)]])
+    ("q" "Close dashboard" agent-fleet-dashboard-quit)]
+   ["Navigate"
+    ("p" "Up"   transient-backward-button)
+    ("k" "Up"   transient-backward-button)
+    ("n" "Down" transient-forward-button)
+    ("j" "Down" transient-forward-button)]])
 
 (defconst agent-fleet-dashboard--bindings
   '(("RET" . agent-fleet-dashboard-inspect)
     ("o"   . agent-fleet-dashboard-inspect)
-    ("p"   . agent-fleet-dashboard-prompt)
+    ("s"   . agent-fleet-dashboard-prompt)
     ("i"   . agent-fleet-dashboard-interrupt)
-    ("k"   . agent-fleet-dashboard-kill)
+    ("x"   . agent-fleet-dashboard-kill)
     ("r"   . agent-fleet-dashboard-rename)
     ("g"   . agent-fleet-dashboard-refresh)
     ("P"   . agent-fleet-dashboard-toggle-project-filter)
@@ -629,7 +635,14 @@ attach buffer and delete the child after attach succeeds.  Delegates to
     ("a"   . agent-fleet-dashboard-attach)
     ("h"   . agent-fleet-dashboard-help)
     ("q"   . agent-fleet-dashboard-quit))
-  "Documented key bindings for `agent-fleet-mode'.")
+  "Documented action key bindings for `agent-fleet-mode'.")
+
+(defconst agent-fleet-dashboard--navigation-keys
+  '(("p" . previous-line)
+    ("k" . previous-line)
+    ("n" . next-line)
+    ("j" . next-line))
+  "Reserved up/down row-navigation keys for `agent-fleet-mode'.")
 
 (defvaralias 'agent-fleet-dashboard-mode-map 'agent-fleet-mode-map
   "Compatibility alias for the dashboard mode map's former name.")
@@ -644,16 +657,18 @@ attach buffer and delete the child after attach succeeds.  Delegates to
   "Install dashboard bindings in the active mode map and optional Evil maps.
 This function intentionally runs outside the map's `defvar' initializer so
 reloading agent-fleet updates an already-created `agent-fleet-mode-map'."
-  (dolist (binding agent-fleet-dashboard--bindings)
-    (define-key agent-fleet-mode-map (kbd (car binding)) (cdr binding)))
-  ;; Evil's state maps take precedence over an ordinary major-mode map.  The
-  ;; dashboard inherits motion state from `special-mode' in common setups, so
-  ;; mirror its commands into the two non-insert states when Evil is present.
-  (when (fboundp 'evil-define-key*)
-    (apply #'evil-define-key* '(normal motion) agent-fleet-mode-map
-           (mapcan (lambda (binding)
-                     (list (kbd (car binding)) (cdr binding)))
-                   agent-fleet-dashboard--bindings))))
+  (let ((keys (append agent-fleet-dashboard--bindings
+                      agent-fleet-dashboard--navigation-keys)))
+    (dolist (binding keys)
+      (define-key agent-fleet-mode-map (kbd (car binding)) (cdr binding)))
+    ;; Evil's state maps take precedence over an ordinary major-mode map.  The
+    ;; dashboard inherits motion state from `special-mode' in common setups, so
+    ;; mirror its commands into the two non-insert states when Evil is present.
+    (when (fboundp 'evil-define-key*)
+      (apply #'evil-define-key* '(normal motion) agent-fleet-mode-map
+             (mapcan (lambda (binding)
+                       (list (kbd (car binding)) (cdr binding)))
+                     keys)))))
 
 (agent-fleet-dashboard--install-key-bindings)
 
