@@ -936,13 +936,13 @@ With a prefix arg, prompt for the line count."
          (text (or (plist-get res :text) ""))
          (buf-name (concat agent-fleet-output-buffer-prefix name "*")))
     (with-current-buffer (get-buffer-create buf-name)
-      (read-only-mode -1)
-      (erase-buffer)
-      (insert text)
-      (goto-char (point-min))
-      (read-only-mode 1)
-      (set-buffer-modified-p nil))
-    (display-buffer buf-name)
+      (special-mode)                 ; read-only view: `q' quits, etc.
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert text)
+        (goto-char (point-min))
+        (set-buffer-modified-p nil)))
+    (pop-to-buffer buf-name)         ; select the output window
     res))
 
 
