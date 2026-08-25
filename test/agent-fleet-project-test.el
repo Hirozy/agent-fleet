@@ -43,7 +43,7 @@ The dashboard is in `*Agent Fleet*'.  Robust to sort order."
              do (forward-line 1))))
 
 
-;;; --- Root resolution (PLAN.md §31/§32) ------------------------------
+;;; --- Root resolution ------------------------------
 
 (ert-deftest agent-fleet-project-root-for-cwd-git ()
   "A git repo's cwd resolves to its canonical root; a subdir to the repo root."

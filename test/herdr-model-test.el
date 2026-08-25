@@ -269,7 +269,7 @@ known agent.  Live Herdr replays `pane_created' events at connect time
 that omit `:agent' (a partial PaneInfo); treating a missing field as
 \"no agent\" made the focused agent vanish from the dashboard.  Only an
 explicit `:agent' nil removes; a closed/exited pane removes; an absent
-key is silent (PLAN.md §25 — the cache stays post-event-correct)."
+key is silent."
   (let ((session (herdr-model-parse-snapshot (herdr-model-test--snapshot))))
     ;; The snapshot agent w1:p1 is cached.
     (should (herdr-model-find-agent session "w1:p1"))

@@ -22,7 +22,7 @@
 
 ;;; Commentary:
 
-;; The parallel-orchestration layer (PLAN.md Phase 7, §37/§38/§72).  Spawns N
+;; The parallel-orchestration layer.  Spawns N
 ;; isolated worktree agents, sends each its own prompt, and tracks their
 ;; aggregate status live from the event bus — the package's core value (§37).
 ;;
@@ -32,7 +32,7 @@
 ;;      (pi     . "Analyze tests"))
 ;;    :title "auth-refactor" :cwd "~/src/myapp")
 ;;
-;; Requirements honored (PLAN.md):
+;; Requirements honored:
 ;;   §38  NOT a race: no agent is killed when the first one finishes.  The
 ;;        task is `done' only when ALL agents are done.
 ;;   §40  NO result extraction.  Agents are persistent interactive workers,
@@ -75,7 +75,7 @@
 ;; state' always computes from the live cache, and `finished-at' is stamped
 ;; by the status hook when the task first reaches `done'.
 (cl-defstruct agent-fleet-task
-  "A parallel task: N isolated agents working on one logical job (PLAN §41).
+  "A parallel task: N isolated agents working on one logical job.
 AGENTS is a list of pane-id strings.  PROMPT is the shared task description
 (each agent may have received a distinct prompt text; this is the label).
 STARTED-AT / FINISHED-AT are float seconds (nil until the task is done).
@@ -159,7 +159,7 @@ Reads the live cache; an exited/missing agent shows as `failed'."
 
 ;;;###autoload
 (cl-defun agent-fleet-parallel (specs &key title cwd branch base focus)
-  "Spawn N isolated worktree agents and prompt each in parallel (PLAN §72).
+  "Spawn N isolated worktree agents and prompt each in parallel.
 SPECS is an alist (kind . prompt) — each agent gets its own prompt.  KIND is
 a symbol or string (`claude'/`codex'/`pi'/...).  Each agent is started in its
 own git worktree (`:worktree t', Phase 5) with an independent name, then
@@ -273,7 +273,7 @@ a string, or a list of either."
 ;;;###autoload
 (cl-defun agent-fleet-task-wait (task &optional until
                                        &key (timeout-ms agent-fleet-wait-timeout-ms))
-  "Block until TASK reaches an aggregate terminal state (PLAN §38/§72).
+  "Block until TASK reaches an aggregate terminal state.
 UNTIL is `done' (all agents done) or `(done blocked failed)' (settled = all
 done, any blocked, or an agent disappeared); that settled set is the default.
 TIMEOUT-MS bounds the wait (default `agent-fleet-wait-timeout-ms').
@@ -307,7 +307,7 @@ NO result extraction (§40): returns task metadata only, never agent output — 
 
 ;;;###autoload
 (defun agent-fleet-task-cleanup (task &optional no-confirm)
-  "Remove the worktrees of TASK's agents (PLAN §71), then drop the task.
+  "Remove the worktrees of TASK's agents, then drop the task.
 Delegates per-agent to `agent-fleet-worktree-remove' (Phase 5: issues
 `worktree.remove' + eager cache removal).  By default only finished (`done')
 tasks are cleaned; a non-`done' task prompts to confirm removing live agents'

@@ -285,7 +285,7 @@ separate *global* `EventKind` pushed to global subscribers, not to
   by the snapshot or a prior detection/`pane_created`). The Phase 3 dashboard
   (`agent-fleet-dashboard.el`) drives its live refresh from this event via
   the `agent-fleet-agent-status-changed-hook` — no polling, no new wire
-  protocol (PLAN.md §25/§68). The `AgentStatus` enum (above) is authoritative
+  protocol. The `AgentStatus` enum (above) is authoritative
   for the five rendered states.
 
 ## 8. Other Phase-1-relevant methods
@@ -308,7 +308,7 @@ envelope, `agent-fleet--unwrap-read` for `:read`).
 
 These are the RPCs the `agent-fleet.el` control layer (Phase 2) issues over
 the Phase 1 client. `agent.*` methods take a **`target`** string — an agent
-name *or* a pane id, resolved by the server (PLAN.md §11). `pane.*` methods
+name *or* a pane id, resolved by the server. `pane.*` methods
 require a real `pane_id`.
 
 | Method | Request params | Result (`{type, ...}`) |
@@ -327,7 +327,7 @@ require a real `pane_id`.
 Notes on params:
 - `agent.start` requires `name`, `kind`, and `pane_id`; `args` is an optional
   list of extra CLI arguments. `target` (for the other `agent.*` methods) is
-  a name *or* pane id, resolved by the server (PLAN.md §11).
+  a name *or* pane id, resolved by the server.
 
 Provisioning / teardown (used by `agent-fleet-start` / `-kill`):
 
@@ -351,8 +351,7 @@ Notes:
   reads the result's `:pane` for the new `pane_id`.
 - **`tab.create` returns `root_pane`.** The result carries `:tab` (TabInfo)
   and `:root_pane` (a shell PaneInfo at the tab cwd); the client targets
-  `root_pane.pane_id` for `agent.start` — no separate `pane.split`
-  (PLAN.md §16).
+  `root_pane.pane_id` for `agent.start` — no separate `pane.split`.
 
 - **`wait` field** on `agent.prompt` makes submit+wait a single atomic RPC,
   avoiding the race where the agent finishes between a separate prompt and
@@ -395,7 +394,7 @@ adds no protocol — it reuses the Phase 2 RPCs above:
 
 `worktree.*` methods create/open/list/remove git worktrees — separate
 checkouts of a repo — so multiple agents do not modify the same working
-tree (PLAN.md §33/§34/§70).  The client layer is `agent-fleet-worktree.el`
+tree.  The client layer is `agent-fleet-worktree.el`
 plus the `:worktree t` branch of `agent-fleet-start`.
 
 | Method | Request params | Result |
@@ -410,7 +409,7 @@ Notes:
 - **`worktree.create` auto-provisions the root pane.**  The result carries
   `:workspace`, `:tab`, and `:root_pane` (a shell at the worktree cwd), so
   `agent.start` targets `root_pane.pane_id` directly — no separate
-  `pane.split` (PLAN.md §16).  This is the `:worktree t` flow in
+  `pane.split`.  This is the `:worktree t` flow in
   `agent-fleet-start` → `agent-fleet--provision-worktree`.
 - **`WorktreeInfo`** (keyed by `path`, the canonical id): `path, branch
   (str|null), is_bare, is_detached, is_prunable, is_linked_worktree, label,

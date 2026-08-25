@@ -187,7 +187,7 @@ provisioning-failed at the `parallel-cwd' step; no RPC is issued."
 ;;; --- Aggregate state (§38/§72) --------------------------------------
 
 (ert-deftest agent-fleet-parallel-agents-run-concurrently ()
-  "One agent finishing does NOT make the task done (PLAN.md §38: not a race).
+  "One agent finishing does NOT make the task done.
 Both done only then yields `done'.  Uses a working-only prompt so agents
 stay `working' until an explicit done event."
   (with-agent-fleet-mock path server
