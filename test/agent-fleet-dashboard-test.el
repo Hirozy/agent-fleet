@@ -558,6 +558,62 @@ a metadata table; adding a backend must not change these classifications."
         (should (eq 'agent-fleet-blocked-face
                     (get-text-property 0 'face cell)))))))
 
+(ert-deftest agent-fleet-dashboard-refreshes-on-reconnect ()
+  "An open dashboard refreshes from the post-reconnect snapshot (no `g').
+The synced hook fires after `herdr--reconnect' replaces the cache from a
+fresh `session.snapshot'; an already-open dashboard picks up the new
+state without a manual refresh or a polling timer."
+  (with-agent-fleet-mock path server
+    (let ((herdr-reconnect-delay 0.1)
+          (herdr-reconnect-max-delay 0.2)
+          (herdr-reconnect-max-attempts 5))
+      (with-dashboard-fresh
+        (agent-fleet)
+        (agent-fleet-test--pump)
+        (should (equal "WORKING" (agent-fleet-dashboard-test--cell "w1:p1" 3)))
+        ;; Mutate the server snapshot so the reconnect's snapshot fetch
+        ;; reports w1:p1 as blocked.  Protocol 20 satisfies the >= 19 check.
+        (herdr-mock-set-snapshot
+         server
+         '(:protocol 20 :version "0.8.2-mock"
+           :focused_workspace_id "w1" :focused_tab_id "w1:t1"
+           :focused_pane_id "w1:p1"
+           :workspaces ((:workspace_id "w1" :label "demo" :number 1
+                         :focused t :active_tab_id "w1:t1"
+                         :tab_count 1 :pane_count 1 :agent_status "blocked"))
+           :tabs ((:tab_id "w1:t1" :workspace_id "w1" :label "1"
+                   :number 1 :focused t :pane_count 1 :agent_status "blocked"))
+           :panes ((:pane_id "w1:p1" :workspace_id "w1" :tab_id "w1:t1"
+                    :terminal_id "term_mock1" :terminal_title "demo"
+                    :terminal_title_stripped "demo"
+                    :cwd "/tmp/demo" :foreground_cwd "/tmp/demo"
+                    :focused t :revision 5 :agent "claude"
+                    :agent_status "blocked"
+                    :agent_session (:agent "claude" :kind "id"
+                                     :source "herdr:claude" :value "sess-1")))
+           :agents ((:pane_id "w1:p1" :workspace_id "w1" :tab_id "w1:t1"
+                     :terminal_id "term_mock1" :terminal_title "demo"
+                     :terminal_title_stripped "demo"
+                     :cwd "/tmp/demo" :foreground_cwd "/tmp/demo"
+                     :focused t :revision 5 :state_change_seq 5
+                     :name "demo" :display_agent "claude" :title "demo"
+                     :interactive_ready t :launch_pending :false
+                     :agent "claude" :agent_status "blocked"
+                     :agent_session (:agent "claude" :kind "id"
+                                     :source "herdr:claude" :value "sess-1")))
+           :layouts ()))
+        ;; Simulate server-side subscription loss -> client reconnects and
+        ;; pulls the mutated snapshot.
+        (herdr-mock-close-subscription server)
+        (let ((deadline (+ (float-time) 4.0)))
+          (while (and (not (herdr-connected-p))
+                      (< (float-time) deadline))
+            (agent-fleet-test--pump 1)))
+        (should (herdr-connected-p))
+        (agent-fleet-test--pump)
+        ;; The dashboard refreshed via the synced hook — no `g' was pressed.
+        (should (equal "BLOCKED" (agent-fleet-dashboard-test--cell "w1:p1" 3)))))))
+
 (ert-deftest agent-fleet-dashboard-adds-row-on-started ()
   "A `pane_agent_detected' event adds a new row without `g'.
 The faithful detection payload carries only the agent kind (NO status:

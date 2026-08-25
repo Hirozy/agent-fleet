@@ -1040,6 +1040,10 @@ notifications into the blocked/done hooks.  Safe to call repeatedly."
                 agent-fleet-task-changed-hook)
     (add-hook 'agent-fleet-task-changed-hook
               #'agent-fleet-dashboard--on-event))
+  (unless (memq #'agent-fleet-dashboard--on-event
+                agent-fleet-synced-hook)
+    (add-hook 'agent-fleet-synced-hook
+              #'agent-fleet-dashboard--on-event))
   (unless (memq #'agent-fleet-dashboard--notify
                 agent-fleet-agent-blocked-hook)
     (add-hook 'agent-fleet-agent-blocked-hook
