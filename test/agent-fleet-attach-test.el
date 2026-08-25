@@ -175,6 +175,26 @@ effects (the real `--spawn' / `pop-to-buffer' never run)."
           (should (equal pid (nth 2 call)))
           (should-not (nth 3 call)))))))    ; no takeover (no prefix arg)
 
+(ert-deftest agent-fleet-start-attaches-when-attach-flag ()
+  "A start with :attach t (how interactive starts and wrapper commands
+forward their interactivity) attaches the agent's terminal after a
+successful start, dispatching `--spawn' with the new pane id.  Readiness
+is stubbed so `auto' resolves to ghostel; `--spawn' is stubbed to capture
+the dispatch, so no display side effects run."
+  (with-agent-fleet-mock path server
+    (let (captured)
+      (cl-letf (((symbol-function 'agent-fleet-attach--ghostel-ready-p)
+                 (lambda () t))
+                ((symbol-function 'agent-fleet-attach--spawn)
+                 (lambda (backend buf-name pane-id takeover)
+                   (push (list backend buf-name pane-id takeover) captured))))
+        (let ((agent (agent-fleet-start 'claude :name "arch" :attach t)))
+          (should (herdr-agent-p agent))
+          (should (= 1 (length captured)))
+          (should (eq 'ghostel (nth 0 (car captured))))
+          (should (equal (herdr-agent-id agent) (nth 2 (car captured))))
+          (should-not (nth 3 (car captured))))))))  ; no takeover
+
 (ert-deftest agent-fleet-attach-reuses-live-buffer ()
   "If a live attach buffer for the agent already exists (process alive),
 `agent-fleet-attach' reuses it (`pop-to-buffer') instead of double-attaching

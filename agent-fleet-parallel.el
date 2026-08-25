@@ -29,7 +29,7 @@
 ;;   (agent-fleet-parallel
 ;;    '((claude . "Analyze architecture")
 ;;      (codex  . "Analyze implementation")
-;;      (pi     . "Analyze tests"))
+;;      (pi-agent . "Analyze tests"))
 ;;    :title "auth-refactor" :cwd "~/src/myapp")
 ;;
 ;; Requirements honored:
@@ -179,13 +179,14 @@ aggregate state is tracked live by the status-changed hook; call
 failure is caught and reported; the task records the agents that did launch."
   (interactive
    (let* ((title (read-string "Task title: "))
-          (kinds (completing-read-multiple
-                  "Agent kinds (RET to finish): "
-                  '("claude" "codex" "pi") nil t))
+          (choices (agent-fleet--kind-choices))
+          (sels (completing-read-multiple
+                 "Agent kinds (RET to finish): "
+                 (mapcar #'car choices) nil t))
           (prompt (read-string "Prompt (sent to all): "))
           (cwd (or (agent-fleet-project-root-for-cwd default-directory)
                    (read-directory-name "Source repo (cwd): "))))
-     (list (mapcar (lambda (k) (cons (intern k) prompt)) kinds)
+     (list (mapcar (lambda (s) (cons (cdr (assoc s choices #'equal)) prompt)) sels)
            :title title :cwd cwd)))
   (agent-fleet--ensure-connected)
   (unless specs

@@ -223,7 +223,7 @@ full state machine over three agents."
   (with-agent-fleet-mock path server
     (agent-fleet-parallel-test--use-working-prompt server)
     (let* ((task (agent-fleet-parallel
-                  '((claude . "do A") (codex . "do B") (pi . "do C"))
+                  '((claude . "do A") (codex . "do B") (pi-agent . "do C"))
                   :title "rev" :cwd "/tmp"))
            (pids (agent-fleet-task-agents task)))
       (agent-fleet-test--pump)

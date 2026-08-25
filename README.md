@@ -160,6 +160,14 @@ applicable.
 | `M-x agent-fleet-status` | Show an agent's state |
 | `M-x agent-fleet-doctor` | Check socket, connection, manifests, and CLIs |
 
+When started interactively, you are always prompted to pick the workspace
+the agent starts in, and the agent opens as a fresh tab in that workspace
+— never a new frame. After a successful interactive start the agent's
+terminal is attached automatically (see
+[Attach to a live terminal](#attach-to-a-live-terminal)). Programming
+callers such as `agent-fleet-parallel` are unaffected: they pass an
+explicit workspace, are never prompted, and never attach.
+
 Agent state comes directly from Herdr and is one of `idle`, `working`,
 `blocked`, `done`, or `unknown`.
 
@@ -175,6 +183,11 @@ Start an agent for the current `project.el` project:
 ```text
 M-x agent-fleet-start-for-project
 ```
+
+This reuses a workspace already serving the project, or the focused one; if
+neither exists, an interactive start prompts you to pick a workspace. Like
+`agent-fleet-start`, an interactive project start opens the agent as a new
+tab in that workspace and attaches the terminal afterward.
 
 Agents in linked worktrees are mapped back to the same canonical project, so
 the dashboard's `P` filter includes all checkouts of one repository.
