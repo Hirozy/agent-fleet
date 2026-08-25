@@ -22,14 +22,14 @@
 
 ;;; Commentary:
 
-;; The agent-facing supervisor layer (PLAN.md Phase 2, §67).  Built on
+;; The agent-facing supervisor layer.  Built on
 ;; the Phase 1 Herdr client (`herdr.el'): it provisions panes, starts CLI
 ;; agents (Claude / Codex / Pi / ...), drives them through Herdr's
 ;; `agent.*' RPCs, reads their output, and exposes an event-driven hook
 ;; bus for status transitions — without ever bringing the agents' PTY/TUI
 ;; into Emacs.
 ;;
-;; Design rules honored (PLAN.md):
+;; Design rules honored:
 ;;   §12  agent statuses come straight from Herdr (idle/working/blocked/
 ;;        done/unknown); this layer adds NO status parsing of its own.
 ;;   §18  prompts go through `agent.prompt', not pane.send-text + RET.
@@ -112,7 +112,7 @@ Each entry is (KIND-SYMBOL EXECUTABLE DISPLAY-NAME).  Used by
 (defcustom agent-fleet-default-read-source 'recent_unwrapped
   "Default `agent.read' source.
 `recent_unwrapped' ignores soft wrapping and is best for log/agent
-output (PLAN.md §22).  One of: visible, recent, recent_unwrapped,
+output.  One of: visible, recent, recent_unwrapped,
 detection."
   :type '(choice (const visible) (const recent)
                  (const recent_unwrapped) (const detection))
@@ -316,7 +316,7 @@ short default timeout from cutting off legitimate agent waits."
 
 (defun agent-fleet-status (agent)
   "Return AGENT's current cached status as a symbol, or nil.
-One of idle/working/blocked/done/unknown (PLAN.md §12), read straight
+One of idle/working/blocked/done/unknown, read straight
 from the Herdr-mirrored cache."
   (let ((a (agent-fleet--find-agent agent)))
     (and a (let ((s (herdr-agent-agent-status a)))
@@ -405,7 +405,7 @@ WORKSPACE wins if given; else the focused workspace; else a new one
 
 (defun agent-fleet--provision-pane (workspace-id cwd focus)
   "Provision an empty interactive shell pane in WORKSPACE-ID.
-Splits the focused pane (PLAN.md §16: agent.start needs an interactive
+Splits the focused pane (§16: agent.start needs an interactive
 shell pane); if there is no pane to split, creates a fresh tab.  Returns
 the new pane id.  Signals `agent-fleet-provisioning-failed'."
   (let* ((focused (herdr-focused-pane))
@@ -451,7 +451,7 @@ the new pane id.  Signals `agent-fleet-provisioning-failed'."
   "Create a Herdr worktree at CWD and return its workspace + root pane.
 Calls `worktree.create', which provisions a workspace, a tab, and a root
 pane (a shell at the worktree cwd) in one step, so `agent.start' can
-target the root pane directly — no separate `pane.split' (PLAN.md §34).
+target the root pane directly — no separate `pane.split'.
 Optional BRANCH/BASE override the default branch selection (nil lets
 Herdr decide); FOCUS focuses the new workspace in the Herdr UI.  The
 returned worktree and workspace are upserted into the cache immediately,
@@ -503,7 +503,7 @@ cache is updated immediately from the result and again via the
 With `:worktree t', instead of splitting a pane in an existing workspace,
 Herdr creates a git worktree (a separate checkout of the repo at CWD) and
 provisions a fresh workspace + root pane there, so the agent works in
-isolation (PLAN.md §34).  CWD is required in this mode (a worktree needs a
+isolation.  CWD is required in this mode (a worktree needs a
 source repo); BRANCH/BASE optionally override Herdr's default branch.
 
 Keyword args:
@@ -632,7 +632,7 @@ AGENT is a name, pane id, symbol, or `herdr-agent' struct.  Returns the
 agent's AgentInfo plist (the `agent_prompted' result, unwrapped from its
 envelope).  The agent may keep working after this returns; use
 `agent-fleet-wait' or the status hooks to observe completion.
-See PLAN.md §18."
+See the `agent.prompt' protocol described above."
   (interactive
    (list (agent-fleet--read-agent-name "Prompt agent")
          (read-string "Prompt: ")))
@@ -649,7 +649,7 @@ See PLAN.md §18."
   "Atomically submit TEXT and wait for AGENT to reach a status.
 Uses a single `agent.prompt' request with a `wait' field, so submit+wait
 is server-side atomic — avoiding the race where the agent finishes
-between a separate prompt and wait (PLAN.md §19).  UNTIL is a status
+between a separate prompt and wait.  UNTIL is a status
 symbol or list (default `agent-fleet-default-wait-until').  Returns the
 agent's AgentInfo plist (unwrapped); its `:agent_status' is the wait
 outcome."
@@ -677,7 +677,7 @@ outcome."
 Returns a PaneReadResult plist: (:pane_id :workspace_id :tab_id :source
 :format :text :revision :truncated), unwrapped from the `pane_read'
 envelope.  Defaults to `recent_unwrapped' output (ignores soft wrapping;
-best for logs — PLAN.md §22).  Interactively, display the snapshot in the
+best for logs — §22).  Interactively, display the snapshot in the
 read-only output buffer rather than discarding the returned plist."
   (interactive (list (agent-fleet--read-agent-name "Read output for agent")))
   (if (called-interactively-p 'interactive)
@@ -696,7 +696,7 @@ read-only output buffer rather than discarding the returned plist."
                                      (timeout-ms agent-fleet-wait-timeout-ms))
   "Wait for AGENT to reach one of the UNTIL statuses via `agent.wait'.
 UNTIL is a status symbol or list (default `agent-fleet-default-wait-until').
-This is a single blocking RPC, NOT polling (PLAN.md §25): Emacs stays
+This is a single blocking RPC, NOT polling: Emacs stays
 responsive because the protocol layer pumps `accept-process-output' during
 the wait, which also keeps the live cache in step.  Returns the agent's
 AgentInfo plist (unwrapped); its `:agent_status' is the outcome."
@@ -717,7 +717,7 @@ AgentInfo plist (unwrapped); its `:agent_status' is the outcome."
 
 ;;;###autoload
 (defun agent-fleet-send-keys (agent keys)
-  "Send KEYS to AGENT via `agent.send_keys' (Level 2 input, PLAN.md §20).
+  "Send KEYS to AGENT via `agent.send_keys' (Level 2 input, §20).
 KEYS is a single key-notation string (\"ctrl+c\", \"enter\", \"esc\",
 \"shift+tab\", \"f1\", ...) or a list of them.  Returns the agent's
 AgentInfo plist if the server returned one, else the raw ack."
@@ -738,7 +738,7 @@ AgentInfo plist if the server returned one, else the raw ack."
 (defun agent-fleet-interrupt (agent)
   "Interrupt AGENT by sending Ctrl-C via `agent.send_keys'.
 This is `interrupt', not `cancel': different CLIs attach different
-semantics to Ctrl-C, so we expose the key directly (PLAN.md §21).
+semantics to Ctrl-C, so we expose the key directly.
 Returns the agent's AgentInfo plist if the server returned one, else the
 raw ack."
   (interactive (list (agent-fleet--read-agent-name "Interrupt agent")))
@@ -790,7 +790,7 @@ eagerly (the `pane_closed' event also removes it).  Returns the result."
   (let* ((pane-id (agent-fleet--resolve-pane-id agent))
          (res (herdr-request "pane.close" `(("pane_id" . ,pane-id)))))
     ;; Eager cache removal; the `pane_closed' event also removes it and
-    ;; fires `agent-fleet-agent-exited-hook' (PLAN §25-26).  We do not
+    ;; fires `agent-fleet-agent-exited-hook'.  We do not
     ;; fire the hook here, so each exit notifies exactly once.
     (herdr-model-remove-agent pane-id)
     res))
@@ -837,7 +837,7 @@ project).  Falls back to the display name alone when the kind is nil."
   "Return the cached agent structs as a list.
 With non-nil REFRESH, first refresh the cache from `agent.list'.  The
 cache is normally kept live by events, so REFRESH is only needed after
-operations Herdr does not notify about (PLAN.md §25).
+operations Herdr does not notify about.
 An interactive call, or a REFRESH call, tries the configured automatic
 connection first.  It still returns nil rather than signalling when the
 server is unavailable, so cache inspection remains safe while offline.
@@ -884,7 +884,7 @@ Unwraps the `agent_info' envelope before caching."
     (and info (herdr-model-find-agent (plist-get info :pane_id)))))
 
 
-;;; --- Output viewer (read snapshot, PLAN.md §23) --------------------
+;;; --- Output viewer (read snapshot, §23) --------------------
 
 (defun agent-fleet--read-agent-name (prompt)
   "Read an agent pane id from the minibuffer, completing over cached agents.
@@ -919,7 +919,7 @@ agents share a label.  Returns the pane id so it round-trips through
 (defun agent-fleet-show-output (agent &optional lines source)
   "Read AGENT's recent output and display it in a read-only buffer.
 Opens `*Agent Output: <name>*' with the text from `agent.read'.  This is
-a read-snapshot view, NOT a continuously mirrored terminal (PLAN.md §23).
+a read-snapshot view, NOT a continuously mirrored terminal.
 With a prefix arg, prompt for the line count."
   (interactive
    (list (agent-fleet--read-agent-name "Show output for agent")
@@ -946,7 +946,7 @@ With a prefix arg, prompt for the line count."
     res))
 
 
-;;; --- Hook bus (PLAN.md §26) ----------------------------------------
+;;; --- Hook bus ----------------------------------------
 
 ;; These bridge the Phase 1 `herdr-event-*-hook' variables into the
 ;; agent-fleet-facing hook set.  Each receives a descriptor plist
@@ -1072,7 +1072,7 @@ TUI-spawned agent — fires the started hook here, its only signal."
 (defun agent-fleet-doctor ()
   "Check the Herdr + agent environment and show a report.
 Runs the `herdr-doctor' checks plus agent CLI executables and the Herdr
-agent manifests.  See PLAN.md §14."
+agent manifests.  See the environment checks above."
   (interactive)
   (herdr--doctor-render
    (append (herdr--doctor-checks) (agent-fleet--doctor-agent-checks))
@@ -1088,7 +1088,7 @@ agent manifests.  See PLAN.md §14."
 ;; `agent-fleet-worktree-*', `agent-fleet-magit-*', `agent-fleet-start-for-
 ;; project', and the `agent-fleet' dashboard.  Without this, requiring only
 ;; the base control plane leaves the feature modules unloaded and their
-;; commands void (PLAN §45 layers are separate files).  This require sits
+;; commands void.  This require sits
 ;; AFTER `provide' so the one-way require chain (each feature module
 ;; requires `agent-fleet') does not re-enter this file -- `agent-fleet' is
 ;; already on `features' when the dashboard requires it.  Optional deps

@@ -22,12 +22,12 @@
 
 ;;; Commentary:
 
-;; The supervisor dashboard (PLAN.md Phase 3, §68).  A `tabulated-list-mode'
+;; The supervisor dashboard.  A `tabulated-list-mode'
 ;; buffer named *Agent Fleet* that lists every Herdr-managed agent with its
 ;; project, name, kind, state, and current task, and refreshes itself
 ;; live from the Phase 2 hook bus.
 ;;
-;; Design rules honored (PLAN.md):
+;; Design rules honored:
 ;;   §25  event-driven; NO timer polling.  The buffer rebuilds only when an
 ;;        `agent-fleet-agent-{started,status-changed,exited}-hook' fires.
 ;;   §27  columns Project / Agent / Kind / State / Task; row keys
@@ -72,7 +72,7 @@
 ;;; --- Customization --------------------------------------------------
 
 (defcustom agent-fleet-notify-on '(blocked done)
-  "Statuses that trigger an agent-fleet notification (PLAN.md §29).
+  "Statuses that trigger an agent-fleet notification.
 Each is a symbol; the default notifies on `blocked' and `done'.
 Set to nil to disable notifications entirely."
   :type '(set (const blocked) (const done))
@@ -181,7 +181,7 @@ agent rows and the header/mode lines."
   :group 'agent-fleet)
 
 
-;;; --- Faces (PLAN.md §28) --------------------------------------------
+;;; --- Faces --------------------------------------------
 
 ;; One face per Herdr AgentStatus (idle/working/blocked/done/unknown).
 ;; `blocked' is the most prominent: it means a human is needed.
@@ -223,7 +223,7 @@ agent rows and the header/mode lines."
 
 (defun agent-fleet-dashboard--face-for-status (status)
   "Return the status face symbol for STATUS (a symbol or nil).
-STATUS is one of idle/working/blocked/done/unknown (PLAN.md §12); nil
+STATUS is one of idle/working/blocked/done/unknown; nil
 or an unrecognized value maps to the unknown face."
   (pcase status
     ('blocked  'agent-fleet-blocked-face)
@@ -236,7 +236,7 @@ or an unrecognized value maps to the unknown face."
 ;;; --- Column helpers -------------------------------------------------
 
 (defun agent-fleet-dashboard--project-label (agent)
-  "Return the Project label for AGENT (PLAN.md §27/§69).
+  "Return the Project label for AGENT.
 Delegates to `agent-fleet-project-label' (Phase 4): the canonical
 project-root basename via `project.el', falling back to the cwd basename,
 then \"—\".  Matching is by canonical cwd, not workspace label (§32)."
@@ -250,7 +250,7 @@ then \"—\".  Matching is by canonical cwd, not workspace label (§32)."
       "—")))
 
 (defun agent-fleet-dashboard--task-label (agent agent-label)
-  "Return the Task column label for AGENT (PLAN.md §27).
+  "Return the Task column label for AGENT.
 For an agent in a parallel task (Phase 7), shows the task title — the group
 label that clusters its sibling agents.  Otherwise uses the pane's stripped
 terminal title (the best live signal of current activity) unless it
@@ -295,8 +295,7 @@ Returns (PANE-ID . [Project Agent Kind State Task])."
 (defvar-local agent-fleet-dashboard--project-filter nil
   "When non-nil, a canonical project root string to narrow the dashboard to.
 Set by `agent-fleet-dashboard-toggle-project-filter' (the `P' key).  Only
-agents whose project root equals this are shown; nil means show all
-(PLAN.md §69: project-scoped dashboard).")
+agents whose project root equals this are shown; nil means show all.")
 
 (defvar-local agent-fleet-dashboard--task-filter nil
   "When non-nil, a task id to narrow the dashboard to (Phase 7, §72).
@@ -355,7 +354,7 @@ With non-nil FROM-SERVER (the `g' action), first refresh the cache from
 `agent.list' so the buffer reflects agents Herdr has not notified about.
 The event-driven path calls this without FROM-SERVER: the cache is
 already post-event because `herdr-model-apply-event' mutates before the
-hooks fire (PLAN.md §25)."
+hooks fire."
   (interactive (list t))
   (when from-server
     (agent-fleet--ensure-connected)
@@ -367,7 +366,7 @@ hooks fire (PLAN.md §25)."
     (agent-fleet-dashboard--fit-child-frame-height (window-frame win))))
 
 
-;;; --- Row actions (PLAN.md §27) --------------------------------------
+;;; --- Row actions --------------------------------------
 
 (defun agent-fleet-dashboard--agent-at-point ()
   "Return the pane id of the agent at point, or signal an error."
@@ -425,14 +424,13 @@ their existing lifecycle behavior."
          (select-frame-set-input-focus dashboard-frame))
        (signal (car err) (cdr err))))))
 
-;;; --- Project filter (PLAN.md §69) -----------------------------------
+;;; --- Project filter -----------------------------------
 
 (defun agent-fleet-dashboard-toggle-project-filter (&optional arg)
   "Narrow the dashboard to the project of the agent at point, or clear it.
 With no active filter and no prefix ARG, set the filter to the canonical
-project root of the agent at point (PLAN.md §69: project-scoped
-dashboard).  With an active filter, or a prefix ARG, clear it.  Refreshes
-after either change."
+project root of the agent at point.  With an active filter, or a prefix ARG,
+clear it.  Refreshes after either change."
   (interactive "P")
   (if (or arg agent-fleet-dashboard--project-filter)
       (progn
@@ -506,14 +504,14 @@ own refresh, but reprinting is harmless and gives instant feedback."
     (agent-fleet-dashboard-refresh)))
 
 (defun agent-fleet-dashboard-inspect ()
-  "Show the agent at point's output as a read snapshot (PLAN.md §23)."
+  "Show the agent at point's output as a read snapshot."
   (interactive)
   (let ((pane-id (agent-fleet-dashboard--agent-at-point)))
     (agent-fleet-dashboard--visit-external-interface
      (lambda () (agent-fleet-show-output pane-id)))))
 
 (defun agent-fleet-dashboard-prompt ()
-  "Prompt the agent at point (PLAN.md §18)."
+  "Prompt the agent at point."
   (interactive)
   (let ((pane-id (agent-fleet-dashboard--agent-at-point)))
     (let ((text (read-string "Prompt: ")))
@@ -521,12 +519,12 @@ own refresh, but reprinting is harmless and gives instant feedback."
         (agent-fleet-prompt pane-id text)))))
 
 (defun agent-fleet-dashboard-interrupt ()
-  "Send Ctrl-C to the agent at point (PLAN.md §21)."
+  "Send Ctrl-C to the agent at point."
   (interactive)
   (agent-fleet-interrupt (agent-fleet-dashboard--agent-at-point)))
 
 (defun agent-fleet-dashboard-kill ()
-  "Kill the agent at point by closing its pane (PLAN.md §27 `x')."
+  "Kill the agent at point by closing its pane."
   (interactive)
   (let ((pane-id (agent-fleet-dashboard--agent-at-point)))
     (when (y-or-n-p (format "Kill agent %s? " pane-id))
@@ -534,7 +532,7 @@ own refresh, but reprinting is harmless and gives instant feedback."
       (agent-fleet-dashboard--after-row-change))))
 
 (defun agent-fleet-dashboard-rename ()
-  "Rename the agent at point (PLAN.md §27 `r')."
+  "Rename the agent at point."
   (interactive)
   (let* ((pane-id (agent-fleet-dashboard--agent-at-point))
          (cur (let ((a (agent-fleet--find-agent pane-id)))
@@ -545,7 +543,7 @@ own refresh, but reprinting is harmless and gives instant feedback."
         (agent-fleet-dashboard--after-row-change)))))
 
 (defun agent-fleet-dashboard-worktree ()
-  "Show the worktree status for the agent at point (PLAN.md §34 `w').
+  "Show the worktree status for the agent at point.
 Displays the worktree path/branch/repo/metadata read-only (§46/§23: no
 pane output).  Delegates to `agent-fleet-worktree-status'."
   (interactive)
@@ -554,23 +552,23 @@ pane output).  Delegates to `agent-fleet-worktree-status'."
      (lambda () (agent-fleet-worktree-status pane-id)))))
 
 (defun agent-fleet-dashboard-diff ()
-  "Show the working-tree diff for the agent at point (PLAN.md §71 `d').
-Delegates to `agent-fleet-magit-diff' (Magit optional, PLAN §55)."
+  "Show the working-tree diff for the agent at point.
+Delegates to `agent-fleet-magit-diff' (Magit optional)."
   (interactive)
   (let ((pane-id (agent-fleet-dashboard--agent-at-point)))
     (agent-fleet-dashboard--visit-external-interface
      (lambda () (agent-fleet-magit-diff pane-id)))))
 
 (defun agent-fleet-dashboard-magit ()
-  "Open Magit status for the agent at point (PLAN.md §36/§71 `m').
-Delegates to `agent-fleet-magit-status' (Magit optional, PLAN §55)."
+  "Open Magit status for the agent at point.
+Delegates to `agent-fleet-magit-status' (Magit optional)."
   (interactive)
   (let ((pane-id (agent-fleet-dashboard--agent-at-point)))
     (agent-fleet-dashboard--visit-external-interface
      (lambda () (agent-fleet-magit-status pane-id)))))
 
 (defun agent-fleet-dashboard-attach ()
-  "Attach live to the agent at point's terminal (PLAN.md §73 `a').
+  "Attach live to the agent at point's terminal.
 Spawns `herdr agent attach' inside the chosen Emacs terminal backend
 (eat/ghostel/vterm) and pops the buffer so the agent's real PTY/TUI can be
 driven without leaving Emacs.  Unlike `o' (a read-only read-snapshot, §23),
@@ -579,7 +577,7 @@ or mirrored, §46/§23); killing the process detaches and the agent is
 preserved (§79).  A prefix arg passes `--takeover' to the attach CLI.
 From a child dashboard, replace the parent frame's current window with the
 attach buffer and delete the child after attach succeeds.  Delegates to
-`agent-fleet-attach' (terminal backends optional, PLAN §45)."
+`agent-fleet-attach' (terminal backends optional)."
   (interactive)
   (let ((pane-id (agent-fleet-dashboard--agent-at-point))
         (takeover current-prefix-arg))
@@ -651,7 +649,7 @@ attach buffer and delete the child after attach succeeds.  Delegates to
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map tabulated-list-mode-map)
     map)
-  "Keymap for `agent-fleet-mode' (PLAN.md §27 row keys).")
+  "Keymap for `agent-fleet-mode'.")
 
 (defun agent-fleet-dashboard--install-key-bindings ()
   "Install dashboard bindings in the active mode map and optional Evil maps.
@@ -679,7 +677,7 @@ reloading agent-fleet updates an already-created `agent-fleet-mode-map'."
 ;;; --- Mode -----------------------------------------------------------
 
 (define-derived-mode agent-fleet-mode tabulated-list-mode "Agent Fleet"
-  "Major mode for the agent-fleet supervisor dashboard (PLAN.md Phase 3/§68).
+  "Major mode for the agent-fleet supervisor dashboard.
 Shows every Herdr-managed agent as a row with Project/Agent/Kind/State/Task
 columns and refreshes live from the event bus — no timer polling (§25).
 The Project column is a real `project.el' mapping (Phase 4, §69); `P'
@@ -816,7 +814,7 @@ frame) is its own parent."
   "Resize the child-frame dashboard FRAME to fit the agent row count.
 No-op unless `agent-fleet-dashboard-child-frame-fit-height' is enabled
 and FRAME is a live child-frame dashboard.  The height is a function of
-the cached agent count only (PLAN.md §25: read the post-event cache, no
+the cached agent count only (§25: read the post-event cache, no
 server fetch), so a status-only event recomputes the same height and
 `set-frame-size' is skipped when the line count is unchanged."
   (when (and agent-fleet-dashboard-child-frame-fit-height
@@ -1000,21 +998,21 @@ agents remain alive."
       (quit-window))))
 
 
-;;; --- Event-driven refresh (PLAN.md §25) -----------------------------
+;;; --- Event-driven refresh -----------------------------
 
 (defun agent-fleet-dashboard--on-event (_descriptor)
   "Refresh the dashboard buffer in response to an agent-fleet hook event.
 No-op unless the *Agent Fleet* buffer is live and in `agent-fleet-mode'.
 Called from `agent-fleet-agent-{started,status-changed,exited}-hook';
 the cache is already post-event at this point, so no server fetch is
-needed.  Never uses a timer (PLAN.md §25)."
+needed.  Never uses a timer."
   (when-let* ((buf (get-buffer agent-fleet-dashboard-buffer-name)))
     (with-current-buffer buf
       (when (derived-mode-p 'agent-fleet-mode)
         (agent-fleet-dashboard-refresh)))))
 
 
-;;; --- Notifications (PLAN.md §29) ------------------------------------
+;;; --- Notifications ------------------------------------
 
 (defun agent-fleet-dashboard--notify-message (descriptor)
   "Return a notification string for DESCRIPTOR, or nil if not gated on.
@@ -1073,11 +1071,11 @@ notifications into the blocked/done hooks.  Safe to call repeatedly."
 (agent-fleet-dashboard--setup)
 
 
-;;; --- Command map (PLAN.md §53) --------------------------------------
+;;; --- Command map --------------------------------------
 
 ;;;###autoload
 (defvar-keymap agent-fleet-command-map
-  :doc "Prefix map for agent-fleet commands (PLAN.md §53).
+  :doc "Prefix map for agent-fleet commands.
 Bind it yourself, e.g. (global-set-key (kbd \"C-c a\") agent-fleet-command-map).
 The package binds NO global keys."
   "a" #'agent-fleet

@@ -22,7 +22,7 @@
 
 ;;; Commentary:
 
-;; The worktree layer (PLAN.md Phase 5, §33/§34/§70).  Herdr can create a
+;; The worktree layer.  Herdr can create a
 ;; git worktree — a separate checkout of a repo — and host a workspace +
 ;; root pane in it, so multiple agents do not modify the same checkout.
 ;; This layer exposes that as standalone management commands and as the
@@ -35,7 +35,7 @@
 ;; (`herdr-model-worktrees', `herdr-model-find-worktree-for-workspace',
 ;; `herdr-model-upsert-worktree').  It adds no wire protocol.
 ;;
-;; Design rules honored (PLAN.md):
+;; Design rules honored:
 ;;   §25  no polling.  `worktree.list' is called only on user action
 ;;        (a command or the dashboard `w' key), never on a timer.
 ;;   §33  worktree.create/open/remove are the worktree RPCs.
@@ -65,7 +65,7 @@ CWD, when non-empty, scopes the query to the repo at that path (otherwise
 all known worktrees are listed).  Returns a cons (STRUCTS . SOURCE):
 STRUCTS is the list of parsed worktree structs now in the cache, and
 SOURCE is the `WorktreeSourceInfo' plist (repo metadata) or nil.
-User-initiated (never a timer; PLAN.md §25)."
+User-initiated (never a timer; §25)."
   (let* ((res (herdr-request "worktree.list"
                              (if (and cwd (not (string-empty-p cwd)))
                                  `(("cwd" . ,cwd))
@@ -88,11 +88,11 @@ User-initiated (never a timer; PLAN.md §25)."
 
 ;;;###autoload
 (defun agent-fleet-worktree-list (&optional cwd)
-  "List Herdr worktrees and cache them (PLAN.md §33/§70).
+  "List Herdr worktrees and cache them.
 With a prefix arg, prompt for a repo CWD to scope the query; otherwise
 list all known worktrees.  Each result is upserted into the cache — the
 only way to seed worktree state besides events (user-initiated, not
-polling; PLAN.md §25).  Returns the worktree structs.  When called
+polling; §25).  Returns the worktree structs.  When called
 interactively, messages the count and paths."
   (interactive
    (list (when current-prefix-arg
@@ -117,7 +117,7 @@ interactively, messages the count and paths."
 ;;;###autoload
 (cl-defun agent-fleet-worktree-open (cwd &key branch base focus)
   "Open a Herdr workspace for an existing worktree at repo CWD.
-Calls `worktree.open' (PLAN.md §33/§70): if a workspace is already open
+Calls `worktree.open': if a workspace is already open
 for the worktree it is reused (the result carries `:already-open').  An
 optional BRANCH/BASE identify the worktree (nil lets Herdr decide); FOCUS
 focuses the workspace in the Herdr UI.  The returned worktree + workspace
@@ -210,7 +210,7 @@ is the agent's workspace."
 
 (defun agent-fleet-worktree--display (wt ws-id source)
   "Render worktree WT (workspace WS-ID, repo SOURCE) in a read-only buffer.
-Shows worktree METADATA only (PLAN.md §46/§23: no pane output).  SOURCE
+Shows worktree METADATA only.  SOURCE
 is a `WorktreeSourceInfo' plist or nil."
   (let ((buf (get-buffer-create "*Agent Fleet Worktree*")))
     (with-current-buffer buf
@@ -243,10 +243,10 @@ is a `WorktreeSourceInfo' plist or nil."
 (defun agent-fleet-worktree-status (target)
   "Show the worktree for TARGET's workspace (the dashboard `w' action).
 TARGET is an agent name, pane id, symbol, or `herdr-agent' struct.
-Displays the worktree path/branch/repo/metadata read-only (PLAN.md
-§46/§23: no pane output is persisted).  Refreshes worktree state from
-`worktree.list' on each call (user-initiated, never a timer; PLAN.md
-§25), so the status reflects the live worktree set and repo source.
+Displays the worktree path/branch/repo/metadata read-only
+(§46/§23: no pane output is persisted).  Refreshes worktree state from
+`worktree.list' on each call (user-initiated, never a timer; §25), so the
+status reflects the live worktree set and repo source.
 Returns the worktree struct, or nil and messages when no worktree is open
 for the workspace."
   (interactive
@@ -274,7 +274,7 @@ for the workspace."
 
 ;;;###autoload
 (defun agent-fleet-worktree-cleanup (&optional no-confirm)
-  "Remove the worktrees of all finished (`done') agents (PLAN §71).
+  "Remove the worktrees of all finished (`done') agents.
 Lists each done agent's worktree (name + path) and asks for confirmation
 before removing them via `agent-fleet-worktree-remove' (which issues
 `worktree.remove' and drops the worktree from the cache eagerly).  With

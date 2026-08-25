@@ -129,7 +129,7 @@ worktree path yields nil."
 
 (ert-deftest agent-fleet-magit-status-errors-when-magit-absent ()
   "When Magit is not installed, `agent-fleet-magit-status' `user-error's
-clearly (Magit is an optional dependency, PLAN §55).  The guard fires
+clearly (Magit is an optional dependency, §55).  The guard fires
 before agent resolution, so any target triggers it."
   (skip-unless (not (featurep 'magit)))
   (should-error (agent-fleet-magit-status (make-herdr-agent :id "x"))

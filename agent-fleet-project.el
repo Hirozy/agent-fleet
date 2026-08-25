@@ -22,13 +22,13 @@
 
 ;;; Commentary:
 
-;; The project-integration layer (PLAN.md Phase 4, §69).  Maps Herdr-managed
-;; agents to Emacs `project.el' projects by **canonical cwd** (PLAN.md §31/§32:
+;; The project-integration layer.  Maps Herdr-managed
+;; agents to Emacs `project.el' projects by **canonical cwd** (§31/§32:
 ;; "不要仅通过 label 判断" — do not judge by workspace label alone; match by
 ;; `file-truename (project-root ...)`), and lets the user start/list agents
 ;; scoped to the current project.
 ;;
-;; Design rules honored (PLAN.md):
+;; Design rules honored:
 ;;   §31  prefer `project.el' over Projectile; use `project-current'/`project-root'.
 ;;        Default mapping: one Emacs project ↔ one Herdr workspace.
 ;;   §32  match by canonical cwd; allow multiple workspaces per repo (worktrees,
@@ -63,7 +63,7 @@
 For a normal checkout, `git rev-parse --git-common-dir' yields ROOT/.git;
 for a linked worktree it yields that same directory in the primary checkout.
 Mapping both to ROOT makes all worktrees of one repository share the project
-identity required by PLAN.md §32.  Non-standard separate git-dir layouts fall
+identity required by §32.  Non-standard separate git-dir layouts fall
 back to `project.el' rather than guessing."
   (when (and (executable-find "git") (file-directory-p dir))
     (let ((default-directory (file-name-as-directory (file-truename dir))))
@@ -85,10 +85,10 @@ back to `project.el' rather than guessing."
 
 (defun agent-fleet-project-root-for-cwd (dir)
   "Return the canonical project root for DIR, or nil.
-Uses `project-current' with DIR as `default-directory' (PLAN.md §31),
+Uses `project-current' with DIR as `default-directory',
 falling back to the VC root (`vc-root-dir') for dirs not registered as
 Emacs projects.  The result is `file-truename'-canonicalized so that
-symlinked cwd variants of one repo all match (PLAN.md §32: canonical cwd).
+symlinked cwd variants of one repo all match.
 Nil-safe: nil, empty, or non-existent DIR returns nil — an empty cwd
 would otherwise expand to `default-directory' (via `file-directory-p')
 and leak the caller's project as the agent's."
@@ -124,7 +124,7 @@ Returns nil when PROJECT-OR-ROOT is nil."
 ;;; --- Project label (dashboard column) -------------------------------
 
 (defun agent-fleet-project-label (agent)
-  "Return a Project label for AGENT (PLAN.md §27/§69).
+  "Return a Project label for AGENT.
 Prefers the canonical project-root basename, then the cwd basename, then
 \"—\".  Keeps the Phase 3 fallback shape so non-repo dirs still label by
 cwd basename (e.g. \"/tmp/demo\" -> \"demo\")."
@@ -143,7 +143,7 @@ cwd basename (e.g. \"/tmp/demo\" -> \"demo\")."
 (defun agent-fleet-project-agents (&optional project)
   "Return the agents whose project root matches PROJECT.
 PROJECT defaults to `(project-current)'.  It may be a project struct or a
-root directory string.  Matching is by canonical cwd (PLAN.md §32), so
+root directory string.  Matching is by canonical cwd, so
 agents in separate worktrees or checkouts of one repo all match.  Nil-safe
 when not connected or when PROJECT resolves to no root."
   (let ((root (agent-fleet--project-root (or project (project-current)))))
@@ -157,7 +157,7 @@ when not connected or when PROJECT resolves to no root."
 
 (defun agent-fleet--workspace-for-root (root)
   "Return a workspace id hosting an agent whose project root is ROOT, or nil.
-Used to co-locate a project's agents in one workspace (PLAN.md §31: one
+Used to co-locate a project's agents in one workspace (§31: one
 project ↔ one workspace, by default).  Returns the first match."
   (cl-loop for a in (herdr-agents)
            when (equal (agent-fleet-project-for-agent a) root)
@@ -171,14 +171,14 @@ project ↔ one workspace, by default).  Returns the first match."
                                                   (timeout-ms agent-fleet-start-timeout-ms)
                                                   focus worktree branch base)
   "Start a CLI agent of KIND in Emacs project PROJECT (default: current).
-Resolves the project root (PLAN.md §31/§32), then finds a Herdr workspace
+Resolves the project root, then finds a Herdr workspace
 already serving this project (one with an agent in it); if none, reuses the
 focused workspace; if none, creates a workspace with `cwd=root'.  The agent
 is started at `cwd=root' so the derived project association is immediate.
 
 With `:worktree t', the project root becomes the source repo for a fresh
 git worktree: the agent starts in an isolated checkout instead of the
-normal working tree (PLAN.md §34/§70).  Optional BRANCH/BASE override the
+normal working tree.  Optional BRANCH/BASE override the
 default branch selection.  When `:worktree t' is set, the workspace/pane
 resolution above is skipped — `worktree.create' provisions both.
 

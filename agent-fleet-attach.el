@@ -22,7 +22,7 @@
 
 ;;; Commentary:
 
-;; The interactive-terminal layer (PLAN.md Phase 8, §43/§44/§45/§45.1/§73/§79).
+;; The interactive-terminal layer.
 ;; Attaches live to a Herdr agent pane inside an Emacs terminal buffer, so the
 ;; user can drive the agent's real PTY/TUI without leaving Emacs:
 ;;
@@ -40,7 +40,7 @@
 ;;     ↓  socket
 ;;   Herdr server → one live agent pane
 ;;
-;; ghostel is an OPTIONAL dependency (PLAN §45): the core control plane works
+;; ghostel is an OPTIONAL dependency: the core control plane works
 ;; without it installed.  `agent-fleet-attach-backend' defaults to `auto',
 ;; which uses ghostel when its dynamic module is actually loaded and current
 ;; — a stale/older module leaves ghostel's terminal functions void, so `auto'
@@ -48,7 +48,7 @@
 ;; When ghostel is not available, attach reports the `herdr agent attach'
 ;; command to run in the user's own terminal.
 ;;
-;; Security (PLAN §46/§23, unchanged): attach is user-initiated interactive
+;; Security: attach is user-initiated interactive
 ;; viewing — the terminal buffer is transient, NOT persisted or continuously
 ;; mirrored (same boundary as `agent-fleet-show-output''s read-snapshot).
 ;;
@@ -62,7 +62,7 @@
 (require 'subr-x)
 (require 'agent-fleet)
 
-;; ghostel is an optional backend (PLAN §45): declare its public entry
+;; ghostel is an optional backend: declare its public entry
 ;; point so the byte-compiler does not warn, without forcing a top-level
 ;; `require'.  `ghostel-exec' is what `--spawn' calls; the working-module
 ;; probe lives in `agent-fleet-attach--ghostel-ready-p'.
@@ -80,7 +80,7 @@
 ;;; --- Customizable backend + buffer naming ---------------------------
 
 (defcustom agent-fleet-attach-backend 'auto
-  "Terminal backend for `agent-fleet-attach' (PLAN §45/§73).
+  "Terminal backend for `agent-fleet-attach'.
 `auto' (default) uses ghostel when its dynamic module is loaded and
 current.  An explicit `ghostel' uses that backend when ready, else
 `user-error's (set `auto' for graceful fallback).  When ghostel is not
@@ -90,7 +90,7 @@ run in the user's own terminal."
   :group 'agent-fleet)
 
 (defcustom agent-fleet-attach-buffer-prefix "*agent:"
-  "Prefix for `agent-fleet-attach' buffer names (PLAN §73: `*agent:NAME*').
+  "Prefix for `agent-fleet-attach' buffer names.
 The buffer is named PREFIX<name>*; <name> is the agent's display name."
   :type 'string
   :group 'agent-fleet)
@@ -111,7 +111,7 @@ and evil-escape integration is known to avoid synthetic insertion."
   :type 'boolean
   :group 'agent-fleet)
 
-;; `auto' probes only ghostel (PLAN §45.1); when its module is not ready,
+;; `auto' probes only ghostel; when its module is not ready,
 ;; `auto' yields nil and the attach command reports the CLI instead.
 (defconst agent-fleet-attach--backend-preference
   '(ghostel)
@@ -161,7 +161,7 @@ choice rather than silently substituting)."
 ;;; --- Buffer name, argv, live-buffer probe (testable core) -----------
 
 (defun agent-fleet-attach--buffer-name (name)
-  "Return the attach buffer name for agent display NAME (PLAN §73)."
+  "Return the attach buffer name for agent display NAME."
   (concat agent-fleet-attach-buffer-prefix name "*"))
 
 (defun agent-fleet-attach--buffer-name-for-pane (name pane-id)
@@ -233,7 +233,7 @@ variables."
 TAKEOVER (non-nil) adds `--takeover'.  Pops the buffer so the user can drive
 the live terminal.  No output is persisted (§46/§23): the buffer is a
 transient interactive view; killing the process detaches and preserves the
-agent (PLAN §79)."
+agent; detaching never closes the pane."
   (let ((argv (agent-fleet-attach--argv pane-id takeover)))
     (pcase backend
       ('ghostel
@@ -261,7 +261,7 @@ buffer for the agent already exists, reuses it instead of double-attaching.
 
 This is a live interactive session, NOT a persisted or mirrored view (§46/§23):
 the buffer is transient; killing the process detaches and the agent is
-preserved (PLAN §79 — detach does NOT close the pane).  With a prefix arg
+preserved; detaching does not close the pane.  With a prefix arg
 \(TAKEOVER), passes `--takeover' to the attach CLI.
 
 No socket RPC is involved: there is no `agent.attach' method (§43); this is a

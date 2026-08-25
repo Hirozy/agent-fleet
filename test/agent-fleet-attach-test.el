@@ -7,7 +7,7 @@
 ;; argv + buffer-name, target resolution, live-buffer reuse, the
 ;; per-backend spawn dispatch, and the dashboard `a' key wiring.  ghostel
 ;; are NOT required — they are stubbed via `cl-letf', mirroring how
-;; `agent-fleet-magit-test' stubs Magit (PLAN §45: optional deps).  Run:
+;; `agent-fleet-magit-test' stubs Magit.  Run:
 ;;   emacs -batch -L . -L test -l ert -l herdr -l agent-fleet \
 ;;         -l agent-fleet-attach -l agent-fleet-dashboard \
 ;;         -l herdr-mock-server -l test/agent-fleet-test \
@@ -37,7 +37,7 @@ program `herdr' is prepended by the backend launch, not by `--argv'."
                  (agent-fleet-attach--argv "w4:p1" t))))
 
 (ert-deftest agent-fleet-attach-buffer-name ()
-  "`--buffer-name' yields `*agent:NAME*' (PLAN §73), via the prefix defcustom."
+  "`--buffer-name' yields `*agent:NAME*', via the prefix defcustom."
   (let ((agent-fleet-attach-buffer-prefix "*agent:"))
     (should (equal "*agent:arch*"
                    (agent-fleet-attach--buffer-name "arch")))))
@@ -48,7 +48,7 @@ program `herdr' is prepended by the backend launch, not by `--argv'."
 (ert-deftest agent-fleet-attach-ghostel-ready-p-rejects-stale-module ()
   "ghostel's lisp can `require' successfully while its dynamic module does
 NOT load (an older/broken module, or a missing libghostty-vt dependency) —
-the stale-module case (PLAN §45.1).  `module-load' sets the
+the stale-module case.  `module-load' sets the
 `ghostel-module' feature only on success, so `--ghostel-ready-p' must check
 `featurep 'ghostel-module', NOT merely that `require' succeeded.  Here
 `require' is stubbed so ghostel \"loads\" while `featurep' returns nil
@@ -103,7 +103,7 @@ non-nil — `auto' picks ghostel (native libghostty-vt, fastest)."
 
 (ert-deftest agent-fleet-attach-auto-prefers-ghostel-when-ready ()
   "With ghostel's module working, `auto' picks ghostel
-(highest rendering fidelity, PLAN §45.1)."
+(highest rendering fidelity, §45.1)."
   (let ((agent-fleet-attach-backend 'auto))
     (cl-letf (((symbol-function 'agent-fleet-attach--ghostel-ready-p)
                (lambda () t)))
@@ -358,7 +358,7 @@ both that precondition and the attach argv (TAKEOVER adds `--takeover')."
 
 (ert-deftest agent-fleet-dashboard-attach-key-bound ()
   "The dashboard mode-map binds `a' to `agent-fleet-dashboard-attach'
-(PLAN §73; mirrors the `d'/`m'/`T' wiring tests)."
+."
   (should (eq #'agent-fleet-dashboard-attach
               (lookup-key agent-fleet-mode-map "a"))))
 
