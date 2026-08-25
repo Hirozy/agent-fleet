@@ -587,7 +587,9 @@ this uses `pane_created' to establish the agent with its pane fields."
               (should (get-buffer buf-name))
               (with-current-buffer buf-name
                 (should (string-match-p "line 1" (buffer-string)))
-                (should buffer-read-only)))
+                (should buffer-read-only)
+                (should (eq 'quit-window
+                            (lookup-key (current-local-map) (kbd "q"))))))
           (when (get-buffer buf-name)
             (kill-buffer buf-name)))))))
 
