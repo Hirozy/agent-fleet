@@ -3,10 +3,11 @@
 An Emacs package that turns Emacs into a multi-agent supervisor over the
 [Herdr](https://herdr.dev) terminal workspace server.
 
-Claude Code, Codex, Pi, and other CLI agents keep running in real PTYs managed
-by Herdr. Emacs provides the control plane: start agents, send prompts, watch
-their state, inspect output, isolate work in Git worktrees, review changes with
-Magit, and attach to a live terminal when direct interaction is needed.
+Claude Code, Codex, Pi, and other CLI agents keep running in real PTYs
+managed by Herdr. Emacs provides the control plane: start agents, send
+prompts, watch their state, inspect output, isolate work in Git worktrees,
+review changes with Magit, and attach to a live terminal when direct
+interaction is needed.
 
 ## Features
 
@@ -71,31 +72,9 @@ menu, or start an agent directly with:
 M-x agent-fleet-start
 ```
 
-The interactive command asks for an agent kind and an optional name. From
-Emacs Lisp, you can also supply the working directory and other options:
-
-```elisp
-(setq reviewer
-      (agent-fleet-start 'codex
-                         :name "reviewer"
-                         :cwd "~/src/my-project"))
-
-(agent-fleet-prompt reviewer
-                    "Review the current changes and report correctness issues.")
-
-(agent-fleet-wait reviewer)
-
-(plist-get (agent-fleet-read reviewer :lines 200) :text)
-```
-
-Agent arguments can be passed as a list of strings:
-
-```elisp
-(agent-fleet-start 'codex
-                   :name "implementer"
-                   :cwd "~/src/my-project"
-                   :args '("--full-auto"))
-```
+The interactive command asks for an agent kind and an optional name. The
+working directory, branch, and extra CLI arguments can be supplied through the
+command prompts; defaults are covered in [Configuration](#configuration).
 
 ## Dashboard
 
@@ -121,20 +100,17 @@ periodically poll the server.
 | `q` | Close the dashboard window or frame |
 
 The dashboard normally opens in an ordinary Emacs window. It can instead use
-Emacs's native child-frame support or a standalone graphical frame:
+Emacs's native child-frame support or a standalone graphical frame; set
+`agent-fleet-dashboard-display` accordingly (see
+[Configuration](#configuration)):
 
-```elisp
-;; Float the dashboard over the current Emacs frame.
-(setq agent-fleet-dashboard-display 'child-frame)
-
-;; Or use an independent operating-system window.
-(setq agent-fleet-dashboard-display 'frame)
-```
+- `buffer` (default): a regular window.
+- `child-frame`: a native child frame.
+- `frame`: a standalone operating-system window.
 
 Native child-frame display requires Emacs 29.1 or newer, a graphical Emacs
 frame, and `display-buffer-in-child-frame`. If any requirement is unavailable,
 agent-fleet reports the reason and opens the regular dashboard buffer instead.
-The package's overall minimum supported Emacs version is also 29.1.
 
 The configured default can be bypassed for one invocation:
 
@@ -154,88 +130,53 @@ the child dashboard. Closing a dashboard frame does not disconnect Herdr or
 stop agents.
 
 The dashboard supports its keys in normal and motion states when Evil is
-loaded. Notifications are enabled for `blocked` and `done` by default:
-
-```elisp
-;; Notify only when an agent needs input.
-(setq agent-fleet-notify-on '(blocked))
-
-;; Disable agent notifications.
-(setq agent-fleet-notify-on nil)
-```
+loaded. Notifications can be tuned with `agent-fleet-notify-on`; see
+[Configuration](#configuration).
 
 ## Start and control agents
 
-Every command accepts an agent name, pane ID, symbol, or returned `herdr-agent`
-object where applicable.
+Every control command is available interactively as `M-x agent-fleet-<name>`
+and accepts an agent name, pane ID, symbol, or `herdr-agent` object where
+applicable.
 
-```elisp
-;; Submit without waiting.
-(agent-fleet-prompt "reviewer" "Run the test suite.")
+| Command | Action |
+|---|---|
+| `M-x agent-fleet-start` | Start an agent (prompts for kind and name) |
+| `M-x agent-fleet-prompt` | Send a prompt |
+| `M-x agent-fleet-prompt-and-wait` | Prompt and wait atomically for done/blocked |
+| `M-x agent-fleet-read` | Read a terminal snapshot |
+| `M-x agent-fleet-show-output` | Open a recent output snapshot |
+| `M-x agent-fleet-wait` | Wait for a specific state |
+| `M-x agent-fleet-send-keys` | Send terminal keys |
+| `M-x agent-fleet-interrupt` | Send `Ctrl-C` |
+| `M-x agent-fleet-rename` | Rename the agent |
+| `M-x agent-fleet-switch` | Focus the agent in Herdr |
+| `M-x agent-fleet-kill` | Stop the agent |
+| `M-x agent-fleet-list` | List cached agents |
+| `M-x agent-fleet-get` | Show one agent |
+| `M-x agent-fleet-status` | Show an agent's state |
+| `M-x agent-fleet-doctor` | Check socket, connection, manifests, and CLIs |
 
-;; Submit and wait atomically for done or blocked.
-(agent-fleet-prompt-and-wait "reviewer" "Fix the failing tests.")
+Agent state comes directly from Herdr and is one of `idle`, `working`,
+`blocked`, `done`, or `unknown`.
 
-;; Read a terminal snapshot.
-(agent-fleet-read "reviewer" :source 'recent_unwrapped :lines 120)
-
-;; Wait for a specific state.
-(agent-fleet-wait "reviewer" '(done blocked) :timeout-ms 300000)
-
-;; Send terminal keys or interrupt with Ctrl-C.
-(agent-fleet-send-keys "reviewer" '("esc" "enter"))
-(agent-fleet-interrupt "reviewer")
-
-;; Rename, focus in Herdr, or stop the agent.
-(agent-fleet-rename "reviewer" "reviewer-2")
-(agent-fleet-switch "reviewer-2")
-(agent-fleet-kill "reviewer-2")
-```
-
-Useful query commands include `agent-fleet-list`, `agent-fleet-get`,
-`agent-fleet-status`, and `agent-fleet-show-output`. Agent state comes directly
-from Herdr and is one of `idle`, `working`, `blocked`, `done`, or `unknown`.
-
-For automation, register functions on the lifecycle hooks:
-
-```elisp
-(add-hook 'agent-fleet-agent-blocked-hook
-          (lambda (agent)
-            (message "Agent needs attention: %s"
-                     (plist-get agent :name))))
-
-(add-hook 'agent-fleet-agent-done-hook
-          (lambda (agent)
-            (message "Agent finished: %s"
-                     (plist-get agent :name))))
-```
+Lifecycle hooks (`agent-fleet-agent-started-hook`,
+`agent-fleet-agent-status-changed-hook`, and `agent-fleet-agent-exited-hook`)
+run with the post-event cache already updated, so custom automation can read
+fresh state without polling.
 
 ## Projects and worktrees
 
 Start an agent for the current `project.el` project:
 
-```elisp
-(agent-fleet-start-for-project 'codex
-                               :name "project-reviewer")
+```text
+M-x agent-fleet-start-for-project
 ```
 
 Agents in linked worktrees are mapped back to the same canonical project, so
 the dashboard's `P` filter includes all checkouts of one repository.
 
-To give an agent an isolated checkout, pass `:worktree t` and the source
-repository:
-
-```elisp
-(agent-fleet-start 'codex
-                   :name "isolated-fix"
-                   :cwd "~/src/my-project"
-                   :worktree t
-                   :branch "agent/isolated-fix"
-                   :base "main")
-```
-
-The branch and base are optional; when omitted, Herdr chooses them. Standalone
-worktree commands are also available:
+Standalone worktree commands:
 
 - `M-x agent-fleet-worktree-list`
 - `M-x agent-fleet-worktree-open`
@@ -248,35 +189,19 @@ Review the agent's changes before cleanup.
 
 ## Parallel tasks
 
-`agent-fleet-parallel` starts each agent in a separate worktree, sends its
-prompt, and tracks the group as one task:
+Run multiple agents in independent worktrees as one aggregate task:
 
-```elisp
-(setq review-task
-      (agent-fleet-parallel
-       '((codex . "Review the implementation for correctness.")
-         (claude . "Review the tests and identify missing cases."))
-       :title "release-review"
-       :cwd "~/src/my-project"
-       :base "main"))
-
-(agent-fleet-task-wait review-task)
-(agent-fleet-task-state review-task)
-(agent-fleet-task-agents-state review-task)
+```text
+M-x agent-fleet-parallel
 ```
 
-Task state is derived from its agents. Waiting ends when the task is `done`,
-`blocked`, or `failed` by default. It does not stop the other agents when one
-finishes. Use `agent-fleet-read` to inspect individual results.
-
-After reviewing and preserving any wanted changes, remove the task's worktrees:
-
-```elisp
-(agent-fleet-task-cleanup review-task)
-```
-
-You can also run `M-x agent-fleet-parallel` interactively and use `T` in the
-dashboard to focus on one task.
+The interactive command prompts for each agent's kind and prompt. Use the
+dashboard `T` key to focus on one task; the task title and its aggregate state
+then show in the mode line. Task state is derived from its members — `done`
+only when all agents are done, `blocked` when one is blocked — and no agent is
+killed when another finishes. Use `M-x agent-fleet-read` to inspect individual
+results, and `M-x agent-fleet-task-cleanup` to remove the task's worktrees
+after preserving any wanted changes.
 
 ## Review changes with Magit
 
@@ -308,36 +233,24 @@ Use a prefix argument to request terminal takeover:
 C-u M-x agent-fleet-attach
 ```
 
-Choose a backend explicitly if desired:
-
-```elisp
-(setq agent-fleet-attach-backend 'eat) ; auto, ghostel, eat, vterm, external
-```
-
-When no in-Emacs backend is available, run the command shown by agent-fleet in
-an external terminal.
+Choose a backend explicitly via `agent-fleet-attach-backend`; see
+[Configuration](#configuration). When no in-Emacs backend is available, run
+the command shown by agent-fleet in an external terminal.
 
 ### Evil and evil-escape
 
 Attach buffers inhibit `evil-escape` locally by default. Some terminal modes
 forward both the synthetic first key used by `evil-escape` and the real key to
 the PTY, which can duplicate the first character of an escape sequence such as
-`jk`.
-
-The default prevents that input corruption without changing Evil globally:
-
-```elisp
-(setq agent-fleet-attach-inhibit-evil-escape t)
-```
-
-Set it to nil only if your terminal backend integrates safely with
-`evil-escape`.
+`jk`. The default prevents that input corruption without changing Evil
+globally; toggle it with `agent-fleet-attach-inhibit-evil-escape` (see
+[Configuration](#configuration)).
 
 Terminal TUIs usually implement their own scrollback. If scrolling feels slow
 because the backend sends navigation keys into the TUI, switch to the terminal
 backend's copy or scrollback mode before navigating the buffer.
 
-## Connection and configuration
+## Connection
 
 `agent-fleet-auto-connect` controls when Emacs connects to Herdr:
 
@@ -345,54 +258,81 @@ backend's copy or scrollback mode before navigating the buffer.
 - `after-init`: also attempt a connection shortly after Emacs starts.
 - `nil`: require `M-x herdr-connect` explicitly.
 
-To connect after startup:
-
-```elisp
-(setq agent-fleet-auto-connect 'after-init
-      agent-fleet-auto-connect-delay 1.0)
-(require 'agent-fleet)
-```
-
 Automatic connection does not start or own the Herdr server. If the server is
 restarted, the subscription reconnects with backoff and refreshes the local
 snapshot. A command issued after a failed startup connection retries on demand.
 
 The socket is discovered from `HERDR_SOCKET_PATH`, `herdr status`, or
-`~/.config/herdr/herdr.sock`. Override it when using a non-default location:
+`~/.config/herdr/herdr.sock`; override it with `herdr-socket-path` when using a
+non-default location. Run `M-x agent-fleet-doctor` to check the socket, Herdr
+connection, agent manifests, and configured CLI executables.
 
-```elisp
-(setq herdr-socket-path "/path/to/herdr.sock")
-```
+## Configuration
 
-Common defaults can be customized globally:
+All options are Emacs customization variables in the `agent-fleet` and `herdr`
+groups; set them with `setq` or <kbd>M-x customize-group RET agent-fleet</kbd>.
 
-```elisp
-(setq agent-fleet-default-read-lines 200
-      agent-fleet-default-read-source 'recent_unwrapped
-      agent-fleet-wait-timeout-ms 300000
-      agent-fleet-default-wait-until '(done blocked))
-```
+### Connection and transport
 
-Run `M-x agent-fleet-doctor` to check the socket, Herdr connection, agent
-manifests, and configured CLI executables.
+| Option | Default | Meaning |
+|---|---|---|
+| `herdr-socket-path` | `nil` | Herdr Unix socket path; `nil` auto-discovers from `HERDR_SOCKET_PATH`, `herdr status`, then `~/.config/herdr/herdr.sock` |
+| `herdr-required-protocol-version` | `19` | Minimum server protocol from `ping`; `nil` skips the check (client verified against protocol 20) |
+| `herdr-protocol-request-timeout` | `5.0` | Default timeout in seconds for a synchronous Herdr request |
+| `herdr-protocol-ping-timeout` | `3.0` | Timeout in seconds for a `ping` |
+| `herdr-subscription-start-timeout` | `3.0` | Seconds to wait for the `subscription_started` acknowledgement |
+| `herdr-reconnect-max-attempts` | `12` | Maximum reconnection attempts before giving up |
+| `herdr-reconnect-delay` | `2.0` | Base delay in seconds between reconnection attempts |
+| `herdr-reconnect-max-delay` | `60.0` | Cap in seconds on the reconnection backoff |
+| `herdr-log-level` | `warn` | Logging verbosity: `error`, `warn`, `info`, `debug`, `trace` (trace records full frames; terminal output may contain secrets) |
+| `herdr-log-buffer` | `*herdr-log*` | Name of the Herdr log buffer |
+
+### Agent control
+
+| Option | Default | Meaning |
+|---|---|---|
+| `agent-fleet-auto-connect` | `on-demand` | When to connect: `nil` (manual), `on-demand`, or `after-init` |
+| `agent-fleet-auto-connect-delay` | `1.0` | Idle seconds before an `after-init` connection |
+| `agent-fleet-agent-executables` | claude/codex/pi | Known agent kinds and their CLI executables; used by `agent-fleet-doctor` and kind completion |
+| `agent-fleet-default-read-source` | `recent_unwrapped` | Default `agent.read` source: `visible`, `recent`, `recent_unwrapped`, or `detection` |
+| `agent-fleet-default-read-lines` | `120` | Default line count for reads and output snapshots |
+| `agent-fleet-default-read-format` | `text` | Default read format: `text` (ANSI stripped) or `ansi` |
+| `agent-fleet-start-timeout-ms` | `30000` | Startup timeout in ms passed to `agent.start` (Herdr requires 3000–300000) |
+| `agent-fleet-wait-timeout-ms` | `120000` | Default timeout in ms for `agent-fleet-wait` and `-prompt-and-wait` |
+| `agent-fleet-default-wait-until` | `(done blocked)` | Default statuses `wait`/`prompt-and-wait` wait for |
+| `agent-fleet-output-buffer-prefix` | `*Agent Output: ` | Prefix for output buffer names (buffer is `PREFIX<name>*`) |
+
+### Dashboard
+
+| Option | Default | Meaning |
+|---|---|---|
+| `agent-fleet-notify-on` | `(blocked done)` | Agent statuses that trigger a notification; `nil` disables notifications |
+| `agent-fleet-dashboard-buffer-name` | `*Agent Fleet*` | Name of the dashboard buffer |
+| `agent-fleet-dashboard-display` | `buffer` | Display backend: `buffer`, `child-frame`, or `frame` |
+| `agent-fleet-dashboard-child-frame-parameters` | alist | Frame parameters for the native child-frame dashboard (size, centering, borders) |
+| `agent-fleet-dashboard-frame-parameters` | alist | Frame parameters for the standalone dashboard frame |
+| `agent-fleet-dashboard-child-frame-fit-height` | `nil` | When non-nil, fit the child-frame height to the agent count (event-driven, idempotent) |
+| `agent-fleet-dashboard-child-frame-min-height` | `4` | Minimum child-frame height in lines when fit-height is on |
+| `agent-fleet-dashboard-child-frame-max-height` | `40` | Maximum child-frame height in lines when fit-height is on |
+| `agent-fleet-dashboard-child-frame-help-height` | `8` | Bottom lines reserved for the transient help page |
+
+### Terminal attach
+
+| Option | Default | Meaning |
+|---|---|---|
+| `agent-fleet-attach-backend` | `auto` | Terminal backend: `auto`, `ghostel`, `eat`, `vterm`, or `external` |
+| `agent-fleet-attach-buffer-prefix` | `*agent:` | Prefix for attach buffer names (buffer is `PREFIX<name>*`) |
+| `agent-fleet-attach-inhibit-evil-escape` | `t` | Inhibit `evil-escape` locally in attach buffers to avoid duplicated input |
 
 ## Low-level Herdr client
 
-The `herdr` library is available when direct protocol access is useful:
-
-```elisp
-(herdr-connect)
-(herdr-request "server.agent_manifests")
-(herdr-disconnect)
-```
-
-Most users should prefer the `agent-fleet-*` commands because they resolve
-targets, keep the local model synchronized, and expose lifecycle hooks.
-
-The protocol implementation uses one short-lived socket per request and one
-long-lived event subscription. Herdr remains the source of truth; reconnecting
-rebuilds the local snapshot. See [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the
-wire protocol and event shapes verified by this client.
+The `herdr` library is available for direct protocol access
+(`M-x herdr-connect`, `M-x herdr-disconnect`, and `M-x herdr-doctor`), but most
+users should prefer the `agent-fleet-*` commands, which resolve targets, keep
+the local model synchronized, and expose lifecycle hooks. The protocol uses one
+short-lived socket per request and one long-lived event subscription; Herdr
+remains the source of truth and reconnecting rebuilds the local snapshot. See
+[`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the wire protocol and event shapes.
 
 ## Architecture
 
