@@ -102,6 +102,21 @@ The actual delay grows exponentially up to `herdr-reconnect-max-delay'."
   "Return the live connection struct, or nil."
   herdr--conn)
 
+(defvar herdr-synced-hook nil
+  "Hook run after the cache is wholesale-replaced from a session snapshot.
+Fires from `herdr-connect' and `herdr--reconnect' immediately after
+`herdr-model-set-cache', before the subscription stream is (re)started.
+Each function is called with one argument (nil).  This is the canonical
+resync signal: a fresh snapshot is the authoritative state, and replayed
+events from the EventHub ring buffer arrive only later via the
+subscription.  Consumers that need the current state should read it via
+`herdr-agents' / `herdr-model-cache' at hook-fire time.
+
+`herdr-connected-p' is NOT guaranteed to return t when this hook runs —
+the subscription is not yet live.  Consumers must not call `herdr-connect'
+or `herdr-disconnect' from within the hook, as the connection is
+mid-bootstrap.")
+
 
 ;;; --- Connection lifecycle -----------------------------------------
 
@@ -131,6 +146,7 @@ disconnects."
       (let* ((snap (herdr-protocol-request "session.snapshot" nil))
              (session (herdr-model-parse-snapshot snap)))
         (herdr-model-set-cache session)
+        (run-hook-with-args 'herdr-synced-hook nil)
         (let ((conn (make-herdr--connection
                      :socket-path path :protocol proto
                      :version ver :capabilities caps
@@ -338,6 +354,7 @@ server still reaches `herdr-reconnect-max-attempts' and gives up."
             (let* ((snap (herdr-protocol-request "session.snapshot" nil))
                    (session (herdr-model-parse-snapshot snap)))
               (herdr-model-set-cache session))
+            (run-hook-with-args 'herdr-synced-hook nil)
             ;; Let buffered pane events rebuild the subscription during the
             ;; ack wait just as they do during the initial connection.
             (setf (herdr--connection-connected conn) t)

@@ -968,6 +968,14 @@ Receives a descriptor plist (:pane-id :name :kind :status ...).")
 (defvar agent-fleet-agent-exited-hook nil
   "Hook run when an agent's pane is closed or exited.  Receives the descriptor.")
 
+(defvar agent-fleet-synced-hook nil
+  "Hook run after the Herdr cache is wholesale-replaced from a snapshot.
+Bridged from `herdr-synced-hook' by `agent-fleet--on-synced'.  Each
+function is called with one argument (nil).  This is the fleet-level
+resync signal: the cache was just replaced from `session.snapshot'
+during connect/reconnect, so views and registries should rebuild from
+the cache without a server fetch.")
+
 (defun agent-fleet--enrich-descriptor (descriptor pane-id)
   "Surface PANE-ID as :pane-id and add :name/:kind from the cache.
 The raw model descriptor carries the entity id under :id; agent-fleet
@@ -1018,12 +1026,22 @@ TUI-spawned agent — fires the started hook here, its only signal."
                             descriptor (plist-get descriptor :id)))))
     (_ nil)))
 
+(defun agent-fleet--on-synced (_ignore)
+  "Bridge `herdr-synced-hook' to `agent-fleet-synced-hook'.
+Fires after the cache is wholesale-replaced from a session snapshot
+\(during `herdr-connect' and `herdr--reconnect') so fleet-level views
+and registries can rebuild from the cache without a server fetch or a
+polling timer."
+  (run-hook-with-args 'agent-fleet-synced-hook nil))
+
 (defun agent-fleet--setup-hooks ()
   "Install the agent-fleet bridge on the Herdr event hooks (idempotent)."
   (unless (memq #'agent-fleet--on-agent-status herdr-event-agent-status-hook)
     (add-hook 'herdr-event-agent-status-hook #'agent-fleet--on-agent-status))
   (unless (memq #'agent-fleet--on-pane-event herdr-event-pane-hook)
-    (add-hook 'herdr-event-pane-hook #'agent-fleet--on-pane-event)))
+    (add-hook 'herdr-event-pane-hook #'agent-fleet--on-pane-event))
+  (unless (memq #'agent-fleet--on-synced herdr-synced-hook)
+    (add-hook 'herdr-synced-hook #'agent-fleet--on-synced)))
 
 (agent-fleet--setup-hooks)
 (agent-fleet--configure-auto-connect)
