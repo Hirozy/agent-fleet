@@ -240,8 +240,9 @@ M-x agent-fleet-attach
 
 The command runs `herdr agent attach <pane-id>` inside the Ghostel terminal
 backend. The attach buffer is named `*agent:NAME*` and is reused for the same
-pane. Killing the buffer or terminal process detaches from the PTY; it does
-not kill the agent or close its pane.
+pane. It opens in the selected window, replacing its contents, so the terminal
+fills the window you acted from. Killing the buffer or terminal process
+detaches from the PTY; it does not kill the agent or close its pane.
 
 Use a prefix argument to request terminal takeover:
 

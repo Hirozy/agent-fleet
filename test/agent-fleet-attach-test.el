@@ -152,7 +152,7 @@ silently substituted (set `auto' for graceful fallback)."
   "`agent-fleet-attach' resolves a struct/name/symbol/pane-id to a real
 pane-id and dispatches `--spawn' with it.  `--spawn' is stubbed to capture
 the call; readiness is stubbed so `auto' resolves to ghostel.  No display side
-effects (the real `--spawn' / `pop-to-buffer' never run)."
+effects (the real `--spawn' / `--display' never run)."
   (with-agent-fleet-mock path server
     (let ((agent (agent-fleet-start 'claude :name "arch")))
       (agent-fleet-test--pump)
@@ -197,9 +197,9 @@ the dispatch, so no display side effects run."
 
 (ert-deftest agent-fleet-attach-reuses-live-buffer ()
   "If a live attach buffer for the agent already exists (process alive),
-`agent-fleet-attach' reuses it (`pop-to-buffer') instead of double-attaching
-— `--spawn' is NOT called.  `pop-to-buffer' is stubbed to avoid window side
-effects in batch."
+`agent-fleet-attach' reuses it (displaying it via `--display') instead of
+double-attaching — `--spawn' is NOT called.  `--display' is stubbed to
+avoid window side effects in batch."
   (with-agent-fleet-mock path server
     (let ((agent (agent-fleet-start 'claude :name "arch")))
       (agent-fleet-test--pump)
@@ -220,8 +220,8 @@ effects in batch."
                          (lambda () t))
                         ((symbol-function 'agent-fleet-attach--spawn)
                          (lambda (&rest _) (setq spawn-called t)))
-                        ((symbol-function 'pop-to-buffer)
-                         (lambda (_buf &rest _) nil)))
+                        ((symbol-function 'agent-fleet-attach--display)
+                         (lambda (_buf) nil)))
                 (agent-fleet-attach agent))
               (should-not spawn-called)
               (should (buffer-local-value 'evil-escape-inhibit
@@ -290,8 +290,8 @@ effects in batch."
                        (lambda () 'ghostel))
                       ((symbol-function 'agent-fleet-attach--spawn)
                        (lambda (&rest _) (setq spawn-called t)))
-                      ((symbol-function 'pop-to-buffer)
-                       (lambda (buffer &rest _) (setq popped buffer))))
+                      ((symbol-function 'agent-fleet-attach--display)
+                       (lambda (buffer) (setq popped buffer))))
               (agent-fleet-attach agent))
             (should-not spawn-called)
             (should (equal old-name popped)))
@@ -357,8 +357,8 @@ both that precondition and the attach argv (TAKEOVER adds `--takeover')."
                                  (buffer-name buffer)
                                  program args)
                            ghostel-called)))
-                  ((symbol-function 'pop-to-buffer)
-                   (lambda (buffer &rest _)
+                  ((symbol-function 'agent-fleet-attach--display)
+                   (lambda (buffer)
                      (setq pop-inhibited
                            (buffer-local-value
                             'evil-escape-inhibit (get-buffer buffer))))))
@@ -372,6 +372,26 @@ both that precondition and the attach argv (TAKEOVER adds `--takeover')."
     (should (equal "herdr" (nth 3 (car ghostel-called))))
     (should (equal '("agent" "attach" "w4:p1" "--takeover")
                    (nth 4 (car ghostel-called))))))
+
+
+;;; --- Presentation: same-window display ------------------------------
+
+(ert-deftest agent-fleet-attach-display-uses-same-window ()
+  "`--display' shows the buffer in the selected window via
+`display-buffer-same-window' (replacing its contents), so an attach
+buffer fills the window the user acted from rather than splitting the
+frame.  Every attach entry point goes through here, so they all present
+the same way.  `display-buffer' is stubbed to observe the action without
+real window side effects in batch."
+  (let ((action)
+        (buf (generate-new-buffer "*agent:display-test*")))
+    (cl-letf (((symbol-function 'display-buffer)
+               (lambda (_buffer &optional alist)
+                 (setq action alist))))
+      (unwind-protect
+          (agent-fleet-attach--display buf)
+        (kill-buffer buf)))
+    (should (equal '(display-buffer-same-window) action))))
 
 
 ;;; --- Dashboard `a' key wiring ---------------------------------------
