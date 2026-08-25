@@ -25,26 +25,26 @@
 ;; The supervisor dashboard.  A `tabulated-list-mode'
 ;; buffer named *Agent Fleet* that lists every Herdr-managed agent with its
 ;; project, name, kind, state, and current task, and refreshes itself
-;; live from the Phase 2 hook bus.
+;; live from the hook bus.
 ;;
 ;; Design rules honored:
-;;   §25  event-driven; NO timer polling.  The buffer rebuilds only when an
+;;     event-driven; NO timer polling.  The buffer rebuilds only when an
 ;;        `agent-fleet-agent-{started,status-changed,exited}-hook' fires.
-;;   §27  columns Project / Agent / Kind / State / Task; row keys
-;;        RET o s i x r g P T w d m a h q (`a' = live attach, Phase 8/§73;
-;;        `h' = transient command help; `q' closes the display container;
-;;        `p'/`n'/`j'/`k' navigate rows up/down).
-;;   §28  one face per status; blocked is the most prominent.
-;;   §29  optional notifications on working→blocked / working→done, gated by
+;;     columns Project / Agent / Kind / State / Task; row keys
+;;        o s i x r g P T w d m a N h q (`a' = live attach;
+;;        `N' = new agent; `o' = inspect output; `h' = transient command help;
+;;        `q' closes the display container; `p'/`n'/`j'/`k' navigate rows up/down).
+;;     one face per status; blocked is the most prominent.
+;;     optional notifications on working→blocked / working→done, gated by
 ;;        `agent-fleet-notify-on'.
-;;   §53  prefix map `agent-fleet-command-map'; NO global key binding — the
+;;     prefix map `agent-fleet-command-map'; NO global key binding — the
 ;;        user opts in (e.g. (global-set-key (kbd "C-c a") agent-fleet-command-map)).
 ;;
-;; This is a view layer only: it reuses the Phase 2 control commands
+;; This is a view layer only: it reuses the control commands
 ;; (`agent-fleet-prompt', `-interrupt', `-kill', `-rename', `-show-output',
-;; `-list') and the Phase 1 model accessors, and adds no wire protocol.
+;; `-list') and the model accessors, and adds no wire protocol.
 ;;
-;; Task column + filter (Phase 7, §72):
+;; Task column + filter:
 ;;   - for an agent in a parallel task, the Task column shows the task title
 ;;     (the group label clustering its siblings); otherwise the pane's
 ;;     terminal title (the best live signal of current activity).
@@ -197,9 +197,9 @@ or an unrecognized value maps to the unknown face."
 
 (defun agent-fleet-dashboard--project-label (agent)
   "Return the Project label for AGENT.
-Delegates to `agent-fleet-project-label' (Phase 4): the canonical
+Delegates to `agent-fleet-project-label': the canonical
 project-root basename via `project.el', falling back to the cwd basename,
-then \"—\".  Matching is by canonical cwd, not workspace label (§32)."
+then \"—\".  Matching is by canonical cwd, not workspace label."
   (agent-fleet-project-label agent))
 
 (defun agent-fleet-dashboard--kind-label (agent)
@@ -211,7 +211,7 @@ then \"—\".  Matching is by canonical cwd, not workspace label (§32)."
 
 (defun agent-fleet-dashboard--task-label (agent agent-label)
   "Return the Task column label for AGENT.
-For an agent in a parallel task (Phase 7), shows the task title — the group
+For an agent in a parallel task, shows the task title — the group
 label that clusters its sibling agents.  Otherwise uses the pane's stripped
 terminal title (the best live signal of current activity) unless it
 duplicates AGENT-LABEL, in which case \"—\"."
@@ -258,16 +258,16 @@ Set by `agent-fleet-dashboard-toggle-project-filter' (the `P' key).  Only
 agents whose project root equals this are shown; nil means show all.")
 
 (defvar-local agent-fleet-dashboard--task-filter nil
-  "When non-nil, a task id to narrow the dashboard to (Phase 7, §72).
+  "When non-nil, a task id to narrow the dashboard.
 Set by `agent-fleet-dashboard-toggle-task-filter' (the `T' key).  Only
 agents whose task id equals this are shown; nil means show all.  This is
-the §72 aggregate-status view: filter to one task, see its agents' states.")
+the aggregate-status view: filter to one task, see its agents' states.")
 
 (defvar-local agent-fleet-dashboard--task-banner nil
-  "Mode-line segment string for the active task filter (Phase 7, §72).
+  "Mode-line segment string for the active task filter.
 nil when no task filter is active; otherwise `Parallel task: {title} —
 {state}', refreshed live from `agent-fleet-dashboard-refresh' so the
-aggregate state tracks each status event (§25: event-driven, no polling).
+aggregate state tracks each status event (event-driven, no polling).
 Shown in the mode line rather than the header line so the tabulated-list
 column headers (set by `tabulated-list-init-header') are preserved.")
 
@@ -406,10 +406,10 @@ clear it.  Refreshes after either change."
                      (file-name-nondirectory (directory-file-name root))))
         (user-error "No project for agent at point")))))
 
-;;; --- Task filter (Phase 7, §72) --------------------------------------
+;;; --- Task filter --------------------------------------
 
 (defun agent-fleet-dashboard-toggle-task-filter (&optional arg)
-  "Narrow the dashboard to one parallel task's agents, or clear it (§72).
+  "Narrow the dashboard to one parallel task's agents, or clear it.
 With no active filter and no prefix ARG, prompt for a task and narrow the
 list to its agents — the aggregate-status view (one task's agents with
 their live per-agent states).  With an active filter, or a prefix ARG,
@@ -436,11 +436,11 @@ then show in the mode line via `agent-fleet-dashboard--task-banner'."
           (message "agent-fleet: filtered to %s" sel))))))
 
 (defun agent-fleet-dashboard--update-task-banner ()
-  "Set the task-filter mode-line segment from the live aggregate state (§72).
+  "Set the task-filter mode-line segment from the live aggregate state.
 When `agent-fleet-dashboard--task-filter' names a live task, set the banner
 to `Parallel task: {title} — {state}'; otherwise clear it (nil).  Called
 from `agent-fleet-dashboard-refresh', so the aggregate state stays live
-with each status event — event-driven, no timer polling (§25).  The state
+with each status event — event-driven, no timer polling.  The state
 is computed fresh each time by `agent-fleet-task-state'."
   (setq agent-fleet-dashboard--task-banner
         (when-let* ((task (and agent-fleet-dashboard--task-filter
@@ -502,7 +502,7 @@ own refresh, but reprinting is harmless and gives instant feedback."
 
 (defun agent-fleet-dashboard-worktree ()
   "Show the worktree status for the agent at point.
-Displays the worktree path/branch/repo/metadata read-only (§46/§23: no
+Displays the worktree path/branch/repo/metadata read-only (no
 pane output).  Delegates to `agent-fleet-worktree-status'."
   (interactive)
   (let ((pane-id (agent-fleet-dashboard--agent-at-point)))
@@ -529,10 +529,10 @@ Delegates to `agent-fleet-magit-status' (Magit optional)."
   "Attach live to the agent at point's terminal.
 Spawns `herdr agent attach' inside the chosen Emacs terminal backend
 (eat/ghostel/vterm) and pops the buffer so the agent's real PTY/TUI can be
-driven without leaving Emacs.  Unlike `o' (a read-only read-snapshot, §23),
+driven without leaving Emacs.  Unlike `o' (a read-only read-snapshot),
 this is a live interactive session: the buffer is transient (not persisted
-or mirrored, §46/§23); killing the process detaches and the agent is
-preserved (§79).  A prefix arg passes `--takeover' to the attach CLI.
+or mirrored); killing the process detaches and the agent is
+preserved.  A prefix arg passes `--takeover' to the attach CLI.
 From a child dashboard, replace the parent frame's current window with the
 attach buffer and delete the child after attach succeeds.  Delegates to
 `agent-fleet-attach' (terminal backends optional)."
@@ -546,13 +546,27 @@ attach buffer and delete the child after attach succeeds.  Delegates to
     (agent-fleet-dashboard--visit-external-interface
      (lambda () (agent-fleet-attach pane-id takeover)))))
 
+(defun agent-fleet-dashboard-new ()
+  "Start a new agent from the dashboard.
+Delegates to `agent-fleet-start' (interactive: prompts for kind and
+name, picks a workspace when none is focused, and auto-attaches the
+new agent's terminal).  From a child dashboard, the attach lands in
+the parent frame and the child closes on success, like `a' (attach).
+Unlike the row actions, this does not act on the agent at point."
+  (interactive)
+  (agent-fleet-dashboard--visit-external-interface
+   (lambda () (call-interactively #'agent-fleet-start))))
+
 
 ;;; --- Command help ---------------------------------------------------
 
 (transient-define-prefix agent-fleet-dashboard-help ()
   "Show and dispatch commands for the agent-fleet dashboard."
-  [["Agent"
-    ("RET" "Inspect output" agent-fleet-dashboard-inspect)
+  [["Session"
+    ("N" "New agent" agent-fleet-dashboard-new)
+    ("a" "Attach terminal" agent-fleet-dashboard-attach)
+    ("q" "Close dashboard" agent-fleet-dashboard-quit)]
+   ["Agent"
     ("o"   "Inspect output" agent-fleet-dashboard-inspect)
     ("s"   "Prompt" agent-fleet-dashboard-prompt)
     ("i"   "Interrupt" agent-fleet-dashboard-interrupt)
@@ -565,14 +579,10 @@ attach buffer and delete the child after attach succeeds.  Delegates to
    ["Worktree / Git"
     ("w" "Worktree status" agent-fleet-dashboard-worktree)
     ("d" "Working-tree diff" agent-fleet-dashboard-diff)
-    ("m" "Magit status" agent-fleet-dashboard-magit)]
-   ["Session"
-    ("a" "Attach terminal" agent-fleet-dashboard-attach)
-    ("q" "Close dashboard" agent-fleet-dashboard-quit)]])
+    ("m" "Magit status" agent-fleet-dashboard-magit)]])
 
 (defconst agent-fleet-dashboard--bindings
-  '(("RET" . agent-fleet-dashboard-inspect)
-    ("o"   . agent-fleet-dashboard-inspect)
+  '(("o"   . agent-fleet-dashboard-inspect)
     ("s"   . agent-fleet-dashboard-prompt)
     ("i"   . agent-fleet-dashboard-interrupt)
     ("x"   . agent-fleet-dashboard-kill)
@@ -584,6 +594,7 @@ attach buffer and delete the child after attach succeeds.  Delegates to
     ("d"   . agent-fleet-dashboard-diff)
     ("m"   . agent-fleet-dashboard-magit)
     ("a"   . agent-fleet-dashboard-attach)
+    ("N"   . agent-fleet-dashboard-new)
     ("h"   . agent-fleet-dashboard-help)
     ("q"   . agent-fleet-dashboard-quit))
   "Documented action key bindings for `agent-fleet-mode'.")
@@ -632,9 +643,9 @@ reloading agent-fleet updates an already-created `agent-fleet-mode-map'."
 (define-derived-mode agent-fleet-mode tabulated-list-mode "Agent Fleet"
   "Major mode for the agent-fleet supervisor dashboard.
 Shows every Herdr-managed agent as a row with Project/Agent/Kind/State/Task
-columns and refreshes live from the event bus — no timer polling (§25).
-The Project column is a real `project.el' mapping (Phase 4, §69); `P'
-narrows the list to the project of the agent at point.  `T' (Phase 7, §72)
+columns and refreshes live from the event bus — no timer polling.
+The Project column is a real `project.el' mapping; `P'
+narrows the list to the project of the agent at point.  `T'
 narrows the list to one parallel task's agents and shows that task's title
 + live aggregate state in the mode line.
 
@@ -646,11 +657,11 @@ narrows the list to one parallel task's agents and shows that task's title
           ("State"   10 nil)
           ("Task"    30 nil)])
   (setq tabulated-list-padding 2)
-  ;; Entries are pre-sorted by status priority (§28: blocked first); the
+  ;; Entries are pre-sorted by status priority (blocked first); the
   ;; State column is non-sortable to avoid fighting that ordering.
   (setq tabulated-list-sort-key nil)
-  ;; Surface the active task filter's aggregate state in the mode line
-  ;; (Phase 7, §72), NOT the header line — `tabulated-list-init-header'
+  ;; Surface the active task filter's aggregate state in the mode line,
+  ;; NOT the header line — `tabulated-list-init-header'
   ;; owns header-line-format for the column headers.
   (setq mode-line-format
         (append mode-line-format '(agent-fleet-dashboard--task-banner)))
