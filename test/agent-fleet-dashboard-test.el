@@ -123,10 +123,10 @@ Columns: 0 Project, 1 Agent, 2 Kind, 3 State, 4 Task."
   "The native child dashboard is centered within its parent frame."
   (should (= 0.5
              (alist-get 'left
-                        agent-fleet-dashboard-child-frame-parameters)))
+                        agent-fleet-dashboard--child-frame-parameters)))
   (should (= 0.5
              (alist-get 'top
-                        agent-fleet-dashboard-child-frame-parameters))))
+                        agent-fleet-dashboard--child-frame-parameters))))
 
 (ert-deftest agent-fleet-dashboard-backends-registry-classifies-backends ()
   "The backend registry tags each display backend with its lifecycle role.
@@ -249,7 +249,7 @@ HELP-HEIGHT (default 0) sets the reserved help lines.  Returns the
 
 (ert-deftest agent-fleet-dashboard-child-frame-uses-native-display-action ()
   "Child display injects the selected parent and private lifecycle markers."
-  (let ((agent-fleet-dashboard-child-frame-parameters
+  (let ((agent-fleet-dashboard--child-frame-parameters
          '((width . 0.4) (left . 0.5) (top . 0.5)
            (parent-frame . wrong)))
         action modified focused)
