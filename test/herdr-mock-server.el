@@ -29,9 +29,9 @@
   pending-events                    ; list of (KIND . DATA-plist) to push after subscribe
   subscription-client              ; the long-lived client proc, or nil
   received-requests                 ; list of (id method params) received
-  agents                            ; hash pane_id -> info plist (Phase 2 agent state)
+  agents                            ; hash pane_id -> info plist (agent state)
   panes                             ; hash pane_id -> pane-info plist (provisioned panes)
-  worktrees                         ; hash workspace_id -> worktree plist (Phase 5 state)
+  worktrees                         ; hash workspace_id -> worktree plist (worktree state)
   (pane-counter 0)                  ; monotonic mock pane id source
   (workspace-counter 0)             ; monotonic mock workspace id source
   (worktree-counter 0))             ; monotonic mock worktree id source
@@ -178,7 +178,7 @@ EVENTS is a list of (KIND-STRING . DATA-PLIST)."
   (setf (herdr-mock--server-pending-events server) events))
 
 
-;;; --- Phase 2 agent state -------------------------------------------
+;;; --- Agent state -------------------------------------------
 
 (defun herdr-mock--fresh-pane-id (server &optional workspace-id)
   "Return a fresh mock pane id for SERVER in WORKSPACE-ID."
@@ -232,7 +232,7 @@ Returns the updated info plist, or nil if no such agent."
     (and info (plist-get info :agent_status))))
 
 (defun herdr-mock-set-agent-handlers (server)
-  "Install the default Phase 2 agent/pane handlers on SERVER."
+  "Install the default agent/pane handlers on SERVER."
   (herdr-mock-set-handlers server (herdr-mock-default-agent-handlers)))
 
 
@@ -499,7 +499,7 @@ empty object."
     :layouts ()))
 
 
-;;; --- Phase 2 default agent/pane handlers ---------------------------
+;;; --- Default agent/pane handlers ---------------------------
 ;;
 ;; Each handler is a function (PARAMS) -> result-plist | (error CODE MSG).
 ;; They read `herdr-mock--current' for the server, mutate the agent
@@ -517,7 +517,7 @@ Inherits the pane's cwd, workspace id, and tab id from the provisioned
 pane (live Herdr's `agent.start' returns the pane's fields), defaulting
 to \"/tmp\" / \"w1\" / \"w1:t1\" when the pane is unknown (e.g. an
 externally-supplied pane id).  Inheriting the workspace id matters for
-worktree starts (Phase 5): the agent's workspace must match the
+worktree starts: the agent's workspace must match the
 worktree's `open_workspace_id' so `find-worktree-for-workspace' resolves."
   (let* ((server herdr-mock--current)
          (pane (and server (gethash pane-id (herdr-mock--server-panes server))))
@@ -685,7 +685,7 @@ Returns the live envelope `(:type \"agent_info\" :agent <AgentInfo>)'."
 
 (defun herdr-mock--h-pane-split (params)
   "Mock pane.split: allocate a fresh pane id and return a pane info.
-Honors the `cwd' param (PROTOCOL.md §7.3: `pane.split {cwd?}'), defaulting
+Honors the `cwd' param (PROTOCOL.md : `pane.split {cwd?}'), defaulting
 to \"/tmp\" when absent.  Pushes a `pane_created' event (as a real Herdr
 would) so the client's cache gains the pane and its per-pane status
 subscription is rebuilt.  Records the pane so `agent.start' can inherit
@@ -779,7 +779,7 @@ it rather than being told it still exists."
             :pane_count 1 :agent_status "idle")
       :root_pane ,pane)))
 
-;;; --- Phase 5 worktree handlers -------------------------------------
+;;; --- Worktree handlers -------------------------------------
 ;;
 ;; `worktree.create' provisions a workspace + tab + root pane (a shell at
 ;; the worktree cwd) + the worktree itself, all in one step — so the
@@ -880,10 +880,10 @@ reads this to drop cached pane ids the server no longer reports."
     `(:type "pane_list" :panes ,(nreverse out))))
 
 (defun herdr-mock-default-agent-handlers ()
-  "Return an alist of mock handlers for the Phase 2 agent/pane RPCs.
+  "Return an alist of mock handlers for the agent/pane RPCs.
 Covers agent.start/prompt/read/wait/send_keys/rename/list/get/focus,
 pane.split/close/current/send_input/send_keys, workspace.create,
-tab.create, and the Phase 5 worktree.create/open/list/remove RPCs.
+tab.create, and the worktree.create/open/list/remove RPCs.
 Install with `herdr-mock-set-agent-handlers'."
   `(("agent.start" . herdr-mock--h-agent-start)
     ("agent.prompt" . herdr-mock--h-agent-prompt)

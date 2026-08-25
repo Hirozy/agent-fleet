@@ -23,24 +23,24 @@
 ;;; Commentary:
 
 ;; The agent-facing supervisor layer.  Built on
-;; the Phase 1 Herdr client (`herdr.el'): it provisions panes, starts CLI
+;; the Herdr client (`herdr.el'): it provisions panes, starts CLI
 ;; agents (Claude / Codex / Pi / ...), drives them through Herdr's
 ;; `agent.*' RPCs, reads their output, and exposes an event-driven hook
 ;; bus for status transitions — without ever bringing the agents' PTY/TUI
 ;; into Emacs.
 ;;
 ;; Design rules honored:
-;;   §12  agent statuses come straight from Herdr (idle/working/blocked/
+;;     agent statuses come straight from Herdr (idle/working/blocked/
 ;;        done/unknown); this layer adds NO status parsing of its own.
-;;   §18  prompts go through `agent.prompt', not pane.send-text + RET.
-;;   §19  prompt+wait is a single atomic `agent.prompt' with a `wait'
+;;     prompts go through `agent.prompt', not pane.send-text + RET.
+;;     prompt+wait is a single atomic `agent.prompt' with a `wait'
 ;;        field, to avoid the separate prompt/wait race.
-;;   §20  three input tiers: agent.prompt (L1), agent.send_keys (L2),
+;;     three input tiers: agent.prompt (L1), agent.send_keys (L2),
 ;;        pane.send_input (L3 escape hatch).
-;;   §21  interrupt = agent.send_keys "ctrl+c"; NOT "cancel".
-;;   §23  output is a read-snapshot, not a continuously mirrored terminal.
-;;   §25  event-driven; no polling timers.
-;;   §26  Herdr events are bridged into agent-fleet-*-hook variables.
+;;     interrupt = agent.send_keys "ctrl+c"; NOT "cancel".
+;;     output is a read-snapshot, not a continuously mirrored terminal.
+;;     event-driven; no polling timers.
+;;     Herdr events are bridged into agent-fleet-*-hook variables.
 ;;
 ;; Requiring this package entry point also loads the dashboard and feature
 ;; modules at the end of the file.  Optional runtime integrations
@@ -442,7 +442,7 @@ exposing that internal symbol in the minibuffer."
 
 (defun agent-fleet--provision-pane (workspace-id cwd focus &optional force-tab)
   "Provision an empty interactive shell pane in WORKSPACE-ID.
-Splits the focused pane (§16: agent.start needs an interactive
+Splits the focused pane (agent.start needs an interactive
 shell pane); if there is no pane to split, creates a fresh tab.  With
 FORCE-TAB non-nil, always creates a fresh tab — interactive starts use
 this so each new agent gets its own switchable tab instead of crowding
@@ -756,7 +756,7 @@ outcome."
 Returns a PaneReadResult plist: (:pane_id :workspace_id :tab_id :source
 :format :text :revision :truncated), unwrapped from the `pane_read'
 envelope.  Defaults to `recent_unwrapped' output (ignores soft wrapping;
-best for logs — §22).  Interactively, display the snapshot in the
+best for logs — ).  Interactively, display the snapshot in the
 read-only output buffer rather than discarding the returned plist."
   (interactive (list (agent-fleet--read-agent-name "Read output for agent")))
   (if (called-interactively-p 'interactive)
@@ -796,7 +796,7 @@ AgentInfo plist (unwrapped); its `:agent_status' is the outcome."
 
 ;;;###autoload
 (defun agent-fleet-send-keys (agent keys)
-  "Send KEYS to AGENT via `agent.send_keys' (Level 2 input, §20).
+  "Send KEYS to AGENT via `agent.send_keys' (Level 2 input).
 KEYS is a single key-notation string (\"ctrl+c\", \"enter\", \"esc\",
 \"shift+tab\", \"f1\", ...) or a list of them.  Returns the agent's
 AgentInfo plist if the server returned one, else the raw ack."
@@ -963,7 +963,7 @@ Unwraps the `agent_info' envelope before caching."
     (and info (herdr-model-find-agent (plist-get info :pane_id)))))
 
 
-;;; --- Output viewer (read snapshot, §23) --------------------
+;;; --- Output viewer (read snapshot) --------------------
 
 (defun agent-fleet--read-agent-name (prompt)
   "Read an agent pane id from the minibuffer, completing over cached agents.
@@ -1027,7 +1027,7 @@ With a prefix arg, prompt for the line count."
 
 ;;; --- Hook bus ----------------------------------------
 
-;; These bridge the Phase 1 `herdr-event-*-hook' variables into the
+;; These bridge the `herdr-event-*-hook' variables into the
 ;; agent-fleet-facing hook set.  Each receives a descriptor plist
 ;; (:event :what :id :status :name :kind ...).
 

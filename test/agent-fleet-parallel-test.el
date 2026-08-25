@@ -2,10 +2,10 @@
 
 ;; Copyright (C) 2026  agent-fleet contributors
 
-;; Phase 7 tests: `agent-fleet-parallel' spawns N isolated worktree
+;; Tests: `agent-fleet-parallel' spawns N isolated worktree
 ;; agents and prompts each; the task model tracks aggregate state live
-;; (§38: not a race — done only when ALL agents finish); `task-wait'
-;; pumps events (§25); `task-cleanup' removes worktrees (§71).  All
+;; (not a race — done only when ALL agents finish); `task-wait'
+;; pumps events; `task-cleanup' removes worktrees.  All
 ;; against the mock server (no real Herdr).
 ;; Run:
 ;;   emacs -batch -L . -L test -l ert -l herdr -l agent-fleet \
@@ -30,7 +30,7 @@
 (defun agent-fleet-parallel-test--prompt-working-only (params)
   "Mock agent.prompt that transitions to `working' and STAYS there.
 The default mock goes idle->working->done in one step, which hides the
-§38 behavior (one agent done while another runs).  This variant leaves
+ behavior (one agent done while another runs).  This variant leaves
 the agent `working' so a test can finish agents one at a time."
   (let* ((server herdr-mock--current)
          (target (plist-get params :target))
@@ -63,14 +63,14 @@ later server."
             :key #'cadr :test #'equal))
 
 
-;;; --- Parallel spawn + prompt (§72) ----------------------------------
+;;; --- Parallel spawn + prompt -------------------------------------
 
 (ert-deftest agent-fleet-parallel-spawns-isolated-worktree-agents ()
   "`agent-fleet-parallel' spawns N worktree agents, prompts each, returns a task.
 Each spec yields its own worktree.create + agent.start + agent.prompt; the
 agents get distinct worktrees; the returned task is `running' before any
 status event lands (agents are cached `idle' from the eager start upsert,
-and the prompt's status events stay queued until a pump — §72)."
+and the prompt's status events stay queued until a pump — )."
   (with-agent-fleet-mock path server
     ;; Working-only prompt: the default mock goes idle->working->done in one
     ;; step, and `herdr-request''s pump drains those done events during the
@@ -107,7 +107,7 @@ and the prompt's status events stay queued until a pump — §72)."
       (should (eq 'running (agent-fleet-task-state task))))))
 
 (ert-deftest agent-fleet-parallel-distinct-prompts ()
-  "Each agent.prompt carries its spec's own prompt text (§72 alist form)."
+  "Each agent.prompt carries its spec's own prompt text (alist form)."
   (with-agent-fleet-mock path server
     (agent-fleet-parallel
      '((claude . "analyze architecture") (codex . "analyze tests"))
@@ -184,7 +184,7 @@ provisioning-failed at the `parallel-cwd' step; no RPC is issued."
         (delete-directory default-directory t)))))
 
 
-;;; --- Aggregate state (§38/§72) --------------------------------------
+;;; --- Aggregate state ------------------------------------------
 
 (ert-deftest agent-fleet-parallel-agents-run-concurrently ()
   "One agent finishing does NOT make the task done.
@@ -201,7 +201,7 @@ stay `working' until an explicit done event."
       (should (eq 'working (agent-fleet-status (nth 0 pids))))
       (should (eq 'working (agent-fleet-status (nth 1 pids))))
       (should (eq 'running (agent-fleet-task-state task)))
-      ;; agent 0 done alone -> still running (§38).
+      ;; agent 0 done alone -> still running.
       (herdr-mock-push-event server "pane_agent_status_changed"
                              `(:pane_id ,(nth 0 pids) :agent_status "done"))
       (agent-fleet-test--pump)
@@ -218,7 +218,7 @@ stay `working' until an explicit done event."
 
 (ert-deftest agent-fleet-task-state-aggregate ()
   "`task-state' aggregates per-agent statuses live: all done => done; any
-blocked (not all done) => blocked; else running (§38/§72).  Drives the
+blocked (not all done) => blocked; else running.  Drives the
 full state machine over three agents."
   (with-agent-fleet-mock path server
     (agent-fleet-parallel-test--use-working-prompt server)
@@ -238,7 +238,7 @@ full state machine over three agents."
                              `(:pane_id ,(nth 0 pids) :agent_status "working"))
       (agent-fleet-test--pump)
       (should (eq 'running (agent-fleet-task-state task)))
-      ;; two of three done, one working -> still running (§38).
+      ;; two of three done, one working -> still running.
       (herdr-mock-push-event server "pane_agent_status_changed"
                              `(:pane_id ,(nth 0 pids) :agent_status "done"))
       (herdr-mock-push-event server "pane_agent_status_changed"
@@ -271,11 +271,11 @@ full state machine over three agents."
         (should-not (agent-fleet-task-finished-at task))))))
 
 
-;;; --- Task wait (§38/§25) --------------------------------------------
+;;; --- Task wait ------------------------------------------------
 
 (ert-deftest agent-fleet-task-wait-blocks-until-done ()
   "`task-wait' pumps `accept-process-output' and returns once the task is
-`done' (§38/§25).  The done events are queued before the call; the wait's
+`done'.  The done events are queued before the call; the wait's
 own event-driven pump drains them and resolves — no busy polling."
   (with-agent-fleet-mock path server
     (agent-fleet-parallel-test--use-working-prompt server)
@@ -296,7 +296,7 @@ own event-driven pump drains them and resolves — no busy polling."
 
 (ert-deftest agent-fleet-task-wait-returns-on-blocked ()
   "`task-wait' with the default until=(done blocked) returns when any agent
-blocks (§38: a blocked agent ends the `settled' wait without killing the
+blocks (a blocked agent ends the `settled' wait without killing the
 others).  The unblocked agent is left working."
   (with-agent-fleet-mock path server
     (agent-fleet-parallel-test--use-working-prompt server)
@@ -316,11 +316,11 @@ others).  The unblocked agent is left working."
         (should-not (agent-fleet-task-finished-at task))))))
 
 
-;;; --- Cleanup (§71) --------------------------------------------------
+;;; --- Cleanup -----------------------------------------------------
 
 (ert-deftest agent-fleet-task-cleanup-removes-worktrees ()
   "`task-cleanup' removes each agent's worktree via worktree.remove and
-drops the task from the registry (§71).  A `done' task cleans without
+drops the task from the registry.  A `done' task cleans without
 prompting."
   (with-agent-fleet-mock path server
     (agent-fleet-parallel-test--use-working-prompt server)
