@@ -202,6 +202,47 @@ a metadata table; adding a backend must not change these classifications."
         (should (eq (current-buffer) (car fallback)))))
     (should (equal "unsupported test frame" (cadr fallback)))))
 
+(ert-deftest agent-fleet-dashboard-child-frame-centers-in-parent ()
+  "Centering computes the pixel midpoint of the parent minus the child."
+  (let (position)
+    (cl-letf (((symbol-function 'frame-live-p) (lambda (_) t))
+              ((symbol-function 'display-graphic-p) (lambda (_) t))
+              ((symbol-function 'frame-pixel-width)
+               (lambda (f) (if (eq f 'parent) 1000 480)))
+              ((symbol-function 'frame-pixel-height)
+               (lambda (f) (if (eq f 'parent) 800 440)))
+              ((symbol-function 'set-frame-position)
+               (lambda (frame left top)
+                 (setq position (list frame left top))))
+              ((symbol-function 'frame-parameter)
+               (lambda (_f _p) nil)))
+      (let ((agent-fleet-dashboard--centered-children nil))
+        (agent-fleet-dashboard--center-child-frame 'child 'parent)
+        (should (equal '(child 260 180) position))   ; (1000-480)/2, (800-440)/2
+        (should (eq 'parent
+                    (alist-get 'child
+                               agent-fleet-dashboard--centered-children)))))))
+
+(ert-deftest agent-fleet-dashboard-child-frame-recenters-on-parent-resize ()
+  "A parent resize re-centers its tracked child frame."
+  (let ((calls 0))
+    (cl-letf (((symbol-function 'frame-live-p) (lambda (_) t))
+              ((symbol-function 'display-graphic-p) (lambda (_) t))
+              ((symbol-function 'frame-pixel-width)
+               (lambda (f) (if (eq f 'parent) 1000 480)))
+              ((symbol-function 'frame-pixel-height)
+               (lambda (f) (if (eq f 'parent) 800 440)))
+              ((symbol-function 'set-frame-position)
+               (lambda (_f _l _t) (cl-incf calls)))
+              ((symbol-function 'frame-parameter)
+               (lambda (f _p) (and (eq f 'child) 'child-frame))))
+      (let ((agent-fleet-dashboard--centered-children (list (cons 'child 'parent))))
+        (agent-fleet-dashboard--recenter-on-parent-resize 'parent)
+        (should (= 1 calls))
+        ;; A resize of an unrelated frame does not touch the child.
+        (agent-fleet-dashboard--recenter-on-parent-resize 'other)
+        (should (= 1 calls))))))
+
 (ert-deftest agent-fleet-dashboard-child-frame-reopen-avoids-nesting ()
   "Reopening from the dashboard child uses its existing native parent."
   (cl-letf (((symbol-function 'selected-frame) (lambda () 'child))
