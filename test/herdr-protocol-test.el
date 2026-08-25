@@ -379,6 +379,45 @@ the server is stopped and any live herdr connection is torn down."
           (herdr-protocol-test--drain 0.1)))
       (should (herdr-connected-p)))))
 
+(ert-deftest herdr-synced-hook-fires-on-connect ()
+  "The synced hook fires during `herdr-connect' after the cache is set.
+It fires synchronously (before `herdr-connect' returns t), so no event
+pump is needed."
+  (with-herdr-mock path srv
+    (let (fired)
+      (let ((herdr-synced-hook nil))
+        (add-hook 'herdr-synced-hook (lambda (_) (push t fired)))
+        (herdr-connect)
+        (should (equal '(t) fired))
+        (should (herdr-model-cache))))))
+
+(ert-deftest herdr-synced-hook-fires-on-reconnect ()
+  "The synced hook fires again on `herdr--reconnect' after the cache reset.
+It fires once on the initial connect and once more after the reconnect's
+snapshot replaces the cache."
+  (with-herdr-mock path srv
+    (let ((herdr-reconnect-delay 0.1)
+          (herdr-reconnect-max-delay 0.2)
+          (herdr-reconnect-max-attempts 5)
+          (herdr-synced-hook nil)
+          fired)
+      (add-hook 'herdr-synced-hook (lambda (_) (push t fired)))
+      (herdr-connect)
+      (should (equal '(t) fired))            ; fired once on connect
+      (setq fired nil)
+      (herdr-protocol-test--drain 0.5)       ; let the subscribe settle
+      ;; simulate connection loss (mirrors herdr-reconnect-after-subscription-loss)
+      (let* ((proc (herdr--connection-subscription-proc herdr--conn))
+             (buffer (process-buffer proc)))
+        (delete-process proc)
+        (should-not (buffer-live-p buffer)))
+      (let ((deadline (+ (float-time) 4.0)))
+        (while (and (not (herdr-connected-p))
+                    (< (float-time) deadline))
+          (herdr-protocol-test--drain 0.1)))
+      (should (herdr-connected-p))
+      (should (equal '(t) fired)))))         ; fired once on reconnect
+
 (ert-deftest herdr-connect-does-not-succeed-without-subscription ()
   "Bootstrap fails atomically when the subscription socket cannot start."
   (let ((herdr--conn nil)
