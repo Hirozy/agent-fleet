@@ -306,6 +306,167 @@ without it the hook would fire twice."
       (should-not (equal (herdr-agent-name a1) (herdr-agent-name a2))))))
 
 
+;;; --- Interactive workspace picking + auto-attach -------------------
+
+(defun agent-fleet-test--unfocused-session ()
+  "Return a cache with one workspace (w1) but no focused workspace or panes.
+This is the state that triggers the interactive workspace picker: a
+workspace exists to choose, yet none is focused, so a non-interactive
+start would fall through to creating a new frame."
+  (let ((session (herdr-model--empty-session)))
+    (puthash "w1" (make-herdr-workspace :id "w1" :custom-name "demo")
+             (herdr-session-workspaces session))
+    session))
+
+(ert-deftest agent-fleet-read-workspace-returns-chosen-id ()
+  "The interactive workspace picker offers cached workspaces via
+`completing-read' and returns the selected workspace id (not its label)."
+  (let ((herdr-model--cache (agent-fleet-test--unfocused-session)))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _)
+                 (car (car collection)))))   ; pick the first choice
+      (should (equal "w1"
+                     (agent-fleet--read-workspace "Start in workspace: "))))))
+
+(ert-deftest agent-fleet-read-workspace-errors-when-none-cached ()
+  "With no workspace cached the picker signals `user-error' rather than
+returning nil (which would silently fall through to creating a new frame)."
+  (let ((herdr-model--cache (herdr-model--empty-session)))
+    (should-error (agent-fleet--read-workspace "Start in workspace: ")
+                  :type 'user-error)))
+
+(ert-deftest agent-fleet-kind-choices-maps-executable-to-symbol ()
+  "Interactive kind prompts display the executable name (what the user runs
+in the shell) and map the selection back to the kind symbol.  The
+`pi-agent' kind runs the `pi' executable, so the user picks `pi' while
+the code receives `pi-agent' — the internal symbol must not surface in
+the minibuffer, where it would otherwise inherit Emacs's obsolete `pi'
+variable marker."
+  (let ((choices (agent-fleet--kind-choices)))
+    (should (equal 'claude (cdr (assoc "claude" choices #'equal))))
+    (should (equal 'codex (cdr (assoc "codex" choices #'equal))))
+    (should (equal 'pi-agent (cdr (assoc "pi" choices #'equal))))
+    ;; The candidate labels shown to the user are executable names, never
+    ;; the internal kind symbols.
+    (should-not (member "pi-agent" (mapcar #'car choices)))))
+
+(ert-deftest agent-fleet-start-interactive-picks-workspace-and-opens-tab ()
+  "An interactive start always prompts for the workspace (manual selection
+is required) and opens the agent as a fresh tab in it — not a new frame,
+and not a pane split.  `called-interactively-p' is stubbed to model the
+command-loop case: in batch a plain `call-interactively' does not set it
+(the interactive test suite uses the same convention)."
+  (let ((herdr-model--cache (agent-fleet-test--unfocused-session))
+        (agent-fleet-agent-started-hook nil)
+        methods)
+    (cl-letf (((symbol-function 'called-interactively-p) (lambda (_) t))
+              ((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+              ((symbol-function 'agent-fleet-attach) #'ignore) ; attach tested elsewhere
+              ((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _)
+                 (car (car collection))))   ; pick the first workspace
+              ((symbol-function 'herdr-request)
+               (lambda (method &optional _params &rest _)
+                 (push method methods)
+                 (pcase method
+                   ("tab.create"
+                    '(:type "tab_created"
+                      :tab (:tab_id "w1:t2" :workspace_id "w1")
+                      :root_pane (:pane_id "w1:p2" :workspace_id "w1"
+                                  :tab_id "w1:t2")))
+                   ("agent.start"
+                    '(:type "agent_started"
+                      :agent (:pane_id "w1:p2" :workspace_id "w1"
+                              :name "arch" :agent "claude"
+                              :agent_status "idle")))
+                   (_ (error "unexpected request %s" method))))))
+      (should (herdr-agent-p (agent-fleet-start 'claude :name "arch"))))
+    (should (member "tab.create" methods))
+    (should-not (member "pane.split" methods))
+    (should-not (member "workspace.create" methods))
+    (should (member "agent.start" methods))))
+
+(ert-deftest agent-fleet-start-interactive-prompts-even-when-workspace-focused ()
+  "An interactive start prompts for the workspace even when one is already
+focused — it does not silently reuse the focused workspace.  The selected
+workspace receives a fresh tab, not a split of the focused pane.  This is
+the regression for the reported bug where a focused workspace let the
+start skip selection entirely."
+  (let* ((session (agent-fleet-test--unfocused-session))
+         ;; Give w1 a focused pane so the focused-workspace shortcut would
+         ;; apply (and a pane.split would be attempted) without the fix.
+         (pane (make-herdr-pane :id "w1:p1" :workspace-id "w1"
+                                :tab-id "w1:t1" :cwd "/tmp" :focused t))
+         (agent-fleet-agent-started-hook nil)
+         (completing-read-called nil)
+         methods)
+    (setf (herdr-session-focused-workspace-id session) "w1"
+          (herdr-session-focused-pane-id session) "w1:p1")
+    (puthash "w1:p1" pane (herdr-session-panes session))
+    (let ((herdr-model--cache session))
+      (cl-letf (((symbol-function 'called-interactively-p) (lambda (_) t))
+                ((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+                ((symbol-function 'agent-fleet-attach) #'ignore)
+                ((symbol-function 'completing-read)
+                 (lambda (_prompt _collection &rest _)
+                   (setq completing-read-called t)
+                   "w1 (demo)"))
+                ((symbol-function 'herdr-request)
+                 (lambda (method &optional _params &rest _)
+                   (push method methods)
+                   (pcase method
+                     ("tab.create"
+                      '(:type "tab_created"
+                        :tab (:tab_id "w1:t2" :workspace_id "w1")
+                        :root_pane (:pane_id "w1:p2" :workspace_id "w1"
+                                    :tab_id "w1:t2")))
+                     ("agent.start"
+                      '(:type "agent_started"
+                        :agent (:pane_id "w1:p2" :workspace_id "w1"
+                                :name "arch" :agent "claude"
+                                :agent_status "idle")))
+                     (_ (error "unexpected request %s" method))))))
+        (should (herdr-agent-p (agent-fleet-start 'claude :name "arch")))))
+    (should completing-read-called)
+    (should (member "tab.create" methods))
+    (should-not (member "pane.split" methods))
+    (should-not (member "workspace.create" methods))))
+
+(ert-deftest agent-fleet-start-programming-does-not-attach-or-prompt ()
+  "A non-interactive start (the path taken by parallel orchestration and
+external scripts) neither attaches the terminal nor prompts for a
+workspace.  `called-interactively-p' is left at its batch default (nil)
+and :attach defaults to nil, so both are skipped.  With no focused
+workspace the original fallback (create a new frame) is preserved for
+programming callers."
+  (let ((herdr-model--cache (agent-fleet-test--unfocused-session))
+        (agent-fleet-agent-started-hook nil)
+        attach-called read-called)
+    (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+              ((symbol-function 'agent-fleet-attach)
+               (lambda (&rest _) (setq attach-called t)))
+              ((symbol-function 'agent-fleet--read-workspace)
+               (lambda (&rest _) (setq read-called t) nil))
+              ((symbol-function 'herdr-request)
+               (lambda (method &optional _params &rest _)
+                 (pcase method
+                   ("workspace.create"
+                    '(:type "workspace_created"
+                      :workspace (:workspace_id "new" :label "repo")
+                      :tab (:tab_id "new:t1" :workspace_id "new")
+                      :root_pane (:pane_id "new:p1" :workspace_id "new"
+                                  :tab_id "new:t1" :cwd "/repo")))
+                   ("agent.start"
+                    '(:type "agent_started"
+                      :agent (:pane_id "new:p1" :workspace_id "new"
+                              :name "arch" :agent "claude"
+                              :agent_status "idle")))
+                   (_ (error "unexpected request %s" method))))))
+      (should (herdr-agent-p (agent-fleet-start 'claude :name "arch" :cwd "/repo"))))
+    (should-not attach-called)
+    (should-not read-called)))
+
+
 ;;; --- Prompt / Wait / Read ------------------------------------------
 
 (ert-deftest agent-fleet-prompt-sends-target-and-text ()

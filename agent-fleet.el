@@ -54,6 +54,16 @@
 (require 'herdr-model)
 (require 'herdr-events)
 
+;; `agent-fleet-attach' lives in the `agent-fleet-attach' feature module,
+;; which requires this file (a one-way dependency: modules depend on the
+;; control plane, never the reverse).  An interactive `agent-fleet-start'
+;; attaches the new agent's terminal, so this base layer calls the module
+;; function; `declare-function' informs the byte-compiler without pulling
+;; the module into the require graph (which would re-enter this file at
+;; load time).  The module is loaded before any start runs, via
+;; `agent-fleet--load-feature-modules' at the end of this file.
+(declare-function agent-fleet-attach "agent-fleet-attach" (target &optional takeover))
+
 
 ;;; --- Customization --------------------------------------------------
 
@@ -100,7 +110,7 @@ This affects only `agent-fleet-auto-connect' set to `after-init'."
 (defcustom agent-fleet-agent-executables
   '((claude "claude" "Claude Code")
     (codex "codex" "Codex")
-    (pi "pi" "Pi"))
+    (pi-agent "pi" "Pi"))
   "Known agent kinds and the CLI executables they use.
 Each entry is (KIND-SYMBOL EXECUTABLE DISPLAY-NAME).  Used by
 `agent-fleet-doctor' and to provide a default `kind' completion table."
@@ -403,11 +413,41 @@ WORKSPACE wins if given; else the focused workspace; else a new one
    ((herdr-focused-workspace) (herdr-workspace-id (herdr-focused-workspace)))
    (t (agent-fleet--create-workspace cwd))))
 
-(defun agent-fleet--provision-pane (workspace-id cwd focus)
+(defun agent-fleet--read-workspace (prompt)
+  "Prompt for a cached workspace via `completing-read', returning its id.
+Each choice is labeled `id (display-name)'.  Signals `user-error' if no
+workspace is cached."
+  (let ((wss (herdr-workspaces)))
+    (if (null wss)
+        (user-error "No Herdr workspace; start one first")
+      (let* ((choices (mapcar
+                       (lambda (ws)
+                         (cons (format "%s (%s)"
+                                       (herdr-workspace-id ws)
+                                       (herdr-workspace-label ws))
+                               (herdr-workspace-id ws)))
+                       wss))
+             (sel (completing-read prompt choices nil t))
+             (cell (assoc sel choices #'equal)))
+        (cdr cell)))))
+
+(defun agent-fleet--kind-choices ()
+  "Return an alist (EXECUTABLE . KIND-SYMBOL) for interactive kind prompts.
+The executable name is what the user runs in the shell and what prompts
+display; the kind symbol may differ from it (e.g. `pi-agent' runs `pi'),
+so a selection maps back to the symbol the code uses rather than
+exposing that internal symbol in the minibuffer."
+  (mapcar (lambda (entry) (cons (cadr entry) (car entry)))
+          agent-fleet-agent-executables))
+
+(defun agent-fleet--provision-pane (workspace-id cwd focus &optional force-tab)
   "Provision an empty interactive shell pane in WORKSPACE-ID.
 Splits the focused pane (§16: agent.start needs an interactive
-shell pane); if there is no pane to split, creates a fresh tab.  Returns
-the new pane id.  Signals `agent-fleet-provisioning-failed'."
+shell pane); if there is no pane to split, creates a fresh tab.  With
+FORCE-TAB non-nil, always creates a fresh tab — interactive starts use
+this so each new agent gets its own switchable tab instead of crowding
+an existing pane.  Returns the new pane id.  Signals
+`agent-fleet-provisioning-failed'."
   (let* ((focused (herdr-focused-pane))
          ;; The globally focused pane may belong to another project.  Split a
          ;; pane only when it is in the requested workspace; otherwise choose
@@ -419,7 +459,7 @@ the new pane id.  Signals `agent-fleet-provisioning-failed'."
                      (cl-find workspace-id (herdr-panes)
                               :test #'equal
                               :key #'herdr-pane-workspace-id))))
-    (if (and target (herdr-pane-id target))
+    (if (and (not force-tab) target (herdr-pane-id target))
         ;; Split a pane in the target workspace to get a fresh shell prompt.
         (let* ((params `(("direction" . "right")
                          ("workspace_id" . ,workspace-id)
@@ -435,7 +475,8 @@ the new pane id.  Signals `agent-fleet-provisioning-failed'."
                  (herdr-request "pane.current" nil)))
               (signal 'agent-fleet-provisioning-failed
                       (list :step 'pane-split :result res))))
-      ;; No pane to split: a fresh tab creates a fresh pane.
+      ;; No pane to split (or a tab was forced): a fresh tab creates a
+      ;; fresh pane.
       (let* ((params `(("workspace_id" . ,workspace-id)
                        ("focus" . ,(if focus t :false))
                        ,@(and cwd `(("cwd" . ,cwd)))))
@@ -493,7 +534,7 @@ response lacks a workspace or root pane."
 ;;;###autoload
 (cl-defun agent-fleet-start (kind &key name cwd workspace pane args
                                      (timeout-ms agent-fleet-start-timeout-ms)
-                                     focus worktree branch base)
+                                     focus worktree branch base attach)
   "Start a CLI agent of KIND (a symbol like `claude') in a Herdr pane.
 Provisions an empty interactive shell pane (splitting the focused pane,
 or creating a tab if there is none), then calls `agent.start'.  The
@@ -506,23 +547,33 @@ provisions a fresh workspace + root pane there, so the agent works in
 isolation.  CWD is required in this mode (a worktree needs a
 source repo); BRANCH/BASE optionally override Herdr's default branch.
 
+When called interactively, the user is always prompted to pick the
+workspace the agent starts in (unless :workspace/:pane/:worktree is given
+explicitly); the agent then opens as a fresh tab in the selected
+workspace, rather than a new frame.  After a successful interactive
+start, the agent's terminal is attached automatically (see
+`agent-fleet-attach').
+
 Keyword args:
   :name        agent name (unique across live agents); auto-generated if nil
   :cwd         working directory for the new pane (required with :worktree)
-  :workspace   workspace id to start in (default: focused or created)
+  :workspace   workspace id to start in (default: focused, picked, or created)
   :pane        reuse an existing pane id instead of provisioning one
   :args        list of extra CLI arg strings passed to the agent
   :timeout-ms  startup timeout (Herdr requires > 3000)
   :focus       non-nil to focus the new pane in the Herdr UI
-  :worktree    non-nil to start in a fresh git worktree at :cwd (Phase 5)
+  :worktree    non-nil to start in a fresh git worktree at :cwd
   :branch      worktree branch override (with :worktree; nil = let Herdr decide)
   :base        worktree base ref override (with :worktree)
+  :attach      non-nil to attach the agent's terminal after start
+               (interactive starts do this automatically)
 
 Returns the `herdr-agent' struct for the started agent.  Signals an
 `agent-fleet-error' (or a `herdr-error') on failure."
   (interactive
-   (let* ((kinds (mapcar #'car agent-fleet-agent-executables))
-          (kind (intern (completing-read "Agent kind: " kinds nil t)))
+   (let* ((choices (agent-fleet--kind-choices))
+          (sel (completing-read "Agent kind: " (mapcar #'car choices) nil t))
+          (kind (cdr (assoc sel choices #'equal)))
           (nm (read-string "Name (empty for auto): ")))
      (list kind :name (and (not (string-empty-p nm)) nm))))
   (agent-fleet--ensure-connected)
@@ -540,8 +591,14 @@ Returns the `herdr-agent' struct for the started agent.  Signals an
             (list :hint "agent args must be a list of strings" :args args)))
   (let* ((agent-name (or name (agent-fleet--fresh-name kind)))
          (kind-str (if (symbolp kind) (symbol-name kind) kind))
+         ;; Reflects whether THIS `agent-fleet-start' was invoked
+         ;; interactively (via `call-interactively').  Wrapper commands
+         ;; (`agent-fleet-start-for-project') forward their own
+         ;; interactivity through :attach instead, since a normal Lisp
+         ;; call to this function is not itself interactive.
+         (interactive-p (called-interactively-p 'interactive))
          ;; `:worktree t' provisions an isolated workspace + root pane via
-         ;; `worktree.create' (Phase 5), skipping the normal workspace/pane
+         ;; `worktree.create', skipping the normal workspace/pane
          ;; resolution.  CWD is required: a worktree needs a source repo.
          (wt-result (when worktree
                       (unless cwd
@@ -551,21 +608,35 @@ Returns the `herdr-agent' struct for the started agent.  Signals an
                        cwd :branch branch :base base :focus focus)))
          (created-workspace
           (when (and (null wt-result) (null pane) (null workspace)
-                     (null (herdr-focused-workspace)))
+                     (null (herdr-focused-workspace))
+                     ;; Interactive starts prompt for an existing workspace
+                     ;; instead of silently provisioning a new one.
+                     (not interactive-p))
             (agent-fleet--create-workspace-provisioning cwd focus)))
          (ws-id (or (and wt-result (plist-get wt-result :workspace-id))
                     (plist-get created-workspace :workspace-id)
                     workspace
-                    ;; An explicit pane is already a complete target.  Do
-                    ;; not create an unrelated workspace merely because the
-                    ;; cache has no focused workspace.
+                    ;; An interactive start always lets the user pick the
+                    ;; workspace (manual selection is required), even when
+                    ;; one is focused — so this branch comes before the
+                    ;; focused-workspace shortcut.  Wrapper commands pass
+                    ;; their own resolved :workspace, so they skip this.
+                    (and (null pane) interactive-p
+                         (agent-fleet--read-workspace "Start in workspace: "))
+                    ;; Programming callers reuse the focused workspace, or
+                    ;; fall through to creating one.  An explicit pane is
+                    ;; already a complete target, so none of these run then.
                     (and (null pane) (herdr-focused-workspace)
                          (herdr-workspace-id (herdr-focused-workspace)))
                     (and (null pane) (agent-fleet--create-workspace cwd))))
          (pane-id (or (and wt-result (plist-get wt-result :pane-id))
                       (plist-get created-workspace :pane-id)
                       pane
-                      (agent-fleet--provision-pane ws-id cwd focus)))
+                      ;; Interactive starts (and wrappers forwarding :attach)
+                      ;; open the agent in a fresh tab rather than splitting a
+                      ;; pane, so each agent gets its own switchable surface.
+                      (agent-fleet--provision-pane ws-id cwd focus
+                                                   (or attach interactive-p))))
          (params `(("name" . ,agent-name)
                    ("kind" . ,kind-str)
                    ("pane_id" . ,pane-id)
@@ -596,6 +667,14 @@ Returns the `herdr-agent' struct for the started agent.  Signals an
               (run-hook-with-args 'agent-fleet-agent-started-hook
                                   (agent-fleet--enrich-descriptor nil pane-id))
               (setq completed t)
+              ;; Interactive starts attach the agent's terminal in Emacs so
+              ;; the user lands in it.  Wrapper commands forward their own
+              ;; interactivity through :attach; programming callers (parallel
+              ;; orchestration, external scripts) pass neither and are left
+              ;; alone.  Without a terminal backend `agent-fleet-attach'
+              ;; signals a user-error pointing at the herdr CLI command.
+              (when (or attach interactive-p)
+                (agent-fleet-attach agent))
               agent))
         (unless completed
           ;; Provisioning belongs to this call, so a failed agent.start must
