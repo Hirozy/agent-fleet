@@ -65,7 +65,7 @@ CWD, when non-empty, scopes the query to the repo at that path (otherwise
 all known worktrees are listed).  Returns a cons (STRUCTS . SOURCE):
 STRUCTS is the list of parsed worktree structs now in the cache, and
 SOURCE is the `WorktreeSourceInfo' plist (repo metadata) or nil.
-User-initiated (never a timer; )."
+This operation is user-initiated and never runs from a timer."
   (let* ((res (herdr-request "worktree.list"
                              (if (and cwd (not (string-empty-p cwd)))
                                  `(("cwd" . ,cwd))
@@ -92,7 +92,7 @@ User-initiated (never a timer; )."
 With a prefix arg, prompt for a repo CWD to scope the query; otherwise
 list all known worktrees.  Each result is upserted into the cache — the
 only way to seed worktree state besides events (user-initiated, not
-polling; ).  Returns the worktree structs.  When called
+polling).  Returns the worktree structs.  When called
 interactively, messages the count and paths."
   (interactive
    (list (when current-prefix-arg

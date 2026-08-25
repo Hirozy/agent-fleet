@@ -599,6 +599,13 @@ Unlike the row actions, this does not act on the agent at point."
     ("q"   . agent-fleet-dashboard-quit))
   "Documented action key bindings for `agent-fleet-mode'.")
 
+(defconst agent-fleet-dashboard--retired-bindings
+  '("RET")
+  "Former dashboard bindings that must be removed when the map is reloaded.
+`agent-fleet-mode-map' is defined with `defvar', so an Emacs session that
+loads a newer agent-fleet keeps the old map object.  Listing removed keys
+here prevents obsolete commands from surviving that in-place upgrade.")
+
 (defconst agent-fleet-dashboard--navigation-keys
   '(("p" . previous-line)
     ("k" . previous-line)
@@ -618,9 +625,13 @@ Unlike the row actions, this does not act on the agent at point."
 (defun agent-fleet-dashboard--install-key-bindings ()
   "Install dashboard bindings in the active mode map and optional Evil maps.
 This function intentionally runs outside the map's `defvar' initializer so
-reloading agent-fleet updates an already-created `agent-fleet-mode-map'."
+reloading agent-fleet updates an already-created `agent-fleet-mode-map'.
+It also removes `agent-fleet-dashboard--retired-bindings' left by older
+versions of that map."
   (let ((keys (append agent-fleet-dashboard--bindings
                       agent-fleet-dashboard--navigation-keys)))
+    (dolist (key agent-fleet-dashboard--retired-bindings)
+      (define-key agent-fleet-mode-map (kbd key) nil))
     (dolist (binding keys)
       (define-key agent-fleet-mode-map (kbd (car binding)) (cdr binding)))
     ;; Evil's state maps take precedence over an ordinary major-mode map.  The
@@ -628,9 +639,12 @@ reloading agent-fleet updates an already-created `agent-fleet-mode-map'."
     ;; mirror its commands into the two non-insert states when Evil is present.
     (when (fboundp 'evil-define-key*)
       (apply #'evil-define-key* '(normal motion) agent-fleet-mode-map
-             (mapcan (lambda (binding)
-                       (list (kbd (car binding)) (cdr binding)))
-                     keys)))))
+             (append
+              (mapcan (lambda (binding)
+                        (list (kbd (car binding)) (cdr binding)))
+                      keys)
+              (mapcan (lambda (key) (list (kbd key) nil))
+                      agent-fleet-dashboard--retired-bindings))))))
 
 (agent-fleet-dashboard--install-key-bindings)
 
@@ -816,10 +830,22 @@ explicitly so the dashboard is reliably centered within its parent."
   (setq agent-fleet-dashboard--centered-children
         (assq-delete-all frame agent-fleet-dashboard--centered-children)))
 
-(add-function :after (default-value 'window-size-change-functions)
-              #'agent-fleet-dashboard--recenter-on-parent-resize)
-(add-function :after (default-value 'delete-frame-functions)
-              #'agent-fleet-dashboard--forget-centered-child)
+(defun agent-fleet-dashboard--setup-frame-hooks ()
+  "Install child-frame lifecycle callbacks as ordinary, idempotent hooks.
+`remove-function' first undoes the erroneous function-composition form used
+by an older release.  It leaves a proper hook list unchanged, so this also
+repairs an already-running Emacs before `add-hook' installs the callbacks in
+the normal representation."
+  (remove-function (default-value 'window-size-change-functions)
+                   #'agent-fleet-dashboard--recenter-on-parent-resize)
+  (remove-function (default-value 'delete-frame-functions)
+                   #'agent-fleet-dashboard--forget-centered-child)
+  (add-hook 'window-size-change-functions
+            #'agent-fleet-dashboard--recenter-on-parent-resize)
+  (add-hook 'delete-frame-functions
+            #'agent-fleet-dashboard--forget-centered-child))
+
+(agent-fleet-dashboard--setup-frame-hooks)
 
 (defun agent-fleet-dashboard--display-in-frame (buffer)
   "Display dashboard BUFFER in a reusable standalone graphical frame."

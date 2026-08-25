@@ -91,7 +91,7 @@ worktree root; here a plain repo cwd returns the repo root."
 
 (ert-deftest agent-fleet-magit-root-worktree-fallback ()
   "An agent with no usable cwd but a cached worktree falls back to the
-worktree path ( \"open agent worktree in Magit\").  A non-existent
+worktree path.  A non-existent
 worktree path yields nil."
   (let* ((real-dir (make-temp-file "af-magit-wt-" t))
          (session (herdr-model--empty-session))

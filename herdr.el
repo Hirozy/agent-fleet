@@ -30,7 +30,7 @@
 ;;   herdr-model.el      snapshot/event cache
 ;;   herdr-events.el     subscription logic + local event bus
 ;;
-;; The connection flow mirrors docs/PROTOCOL.md :
+;; The connection flow mirrors `docs/PROTOCOL.md`:
 ;;
 ;;   discover socket -> ping (check protocol) -> session.snapshot
 ;;       -> replace cache -> events.subscribe -> live

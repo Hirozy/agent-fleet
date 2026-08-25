@@ -50,10 +50,10 @@
 (cl-defstruct herdr-session
   "Local projection of a Herdr session.
 WORKSPACES, TABS, PANES, AGENTS and WORKTREES are hash tables keyed by id
-(string).  Agents are keyed by `pane-id' (the snapshot does not
-carry a stable agent `name'; see docs/PROTOCOL.md ).  Worktrees are keyed
+(string).  Agents are keyed by `pane-id' because the snapshot does not
+carry a stable agent `name'.  Worktrees are keyed
 by `path' (the snapshot carries no worktree collection; worktree state is
-populated from `worktree.list' and `worktree.*' events, PROTOCOL.md ).
+populated from `worktree.list' and `worktree.*' events).
 GONE-PANES is a hash table of pane ids the server no longer reports
 (populated by `pane.list' reconciliation); Herdr never recycles a pane id,
 so a `pane_created' replayed from the EventHub ring buffer for one of them
@@ -93,7 +93,7 @@ name, matching the server's `display_name_from'."
 The `id' slot holds the pane id (agents are keyed by pane-id in the
 cache).  `name' is the human label assigned by `agent.start' /
 `agent.rename'; it is unique across live agents but may be nil for
-agents started outside this client (see docs/PROTOCOL.md )."
+agents started outside this client."
   id workspace-id tab-id terminal-id
   terminal-title terminal-title-stripped
   cwd foreground-cwd
@@ -421,7 +421,7 @@ DATA is the decoded event payload plist.  Returns a descriptor plist
      (let ((w (plist-get data :workspace)))
        ;; A creation event for a workspace already cached (from the
        ;; snapshot) is a connect-time replay (the EventHub ring buffer
-       ;; is drained on every subscribe; see docs/PROTOCOL.md ).
+       ;; is drained on every subscribe).
        ;; Skipping it avoids replacing the snapshot-correct struct with
        ;; a replayed one; a genuinely new workspace is still inserted.
        ;; (Labels are derived in `herdr-workspace-label', so a replayed
@@ -723,7 +723,7 @@ DATA is the decoded event payload plist.  Returns a descriptor plist
 When CREATED-P is non-nil the caller is handling a `workspace_created'
 event: if a workspace with the same id is ALREADY cached, W is a
 connect-time replay (the EventHub ring buffer is drained on every
-subscribe; reconnect contract, docs/PROTOCOL.md ) and is IGNORED — a
+subscribe) and is IGNORED — a
 genuine new workspace is still inserted.  When CREATED-P is nil
 \(`workspace_updated' / `workspace_metadata_updated') W replaces the
 cached struct (those events carry authoritative fresh field values),

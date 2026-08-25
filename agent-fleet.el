@@ -440,6 +440,24 @@ exposing that internal symbol in the minibuffer."
   (mapcar (lambda (entry) (cons (cadr entry) (car entry)))
           agent-fleet-agent-executables))
 
+(defconst agent-fleet--kind-wire-aliases
+  '((pi-agent . "pi"))
+  "Internal agent kind symbols mapped to their Herdr protocol names.
+These aliases are deliberately separate from executable customization:
+using a wrapper executable must not change the `agent.start' wire kind.")
+
+(defun agent-fleet--kind-wire-name (kind)
+  "Return the Herdr wire name for agent KIND.
+Known internal aliases such as `pi-agent' use
+`agent-fleet--kind-wire-aliases'.  Other symbols and string kinds retain the
+historical symbol-name/string behavior so custom Herdr manifests continue to
+work independently of executable customization."
+  (cond
+   ((symbolp kind)
+    (or (cdr (assq kind agent-fleet--kind-wire-aliases))
+        (symbol-name kind)))
+   (t kind)))
+
 (defun agent-fleet--provision-pane (workspace-id cwd focus &optional force-tab)
   "Provision an empty interactive shell pane in WORKSPACE-ID.
 Splits the focused pane (agent.start needs an interactive
@@ -577,7 +595,7 @@ Returns the `herdr-agent' struct for the started agent.  Signals an
           (nm (read-string "Name (empty for auto): ")))
      (list kind :name (and (not (string-empty-p nm)) nm))))
   (agent-fleet--ensure-connected)
-  (let ((candidate (if (symbolp kind) (symbol-name kind) kind)))
+  (let ((candidate (agent-fleet--kind-wire-name kind)))
     (unless (and kind (stringp candidate) (not (string-empty-p candidate)))
       (signal 'agent-fleet-error (list :hint "agent kind must be non-empty"))))
   (unless (and (integerp timeout-ms) (> timeout-ms 3000)
@@ -589,8 +607,8 @@ Returns the `herdr-agent' struct for the started agent.  Signals an
               (and (listp args) (cl-every #'stringp args)))
     (signal 'agent-fleet-error
             (list :hint "agent args must be a list of strings" :args args)))
-  (let* ((agent-name (or name (agent-fleet--fresh-name kind)))
-         (kind-str (if (symbolp kind) (symbol-name kind) kind))
+  (let* ((kind-str (agent-fleet--kind-wire-name kind))
+         (agent-name (or name (agent-fleet--fresh-name kind-str)))
          ;; Reflects whether THIS `agent-fleet-start' was invoked
          ;; interactively (via `call-interactively').  Wrapper commands
          ;; (`agent-fleet-start-for-project') forward their own
@@ -755,8 +773,8 @@ outcome."
   "Read AGENT's terminal output via `agent.read'.
 Returns a PaneReadResult plist: (:pane_id :workspace_id :tab_id :source
 :format :text :revision :truncated), unwrapped from the `pane_read'
-envelope.  Defaults to `recent_unwrapped' output (ignores soft wrapping;
-best for logs — ).  Interactively, display the snapshot in the
+envelope.  Defaults to `recent_unwrapped' output, which ignores soft wrapping
+and is best for logs.  Interactively, display the snapshot in the
 read-only output buffer rather than discarding the returned plist."
   (interactive (list (agent-fleet--read-agent-name "Read output for agent")))
   (if (called-interactively-p 'interactive)

@@ -377,21 +377,41 @@ both that precondition and the attach argv (TAKEOVER adds `--takeover')."
 ;;; --- Presentation: same-window display ------------------------------
 
 (ert-deftest agent-fleet-attach-display-uses-same-window ()
-  "`--display' shows the buffer in the selected window via
-`display-buffer-same-window' (replacing its contents), so an attach
-buffer fills the window the user acted from rather than splitting the
-frame.  Every attach entry point goes through here, so they all present
-the same way.  `display-buffer' is stubbed to observe the action without
-real window side effects in batch."
-  (let ((action)
-        (buf (generate-new-buffer "*agent:display-test*")))
-    (cl-letf (((symbol-function 'display-buffer)
-               (lambda (_buffer &optional alist)
-                 (setq action alist))))
-      (unwind-protect
-          (agent-fleet-attach--display buf)
-        (kill-buffer buf)))
-    (should (equal '(display-buffer-same-window) action))))
+  "`--display' replaces the selected window without creating a split."
+  (let* ((window (selected-window))
+         (old-buffer (window-buffer window))
+         (old-dedicated (window-dedicated-p window))
+         (window-count (length (window-list nil 'nomini)))
+         (buf (generate-new-buffer "*agent:display-test*")))
+    (unwind-protect
+        (progn
+          (set-window-dedicated-p window nil)
+          (should (eq window (agent-fleet-attach--display buf)))
+          (should (eq buf (window-buffer window)))
+          (should (= window-count (length (window-list nil 'nomini)))))
+      (set-window-dedicated-p window nil)
+      (set-window-buffer window old-buffer)
+      (set-window-dedicated-p window old-dedicated)
+      (kill-buffer buf))))
+
+(ert-deftest agent-fleet-attach-display-replaces-dedicated-window ()
+  "A dedicated selected window is reused, never bypassed with a new split."
+  (let* ((window (selected-window))
+         (old-buffer (window-buffer window))
+         (old-dedicated (window-dedicated-p window))
+         (window-count (length (window-list nil 'nomini)))
+         (buf (generate-new-buffer "*agent:dedicated-display-test*")))
+    (unwind-protect
+        (progn
+          (set-window-dedicated-p window t)
+          (should (eq window (agent-fleet-attach--display buf)))
+          (should (eq buf (window-buffer window)))
+          (should (window-dedicated-p window))
+          (should (= window-count (length (window-list nil 'nomini)))))
+      (set-window-dedicated-p window nil)
+      (set-window-buffer window old-buffer)
+      (set-window-dedicated-p window old-dedicated)
+      (kill-buffer buf))))
 
 
 ;;; --- Dashboard `a' key wiring ---------------------------------------
