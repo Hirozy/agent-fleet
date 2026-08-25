@@ -2,7 +2,7 @@
 
 ;; Copyright (C) 2026  agent-fleet contributors
 
-;; Phase 2 tests: start/prompt/read/wait/send-keys/interrupt/rename/
+;; Tests: start/prompt/read/wait/send-keys/interrupt/rename/
 ;; kill/switch/list/get/show-output, the hook bus, target resolution,
 ;; and the doctor — all against the mock server (no real Herdr).
 ;;

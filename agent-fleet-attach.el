@@ -28,9 +28,9 @@
 ;;
 ;;   (agent-fleet-attach "arch")           ; dashboard `a', or M-x
 ;;
-;; Attach is NOT a socket RPC: there is no `agent.attach' method (§43).
+;; Attach is NOT a socket RPC: there is no `agent.attach' method.
 ;; `herdr agent attach <pane-id>' is a CLI helper that bridges a single live
-;; pane as an interactive PTY client (§44 path A).  This layer spawns that
+;; pane as an interactive PTY client (path A).  This layer spawns that
 ;; CLI inside the ghostel terminal backend and pops the buffer.
 ;; Killing the process detaches; the agent is preserved (it is NOT closed).
 ;;
@@ -118,7 +118,7 @@ and evil-escape integration is known to avoid synthetic insertion."
   "Backend probe order for `agent-fleet-attach-backend' = `auto'.")
 
 
-;;; --- Backend readiness (the §45.1 stale-module guard) --------------
+;;; --- Backend readiness (the stale-module guard) --------------
 
 (defun agent-fleet-attach--ghostel-ready-p ()
   "Return non-nil if ghostel is loaded AND its dynamic module is working.
@@ -128,7 +128,7 @@ ghostel.el load time the module loader calls module-load, which provides
 the ghostel-module feature ONLY on success.  So checking that feature is
 the staleness signal — nil when the lisp loaded but the module did not
 take.  This lets `auto' yield no backend rather than calling `ghostel-exec'
-when it would crash at runtime (the §45.1 module-dependency risk, realized
+when it would crash at runtime (the  module-dependency risk, realized
 in some dev envs)."
   (and (require 'ghostel nil t)
        (featurep 'ghostel-module)
@@ -243,7 +243,7 @@ present the same way."
 (defun agent-fleet-attach--spawn (backend buf-name pane-id takeover)
   "Spawn `herdr agent attach PANE-ID' in BUF-NAME via BACKEND.
 TAKEOVER (non-nil) adds `--takeover'.  Pops the buffer so the user can drive
-the live terminal.  No output is persisted (§46/§23): the buffer is a
+the live terminal.  No output is persisted: the buffer is a
 transient interactive view; killing the process detaches and preserves the
 agent; detaching never closes the pane."
   (let ((argv (agent-fleet-attach--argv pane-id takeover)))
@@ -264,7 +264,7 @@ agent; detaching never closes the pane."
 
 ;;;###autoload
 (defun agent-fleet-attach (target &optional takeover)
-  "Attach interactively to TARGET's terminal via `herdr agent attach' (§73).
+  "Attach interactively to TARGET's terminal via `herdr agent attach'.
 TARGET is an agent name, pane id, symbol, or `herdr-agent' struct, resolved
 to a real pane id.  Spawns the attach CLI inside the chosen terminal backend
 (`agent-fleet-attach-backend', default `auto') in a `*agent:NAME*' buffer and
@@ -272,12 +272,12 @@ displays it in the selected window (replacing its contents) so the live
 agent PTY/TUI can be driven from Emacs.  If a live attach buffer for the
 agent already exists, reuses it instead of double-attaching.
 
-This is a live interactive session, NOT a persisted or mirrored view (§46/§23):
+This is a live interactive session, NOT a persisted or mirrored view:
 the buffer is transient; killing the process detaches and the agent is
 preserved; detaching does not close the pane.  With a prefix arg
 \(TAKEOVER), passes `--takeover' to the attach CLI.
 
-No socket RPC is involved: there is no `agent.attach' method (§43); this is a
+No socket RPC is involved: there is no `agent.attach' method; this is a
 client-side PTY bridge over the `herdr' CLI.  If no Emacs terminal backend is
 ready, `user-error's with the `herdr agent attach' command to run in the
 user's own terminal."

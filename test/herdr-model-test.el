@@ -387,7 +387,7 @@ and skips the upsert."
   "Workspace labels are derived live (方案 A), so a replayed
 `workspace_created' for an already-cached workspace cannot stale the
 display name: the snapshot is canonical (reconnect contract,
-docs/PROTOCOL.md §9) and the creation is skipped, and — because
+docs/PROTOCOL.md ) and the creation is skipped, and — because
 `herdr-workspace-label' prefers `custom-name' then root-pane cwd then
 `cached-label' — neither a replayed creation nor a `workspace_updated'
 overrides a frozen `custom-name'.  Only `workspace_renamed' changes the
@@ -590,7 +590,7 @@ cwd-derived label and survives later cwd changes."
     (should (eq (plist-get d :what) ':workspace-focused))))
 
 
-;;; --- Worktrees (Phase 5) --------------------------------------------
+;;; --- Worktrees --------------------------------------------
 
 (defun herdr-model-test--worktree-data (path &optional ws-id)
   "A canned worktree_created/opened payload for a worktree at PATH.

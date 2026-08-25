@@ -31,7 +31,7 @@
 ;;
 ;; The actual long-lived subscription connection lives in `herdr.el',
 ;; which calls into here for the subscription set and the per-event
-;; callback.  See docs/PROTOCOL.md §7 for the subscription/event model.
+;; callback.  See docs/PROTOCOL.md for the subscription/event model.
 
 ;;; Code:
 
@@ -132,7 +132,7 @@ for how replays are flagged."
 
 ;; Hooks are run with the descriptor plist as their sole argument.
 ;; The catch-all runs for every event; the category hooks run only for
-;; the matching class.  agent-fleet.el (Phase 2) builds its
+;; the matching class.  agent-fleet.el builds its
 ;; blocked/done notification hooks on top of `herdr-event-agent-status-hook'.
 
 (defvar herdr-event-hook nil

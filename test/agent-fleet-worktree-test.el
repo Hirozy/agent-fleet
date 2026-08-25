@@ -2,7 +2,7 @@
 
 ;; Copyright (C) 2026  agent-fleet contributors
 
-;; Phase 5 tests: the `:worktree t' start flow (worktree.create then
+;; Tests: the `:worktree t' start flow (worktree.create then
 ;; agent.start on the root pane), worktree list/remove/status — all
 ;; against the mock server (no real Herdr).
 ;; Run:
@@ -153,7 +153,7 @@ the worktree from the cache eagerly (the event also removes it)."
 
 (ert-deftest agent-fleet-worktree-status-finds-worktree ()
   "`worktree-status' resolves the agent's workspace worktree, displays it
-read-only, and returns the struct.  Metadata only (§46/§23: no pane output)."
+read-only, and returns the struct.  Metadata only (no pane output)."
   (with-agent-fleet-mock path server
     (let ((agent (agent-fleet-start 'claude :name "wt-agent"
                                     :worktree t :cwd "/tmp/myrepo")))
