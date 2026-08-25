@@ -28,7 +28,8 @@ interaction is needed.
 - `transient` 0.7.2 or newer.
 - One or more supported agent CLIs, such as Claude Code, Codex, or Pi.
 - Magit for the optional status and diff integration.
-- Ghostel, Eat, or vterm for an interactive terminal inside Emacs.
+- Ghostel, Eat, or vterm for an interactive terminal inside Emacs (optional;
+  the core works without any of them installed).
 
 The core client uses only Emacs built-in libraries. Magit and terminal backends
 are detected when their commands are used.
@@ -234,8 +235,9 @@ C-u M-x agent-fleet-attach
 ```
 
 Choose a backend explicitly via `agent-fleet-attach-backend`; see
-[Configuration](#configuration). When no in-Emacs backend is available, run
-the command shown by agent-fleet in an external terminal.
+[Configuration](#configuration). When no in-Emacs backend is available,
+agent-fleet reports the `herdr agent attach` command to run in your own
+terminal.
 
 ### Evil and evil-escape
 
@@ -313,14 +315,14 @@ groups; set them with `setq` or <kbd>M-x customize-group RET agent-fleet</kbd>.
 | `agent-fleet-dashboard-frame-parameters` | alist | Frame parameters for the standalone dashboard frame |
 | `agent-fleet-dashboard-child-frame-fit-height` | `nil` | When non-nil, fit the child-frame height to the agent count (event-driven, idempotent) |
 | `agent-fleet-dashboard-child-frame-min-height` | `4` | Minimum child-frame height in lines when fit-height is on |
-| `agent-fleet-dashboard-child-frame-max-height` | `40` | Maximum child-frame height in lines when fit-height is on |
+| `agent-fleet-dashboard-child-frame-max-height` | `24` | Maximum child-frame height in lines when fit-height is on |
 | `agent-fleet-dashboard-child-frame-help-height` | `8` | Bottom lines reserved for the transient help page |
 
 ### Terminal attach
 
 | Option | Default | Meaning |
 |---|---|---|
-| `agent-fleet-attach-backend` | `auto` | Terminal backend: `auto`, `ghostel`, `eat`, `vterm`, or `external` |
+| `agent-fleet-attach-backend` | `auto` | Terminal backend: `auto`, `ghostel`, `eat`, or `vterm` |
 | `agent-fleet-attach-buffer-prefix` | `*agent:` | Prefix for attach buffer names (buffer is `PREFIX<name>*`) |
 | `agent-fleet-attach-inhibit-evil-escape` | `t` | Inhibit `evil-escape` locally in attach buffers to avoid duplicated input |
 

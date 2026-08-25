@@ -99,13 +99,13 @@ the server is stopped and any live herdr connection is torn down."
                      (herdr-protocol-socket-path))))))
 
 (ert-deftest herdr-protocol-version-check-rejects-missing-and-old ()
-  "A malformed pong without a protocol is not accepted as compatible."
-  (let ((herdr-required-protocol-version 19))
-    (should-error (herdr--check-protocol nil) :type 'herdr-protocol-error)
-    (should-error (herdr--check-protocol "20") :type 'herdr-protocol-error)
-    (should-error (herdr--check-protocol 18) :type 'herdr-protocol-error)
-    (should-not (herdr--check-protocol 19))
-    (should-not (herdr--check-protocol 20))))
+  "A malformed pong without a protocol is not accepted as compatible.
+`herdr-required-protocol-version' is a fixed constant, not a setting."
+  (should-error (herdr--check-protocol nil) :type 'herdr-protocol-error)
+  (should-error (herdr--check-protocol "20") :type 'herdr-protocol-error)
+  (should-error (herdr--check-protocol 18) :type 'herdr-protocol-error)
+  (should-not (herdr--check-protocol 19))
+  (should-not (herdr--check-protocol 20)))
 
 (ert-deftest herdr-schema-fixture-pins-critical-request-response-shapes ()
   "The checked-in schema guards fields that mocks previously got wrong."

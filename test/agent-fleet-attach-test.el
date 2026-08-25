@@ -2,10 +2,10 @@
 
 ;; Copyright (C) 2026  agent-fleet contributors
 
-;; Phase 8 tests: the backend abstraction (readiness/preference/fallback/
-;; external degradation), the §45.1 stale-module guard, argv + buffer-name,
-;; target resolution, live-buffer reuse, the per-backend spawn dispatch,
-;; and the dashboard `a' key wiring.  Terminal backends (eat/ghostel/vterm)
+;; Phase 8 tests: the backend abstraction (readiness/preference/fallback
+;; to a nil pick when no backend is ready), the §45.1 stale-module guard,
+;; argv + buffer-name, target resolution, live-buffer reuse, the
+;; per-backend spawn dispatch, and the dashboard `a' key wiring.  Terminal backends (eat/ghostel/vterm)
 ;; are NOT required — they are stubbed via `cl-letf', mirroring how
 ;; `agent-fleet-magit-test' stubs Magit (PLAN §45: optional deps).  Run:
 ;;   emacs -batch -L . -L test -l ert -l herdr -l agent-fleet \
@@ -151,29 +151,36 @@ available)."
                (lambda () t)))
       (should (eq 'vterm (agent-fleet-attach--pick-backend))))))
 
-(ert-deftest agent-fleet-attach-auto-degrades-to-external ()
-  "With no Emacs backend ready, `auto' reaches `external' (always ready —
-the floor).  Spawning `external' `user-error's with the `herdr agent attach'
-command text so the user can run it in their own terminal (§44 path C)."
+(ert-deftest agent-fleet-attach-auto-with-no-backend-reports-command ()
+  "With no Emacs backend ready, `auto' picks nil and the attach command
+`user-error's with the `herdr agent attach' command text so the user can
+run it in their own terminal (§44 path C)."
   (let ((agent-fleet-attach-backend 'auto))
-    (cl-letf (((symbol-function 'agent-fleet-attach--ghostel-ready-p)
+    (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+              ((symbol-function 'agent-fleet--find-agent)
+               (lambda (_) (make-herdr-agent :id "w4:p1" :name "x")))
+              ((symbol-function 'agent-fleet--resolve-pane-id)
+               (lambda (_) "w4:p1"))
+              ((symbol-function 'herdr-agent-display-name)
+               (lambda (_) "x"))
+              ((symbol-function 'agent-fleet-attach--live-buffer-for-pane)
+               (lambda (_) nil))
+              ((symbol-function 'agent-fleet-attach--live-buffer-p)
+               (lambda (_b _p) nil))
+              ((symbol-function 'agent-fleet-attach--ghostel-ready-p)
                (lambda () nil))
               ((symbol-function 'agent-fleet-attach--eat-ready-p)
                (lambda () nil))
               ((symbol-function 'agent-fleet-attach--vterm-ready-p)
                (lambda () nil)))
-      (should (eq 'external (agent-fleet-attach--pick-backend)))
-      (let ((err (should-error
-                  (agent-fleet-attach--spawn
-                   'external "*agent:x*" "w4:p1" nil)
-                  :type 'user-error)))
+      (should-not (agent-fleet-attach--pick-backend))
+      (let ((err (should-error (agent-fleet-attach "x")
+                               :type 'user-error)))
         (should (string-match-p "herdr agent attach" (cadr err)))
         (should (string-match-p "w4:p1" (cadr err))))
-      ;; takeover appends `--takeover' to the suggested command
-      (let ((err (should-error
-                  (agent-fleet-attach--spawn
-                   'external "*agent:x*" "w4:p1" t)
-                  :type 'user-error)))
+      ;; A takeover request appends `--takeover' to the suggested command.
+      (let ((err (should-error (agent-fleet-attach "x" t)
+                               :type 'user-error)))
         (should (string-match-p "--takeover" (cadr err)))))))
 
 (ert-deftest agent-fleet-attach-explicit-unavailable-backend-errors ()

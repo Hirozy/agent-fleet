@@ -53,16 +53,13 @@
 
 ;;; --- Customization --------------------------------------------------
 
-(defcustom herdr-required-protocol-version 19
+(defconst herdr-required-protocol-version 19
   "Minimum Herdr protocol version the client requires.
-The server's protocol (from `ping') must be at least this.  A server
-with a HIGHER protocol is accepted (the client tolerates unknown
-fields).  Set to nil to skip the check.  The client is verified against
-Herdr 0.8.2 (protocol 20); the permissive default (19) also accepts the
-earlier 0.8.0 baseline."
-  :type '(choice (const :tag "No minimum" nil)
-                 (integer :tag "Minimum protocol"))
-  :group 'herdr)
+This is a fixed invariant, not a user setting: the server's protocol
+(from `ping') must be at least this.  A server with a HIGHER protocol
+is accepted (the client tolerates unknown fields).  The client is
+verified against Herdr 0.8.2 (protocol 20); the permissive constant
+(19) also accepts the earlier 0.8.0 baseline.")
 
 (defcustom herdr-reconnect-max-attempts 12
   "Maximum reconnection attempts before giving up.
@@ -152,12 +149,11 @@ disconnects."
 
 (defun herdr--check-protocol (server-protocol)
   "Signal `herdr-protocol-error' if SERVER-PROTOCOL is absent or too old."
-  (when herdr-required-protocol-version
-    (unless (and (integerp server-protocol)
-                 (>= server-protocol herdr-required-protocol-version))
-      (signal 'herdr-protocol-error
-              (list :server server-protocol
-                    :required herdr-required-protocol-version)))))
+  (unless (and (integerp server-protocol)
+               (>= server-protocol herdr-required-protocol-version))
+    (signal 'herdr-protocol-error
+            (list :server server-protocol
+                  :required herdr-required-protocol-version))))
 
 (defun herdr--start-subscription (conn)
   "Open the long-lived subscription stream for CONN.
@@ -535,9 +531,8 @@ integrations; `agent-fleet-doctor' appends those."
       (push (herdr--doctor-check "Herdr server" server-ok server-detail)
             checks)
       (let* ((proto (plist-get pong :protocol))
-             (ok (or (null herdr-required-protocol-version)
-                     (and (integerp proto)
-                          (>= proto herdr-required-protocol-version)))))
+             (ok (and (integerp proto)
+                      (>= proto herdr-required-protocol-version))))
         (push (herdr--doctor-check
                "Protocol" ok
                (format "server %s / required %s"
