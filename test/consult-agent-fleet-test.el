@@ -23,12 +23,12 @@
 (require 'ert)
 (require 'consult-agent-fleet)
 
-(ert-deftest consult-agent-fleet--read-runs-action-with-pane-id ()
-  "Build (label . pane-id) pairs and call ACTION with consult's return.
-`consult-agent-fleet--read' hands `consult--read' the alist plus a
+(ert-deftest consult-agent-fleet--select-returns-pane-id ()
+  "Build (label . pane-id) pairs and return the consult lookup result.
+`consult-agent-fleet--select' hands `consult--read' the alist plus a
 `consult--lookup-cdr' lookup, and consult returns the cdr for the
-selected candidate; ACTION must receive that pane id, not the label."
-  (let (got-table got-lookup acted-with)
+selected candidate; `--select' must return that pane id, not the label."
+  (let (got-table got-lookup)
     (cl-letf (((symbol-function #'agent-fleet-agent-candidates)
                (lambda ()
                  (list (list :agent nil :pane-id "w1:p1" :name "arch"
@@ -45,19 +45,17 @@ selected candidate; ACTION must receive that pane id, not the label."
                          got-lookup (plist-get opts :lookup))
                    (let ((sel (car (cadr table))))
                      (funcall got-lookup sel table nil nil)))))
-        (consult-agent-fleet--read
-         "Pick" (lambda (pane-id) (setq acted-with pane-id)))))
+        (should (equal (consult-agent-fleet--select "Pick") "w1:p2"))))
     (should (equal got-table
                    '(("arch" . "w1:p1") ("arch  [w1:p2]" . "w1:p2"))))
-    (should (eq got-lookup #'consult--lookup-cdr))
-    (should (equal acted-with "w1:p2"))))
+    (should (eq got-lookup #'consult--lookup-cdr))))
 
-(ert-deftest consult-agent-fleet--read-signals-when-no-agents ()
+(ert-deftest consult-agent-fleet--select-signals-when-no-agents ()
   "With no cached agents, signal `user-error' before `consult--read'."
   (cl-letf (((symbol-function #'agent-fleet-agent-candidates) (lambda () nil))
             ((symbol-function #'consult--read)
              (lambda (&rest _) (error "consult--read should not run"))))
-    (should-error (consult-agent-fleet--read "Pick" #'ignore)
+    (should-error (consult-agent-fleet--select "Pick")
                   :type 'user-error)))
 
 (ert-deftest consult-agent-fleet-mode-installs-advice ()
@@ -88,8 +86,8 @@ state even if an assertion fails."
 (ert-deftest consult-agent-fleet--read-agent-name-uses-consult ()
   "With the mode on, the advised reader selects via consult.
 `agent-fleet--read-agent-name' is advised to call
-`consult-agent-fleet--select', so invoking the reader returns
-consult's lookup result (the pane id), not the built-in
+`consult-agent-fleet--select', so invoking the reader returns the
+consult lookup result (the pane id), not the built-in
 `completing-read' path.  The advice is removed in the unwind-protect so
 the real reader is left intact."
   (let (got-table got-lookup)
