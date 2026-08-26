@@ -143,11 +143,24 @@ reconcile re-fetches `pane.list' before each per-pane resubscribe (the
 EventHub ring-buffer replay churns resubscribes), and a pane present only
 as an event would be dropped as stale on the next reconcile.  Real Herdr
 has the pane in its table the moment it emits `pane_created'; this helper
-mirrors that so the cache entry survives."
-  (puthash (plist-get pane-info :pane_id)
-           pane-info
-           (herdr-mock--server-panes server))
-  (herdr-mock-push-event server "pane_created" `(:pane ,pane-info)))
+mirrors that so the cache entry survives.
+
+A pane carrying a detected agent (`:agent' present and non-nil) is in
+real Herdr's authoritative `agent.list' the moment it is detected, so
+mirror that here too: a detected agent is registered in the agent table
+just as snapshot agents are seeded at `herdr-mock-start', and
+`agent.list' then returns every detected agent — not only those started
+via `agent.start'.  An absent `:agent' key is a layout-only delta that
+says nothing about agents, so any registered agent is left untouched; a
+present-but-nil `:agent' means the pane genuinely has no agent and is
+removed, matching the client's own `pane_created' reconciliation."
+  (let ((pid (plist-get pane-info :pane_id)))
+    (puthash pid pane-info (herdr-mock--server-panes server))
+    (when (plist-member pane-info :agent)
+      (if (plist-get pane-info :agent)
+          (herdr-mock--agent-set server pid pane-info)
+        (herdr-mock--agent-del server pid)))
+    (herdr-mock-push-event server "pane_created" `(:pane ,pane-info))))
 
 (defun herdr-mock-close-subscription (server)
   "Drop the subscription connection (simulates server-side loss)."
