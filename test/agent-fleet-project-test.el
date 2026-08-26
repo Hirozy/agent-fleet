@@ -261,5 +261,63 @@ exists yet (one project ↔ one workspace), so no workspace.create."
       (when (file-exists-p repo-b) (delete-directory repo-b t)))))
 
 
+;;; --- Project backend (opt-in Projectile) ----------------------------
+
+(ert-deftest agent-fleet-project-root-for-cwd-projectile-backend-dispatches ()
+  "With backend `projectile', root-for-cwd returns the Projectile root.
+A plain temp dir has no .git, so the git pass is skipped and the backend
+branch is exercised."
+  (let ((dir (make-temp-file "af-proj-" t))
+        (agent-fleet-project-backend 'projectile))
+    (unwind-protect
+        (cl-letf* (((symbol-function 'agent-fleet-project--ensure-projectile) #'ignore)
+                   ((symbol-function 'projectile-project-root)
+                    (lambda (&optional _d) (file-truename dir))))
+          (should (file-equal-p dir (agent-fleet-project-root-for-cwd dir))))
+      (when (file-exists-p dir) (delete-directory dir t)))))
+
+(ert-deftest agent-fleet-project-root-for-cwd-git-short-circuits-under-projectile ()
+  "A git repo resolves via the git pass even under the `projectile' backend;
+Projectile is never consulted."
+  (let ((repo (agent-fleet-project-test--make-git-repo))
+        (agent-fleet-project-backend 'projectile))
+    (unwind-protect
+        (cl-letf (((symbol-function 'projectile-project-root)
+                   (lambda (&rest _)
+                     (error "projectile-project-root must not run for git"))))
+          (should (file-equal-p repo (agent-fleet-project-root-for-cwd repo))))
+      (when (file-exists-p repo) (delete-directory repo t)))))
+
+(ert-deftest agent-fleet-project-root-for-cwd-projectile-absent-signals ()
+  "Under the `projectile' backend, a missing Projectile signals `user-error'.
+`require' is stubbed to return nil only for `projectile', so this does not
+depend on whether Projectile happens to be installed on the test host."
+  (let ((dir (make-temp-file "af-proj-" t))
+        (agent-fleet-project-backend 'projectile)
+        (orig-require (symbol-function 'require)))
+    (unwind-protect
+        (cl-letf (((symbol-function 'require)
+                   (lambda (feature &optional filename noerror)
+                     (if (eq feature 'projectile)
+                         nil
+                       (funcall orig-require feature filename noerror)))))
+          (should-error (agent-fleet-project-root-for-cwd dir) :type 'user-error))
+      (when (file-exists-p dir) (delete-directory dir t)))))
+
+(ert-deftest agent-fleet-project-current-dispatches ()
+  "`agent-fleet-project-current' dispatches on `agent-fleet-project-backend'.
+`projectile' returns `projectile-project-root'; `project' returns
+`(project-current)'."
+  (let ((agent-fleet-project-backend 'projectile))
+    (cl-letf* (((symbol-function 'agent-fleet-project--ensure-projectile) #'ignore)
+               ((symbol-function 'projectile-project-root)
+                (lambda (&optional _d) "/stub/projectile-root")))
+      (should (equal "/stub/projectile-root" (agent-fleet-project-current))))
+    (let ((agent-fleet-project-backend 'project))
+      (cl-letf (((symbol-function 'project-current)
+                 (lambda (&rest _) 'fake-project)))
+        (should (eq 'fake-project (agent-fleet-project-current)))))))
+
+
 (provide 'agent-fleet-project-test)
 ;;; agent-fleet-project-test.el ends here

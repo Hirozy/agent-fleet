@@ -189,6 +189,12 @@ neither exists, an interactive start prompts you to pick a workspace. Like
 `agent-fleet-start`, an interactive project start opens the agent as a new
 tab in that workspace and attaches the terminal afterward.
 
+Project detection defaults to the built-in `project.el`. Set
+`agent-fleet-project-backend` to `'projectile` to source it from Projectile
+instead; either way, a git repository resolves to its primary checkout
+regardless of backend, so the option only affects how non-git projects are
+detected.
+
 Agents in linked worktrees are mapped back to the same canonical project, so
 the dashboard's `P` filter includes all checkouts of one repository.
 
@@ -335,6 +341,7 @@ groups; set them with `setq` or <kbd>M-x customize-group RET agent-fleet</kbd>.
 | `agent-fleet-auto-connect` | `'on-demand` | When to connect: `nil` (manual), `'on-demand`, or `'after-init` |
 | `agent-fleet-auto-connect-delay` | `1.0` | Idle seconds before an `after-init` connection |
 | `agent-fleet-agent-executables` | claude/codex/pi | Known agent kinds and their CLI executables; used by `agent-fleet-doctor` and kind completion |
+| `agent-fleet-project-backend` | `'project` | Project detection source: `'project` (built-in `project.el`) or `'projectile` (requires Projectile); git repos resolve the same either way |
 | `agent-fleet-default-read-source` | `'recent_unwrapped` | Default `agent.read` source: `'visible`, `'recent`, `'recent_unwrapped`, or `'detection` |
 | `agent-fleet-default-read-lines` | `120` | Default line count for reads and output snapshots |
 | `agent-fleet-default-read-format` | `'text` | Default read format: `'text` (ANSI stripped) or `'ansi` |
