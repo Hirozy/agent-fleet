@@ -29,7 +29,9 @@
 ;; scoped to the current project.
 ;;
 ;; Design rules honored:
-;;     prefer `project.el' over Projectile; use `project-current'/`project-root'.
+;;     `project.el' is the default backend; Projectile is opt-in via
+;;        `agent-fleet-project-backend' (both yield a cwd root; the git-worktree
+;;        normalization runs first either way, so git repos resolve identically).
 ;;        Default mapping: one Emacs project ↔ one Herdr workspace.
 ;;     match by canonical cwd; allow multiple workspaces per repo (worktrees,
 ;;        investigation workspaces).  No label-based matching, no stale table —
@@ -54,6 +56,35 @@
 (require 'project)
 (require 'agent-fleet)
 (require 'herdr-model)
+
+
+;;; --- Project backend ------------------------------------------------
+
+(defcustom agent-fleet-project-backend 'project
+  "Source for project detection: built-in `project' or `projectile'.
+The default `project' uses `project-current'/`project-root' with a
+`vc-root-dir' fallback.  The `projectile' backend uses
+`projectile-project-root', which does its own fallback.  Either way the
+git worktree normalization (`agent-fleet-project--git-common-root') runs
+first, so git repos resolve identically under either backend — this only
+affects how non-git or non-standard-git projects are detected.
+Projectile is an optional dependency; the `projectile' backend loads it on
+demand and signals a `user-error' if it is absent."
+  :type '(choice (const :tag "Built-in project.el" project)
+                 (const :tag "Projectile" projectile))
+  :group 'agent-fleet)
+
+;; Projectile is optional: declare the entry point so the byte-compiler does
+;; not warn, without forcing a top-level `require' (mirrors the magit idiom).
+(declare-function projectile-project-root "projectile" (&optional dir))
+
+(defun agent-fleet-project--ensure-projectile ()
+  "Load Projectile or signal a `user-error' that it is not installed.
+Used by the project-resolution dispatch when
+`agent-fleet-project-backend' is `projectile'."
+  (unless (require 'projectile nil t)
+    (user-error "agent-fleet-project-backend is `projectile' \
+but Projectile is not installed")))
 
 
 ;;; --- Project root resolution ----------------------------------------
@@ -83,26 +114,43 @@ back to `project.el' rather than guessing."
                (file-truename (file-name-directory
                                (directory-file-name common)))))))))))
 
+(defun agent-fleet-project--backend-root-for-cwd (dir)
+  "Return the project root for DIR per `agent-fleet-project-backend', or nil.
+Runs AFTER the shared git-worktree normalization, so it is only reached for
+dirs the git pass left unresolved.  `project' (default) uses
+`project-current'/`project-root' with a `vc-root-dir' fallback;
+`projectile' uses `projectile-project-root', which does its own fallback.
+Returns a `file-truename'-canonicalized directory or nil."
+  (let ((default-directory (file-truename dir)))
+    (pcase agent-fleet-project-backend
+      ('projectile
+       (agent-fleet-project--ensure-projectile)
+       (when-let* ((root (projectile-project-root (file-truename dir))))
+         (directory-file-name (file-truename root))))
+      (_
+       (let ((proj (project-current)))
+         (cond
+          (proj (directory-file-name (file-truename (project-root proj))))
+          (t
+           ;; VC fallback for repos not yet known to project.el.
+           (let ((root (vc-root-dir)))
+             (and root (not (string-empty-p root))
+                  (directory-file-name (file-truename root)))))))))))
+
 (defun agent-fleet-project-root-for-cwd (dir)
   "Return the canonical project root for DIR, or nil.
-Uses `project-current' with DIR as `default-directory',
-falling back to the VC root (`vc-root-dir') for dirs not registered as
-Emacs projects.  The result is `file-truename'-canonicalized so that
-symlinked cwd variants of one repo all match.
-Nil-safe: nil, empty, or non-existent DIR returns nil — an empty cwd
-would otherwise expand to `default-directory' (via `file-directory-p')
-and leak the caller's project as the agent's."
+Resolves via the shared git-worktree normalization first
+(`agent-fleet-project--git-common-root'), then the configured
+`agent-fleet-project-backend' (`project' uses `project-current'/`project-root'
+with a `vc-root-dir' fallback; `projectile' uses `projectile-project-root').
+The result is `file-truename'-canonicalized so symlinked cwd variants of one
+repo all match.
+Nil-safe: nil, empty, or non-existent DIR returns nil — an empty cwd would
+otherwise expand to `default-directory' (via `file-directory-p') and leak the
+caller's project as the agent's."
   (when (and (stringp dir) (not (string-empty-p dir)) (file-directory-p dir))
-    (let ((default-directory (file-truename dir)))
-      (or (agent-fleet-project--git-common-root default-directory)
-          (let ((proj (project-current)))
-            (cond
-             (proj (directory-file-name (file-truename (project-root proj))))
-             (t
-              ;; VC fallback for repos not yet known to project.el.
-              (let ((root (vc-root-dir)))
-                (and root (not (string-empty-p root))
-                     (directory-file-name (file-truename root)))))))))))
+    (or (agent-fleet-project--git-common-root (file-truename dir))
+        (agent-fleet-project--backend-root-for-cwd dir))))
 
 (defun agent-fleet-project-for-agent (agent)
   "Return the canonical project root for AGENT (by its cwd), or nil."
@@ -119,6 +167,19 @@ Returns nil when PROJECT-OR-ROOT is nil."
       (if (stringp project-or-root)
           project-or-root
         (project-root project-or-root))))))
+
+(defun agent-fleet-project-current ()
+  "Return the current project, for `agent-fleet--project-root'.
+Dispatches on `agent-fleet-project-backend': `project' returns
+`(project-current)' (a project struct); `projectile' returns
+`(projectile-project-root default-directory)' (a root string).  Either shape
+is accepted by `agent-fleet--project-root'.  Returns nil when no project is
+current."
+  (pcase agent-fleet-project-backend
+    ('projectile
+     (agent-fleet-project--ensure-projectile)
+     (projectile-project-root default-directory))
+    (_ (project-current))))
 
 
 ;;; --- Project label (dashboard column) -------------------------------
@@ -142,11 +203,12 @@ cwd basename (e.g. \"/tmp/demo\" -> \"demo\")."
 
 (defun agent-fleet-project-agents (&optional project)
   "Return the agents whose project root matches PROJECT.
-PROJECT defaults to `(project-current)'.  It may be a project struct or a
-root directory string.  Matching is by canonical cwd, so
+PROJECT defaults to the current project (per `agent-fleet-project-backend').
+It may be a project struct or a root directory string.  Matching is by
+canonical cwd, so
 agents in separate worktrees or checkouts of one repo all match.  Nil-safe
 when not connected or when PROJECT resolves to no root."
-  (let ((root (agent-fleet--project-root (or project (project-current)))))
+  (let ((root (agent-fleet--project-root (or project (agent-fleet-project-current)))))
     (if (not root)
         nil
       (cl-remove-if-not
@@ -190,7 +252,8 @@ agent's terminal is then attached automatically after start (see
 KIND is a symbol like `claude' (see `agent-fleet-agent-executables').
 Keyword args:
   :name        agent name (auto-generated if nil)
-  :project     a project struct or root dir (default: `(project-current)')
+  :project     a project struct or root dir (default: current project,
+               per `agent-fleet-project-backend')
   :args        list of extra CLI arg strings
   :timeout-ms  startup timeout (Herdr requires > 3000)
   :focus       non-nil to focus the new pane in the Herdr UI
@@ -207,7 +270,7 @@ no project can be resolved."
           (nm (read-string "Name (empty for auto): ")))
      (list kind :name (and (not (string-empty-p nm)) nm))))
   (agent-fleet--ensure-connected)
-  (let ((root (agent-fleet--project-root (or project (project-current)))))
+  (let ((root (agent-fleet--project-root (or project (agent-fleet-project-current)))))
     (unless root
       (user-error "No current project; call from a project buffer or pass :project"))
     (let ((interactive-p (called-interactively-p 'interactive)))
