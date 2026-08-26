@@ -216,7 +216,7 @@ disambiguated/old-name attach can be duplicated under a new base name."
 BUFFER may be a buffer or its name.  The terminal backend must initialize its
 major mode before this runs, because changing major mode clears buffer-local
 variables."
-  (when-let ((buf (get-buffer buffer)))
+  (when-let* ((buf (get-buffer buffer)))
     (with-current-buffer buf
       (when pane-id
         (setq-local agent-fleet-attach-pane-id pane-id))

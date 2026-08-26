@@ -344,7 +344,7 @@ store the frame from which they were opened."
 
 (defun agent-fleet-dashboard--select-origin-frame ()
   "Select the current dashboard's origin frame when it is live."
-  (when-let ((origin (agent-fleet-dashboard--origin-frame)))
+  (when-let* ((origin (agent-fleet-dashboard--origin-frame)))
     (unless (eq origin (selected-frame))
       (select-frame-set-input-focus origin)))
   (selected-frame))
@@ -456,7 +456,7 @@ is computed fresh each time by `agent-fleet-task-state'."
 Some actions (rename) update the cache without firing a status hook; a
 local reprint reflects them immediately.  Kill's exited-hook handles its
 own refresh, but reprinting is harmless and gives instant feedback."
-  (if-let ((buffer (get-buffer agent-fleet-dashboard-buffer-name)))
+  (if-let* ((buffer (get-buffer agent-fleet-dashboard-buffer-name)))
       (with-current-buffer buffer
         (agent-fleet-dashboard-refresh))
     (agent-fleet-dashboard-refresh)))
@@ -770,7 +770,7 @@ frame) is its own parent."
               (agent-fleet-dashboard--merge-frame-parameters
                agent-fleet-dashboard--child-frame-parameters private)))
         (condition-case err
-            (if-let ((window
+            (if-let* ((window
                       (display-buffer
                        buffer
                        `((display-buffer-in-child-frame)
@@ -953,7 +953,7 @@ seam through which a container is disposed of, so callers never invoke
 The backend is looked up in `agent-fleet-dashboard--backends'; an
 unknown symbol is a programming error, not a fallback case (fallbacks
 happen inside each backend's own display function)."
-  (if-let ((fn (agent-fleet-dashboard--display-backend display)))
+  (if-let* ((fn (agent-fleet-dashboard--display-backend display)))
       (funcall fn buffer)
     (user-error "Unknown agent-fleet dashboard display backend: %S"
                 display)))
@@ -1048,7 +1048,7 @@ the gating logic is testable without intercepting `message'."
 (defun agent-fleet-dashboard--notify (descriptor)
   "Notify on a blocked/done transition when gated by `agent-fleet-notify-on'.
 Emits `message' and, when available, a desktop notification."
-  (when-let ((msg (agent-fleet-dashboard--notify-message descriptor)))
+  (when-let* ((msg (agent-fleet-dashboard--notify-message descriptor)))
     (message "%s" msg)
     (when (fboundp 'notifications-notify)
       (ignore-errors
