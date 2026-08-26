@@ -378,6 +378,7 @@ it yet."
               ((symbol-function 'y-or-n-p)
                (lambda (&rest _) confirm))
               ((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+              ((symbol-function 'pop-to-buffer) (lambda (&rest _) nil))
               ((symbol-function 'herdr-request)
                (lambda (method &optional params &rest _)
                  (push (list method params) calls)
@@ -396,6 +397,8 @@ it yet."
       (call-interactively #'agent-fleet-switch)
       (let ((current-prefix-arg '(4)))
         (call-interactively #'agent-fleet-list))
+      (when (get-buffer "*Agent Fleet List*")
+        (kill-buffer "*Agent Fleet List*"))
       (setq confirm nil)
       (should-error (call-interactively #'agent-fleet-kill) :type 'user-error)
       (should-not (member "pane.close" (mapcar #'car calls)))
@@ -431,6 +434,32 @@ it yet."
             (should (equal "interactive output" (buffer-string)))))
       (when (get-buffer buf-name) (kill-buffer buf-name)))))
 
+
+(ert-deftest agent-fleet-interactive-list-buffer ()
+  "List shows the cached agents in a read-only tabulated table.
+Mirrors `agent-fleet-interactive-output-viewer': `pop-to-buffer' is stubbed
+so no window opens in batch, but the `get-buffer-create'd buffer is live
+for content/mode assertions.  `tabulated-list-mode' derives from
+`special-mode', so the buffer is read-only and `q' quits.  The canned
+session holds one agent (w1:p1/`arch'/claude/`working' in workspace `w1'),
+so the table shows one row whose cells include those fields."
+  (let* ((herdr-model--cache (agent-fleet-interactive-test--session))
+         (buf-name "*Agent Fleet List*"))
+    (unwind-protect
+        (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+                  ((symbol-function 'pop-to-buffer) (lambda (&rest _) nil)))
+          (call-interactively #'agent-fleet-list)
+          (with-current-buffer buf-name
+            (should buffer-read-only)
+            (should (derived-mode-p 'special-mode))
+            (should (eq 'quit-window
+                        (lookup-key (current-local-map) (kbd "q"))))
+            (let ((s (buffer-string)))
+              (should (string-match-p "arch" s))
+              (should (string-match-p "claude" s))
+              (should (string-match-p "working" s))
+              (should (string-match-p "w1" s)))))
+      (when (get-buffer buf-name) (kill-buffer buf-name)))))
 
 ;;; --- Project/worktree/Magit -----------------------------------------
 
