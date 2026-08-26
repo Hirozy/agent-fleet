@@ -61,12 +61,19 @@
 (require 'cl-lib)
 (require 'subr-x)
 (require 'agent-fleet)
+(require 'transient)
 
 ;; ghostel is an optional backend: declare its public entry
 ;; point so the byte-compiler does not warn, without forcing a top-level
 ;; `require'.  `ghostel-exec' is what `--spawn' calls; the working-module
 ;; probe lives in `agent-fleet-attach--ghostel-ready-p'.
 (declare-function ghostel-exec "ghostel" (buffer program &optional args))
+;; Optional-leaf current-agent actions (autoloaded; loaded on demand by the
+;; leaf commands below).  Declared here so `agent-fleet-attach' byte-compiles
+;; without a top-level `require' of these leaves.
+(declare-function agent-fleet-magit-diff "agent-fleet-magit" (target))
+(declare-function agent-fleet-magit-status "agent-fleet-magit" (target))
+(declare-function agent-fleet-worktree-status "agent-fleet-worktree" (target))
 ;; Optional evil-escape dependency.  Its global pre-command hook consults
 ;; this variable dynamically, so a buffer-local value can safely protect an
 ;; attach terminal without loading evil-escape or changing the user's global
@@ -212,17 +219,20 @@ disambiguated/old-name attach can be duplicated under a new base name."
    (buffer-list)))
 
 (defun agent-fleet-attach--prepare-buffer (buffer &optional pane-id)
-  "Apply attach-specific input safeguards to BUFFER and return it.
+  "Apply attach-specific input safeguards and action keymap to BUFFER.
 BUFFER may be a buffer or its name.  The terminal backend must initialize its
 major mode before this runs, because changing major mode clears buffer-local
-variables."
+variables.  When PANE-ID is non-nil, owns it buffer-locally; either way,
+enables `agent-fleet-attach-mode' so the `C-c C-a' prefix keys act on the
+pane id owned by this buffer.  Returns BUFFER."
   (when-let* ((buf (get-buffer buffer)))
     (with-current-buffer buf
       (when pane-id
         (setq-local agent-fleet-attach-pane-id pane-id))
       (if agent-fleet-attach-inhibit-evil-escape
           (setq-local evil-escape-inhibit t)
-        (kill-local-variable 'evil-escape-inhibit)))
+        (kill-local-variable 'evil-escape-inhibit))
+      (agent-fleet-attach-mode 1))
     buf))
 
 
@@ -317,6 +327,160 @@ user's own terminal."
          "No Emacs terminal backend found (install ghostel).  \
 Run in your terminal: herdr agent attach %s%s"
          pane-id (if takeover " --takeover" ""))))))
+
+;;; --- Current-agent actions (attach buffer keymap + transient) -------
+;;
+;; An attach buffer already owns the pane id it drives
+;; (`agent-fleet-attach-pane-id').  These leaf commands act on that agent
+;; directly -- no `agent-fleet--read-agent-name' selection prompt -- mirroring
+;; the dashboard at-point commands (agent-fleet-dashboard.el) but scoped to
+;; the buffer's own agent.  They live under a `C-c C-a' prefix: ghostel
+;; reserves plain keys for the PTY in char mode, and `C-c' is in
+;; `ghostel-keymap-exceptions' so it reaches Emacs; the prefix avoids
+;; ghostel's own `C-c C-c' and `C-c C-z'.
+
+(defun agent-fleet-attach--current-pane-id ()
+  "Return the pane id of the agent this attach buffer is driving, or signal.
+Signals `user-error' when not in an attach buffer (no buffer-local
+`agent-fleet-attach-pane-id'), so the leaf commands fail fast instead of
+acting on nil."
+  (or agent-fleet-attach-pane-id
+      (user-error "Not in an agent-fleet attach buffer")))
+
+(defun agent-fleet-attach-inspect (&optional lines)
+  "Show the output of the agent this buffer drives, as a read snapshot.
+Acts on the agent whose terminal this buffer drives
+(`agent-fleet-attach-pane-id'), so no selection prompt is needed.  With a
+prefix arg, prompt for the line count; otherwise the default
+`agent-fleet-default-read-lines' is used.  Delegates to
+`agent-fleet-show-output'."
+  (interactive "P")
+  (let ((pane-id (agent-fleet-attach--current-pane-id)))
+    (agent-fleet-show-output pane-id
+                             (and lines
+                                  (read-number "Lines: "
+                                               agent-fleet-default-read-lines)))))
+
+(defun agent-fleet-attach-prompt ()
+  "Send a one-shot prompt to the agent this buffer drives.
+Reads the text with `read-string' and sends it via `agent-fleet-prompt'.
+Acts on the pane id owned by this buffer, so no selection prompt is needed."
+  (interactive)
+  (let ((pane-id (agent-fleet-attach--current-pane-id))
+        (text (read-string "Prompt: ")))
+    (unless (string-empty-p text)
+      (agent-fleet-prompt pane-id text))))
+
+(defun agent-fleet-attach-send-keys ()
+  "Send key notation to the agent this buffer drives.
+Reads a key string (such as \"ctrl+c\", \"enter\", or \"esc\") and delegates
+to `agent-fleet-send-keys'.  Acts on the pane id owned by this buffer, so
+no selection prompt is needed."
+  (interactive)
+  (let ((pane-id (agent-fleet-attach--current-pane-id))
+        (keys (read-string "Keys: ")))
+    (unless (string-empty-p keys)
+      (agent-fleet-send-keys pane-id keys))))
+
+(defun agent-fleet-attach-interrupt ()
+  "Send Ctrl-C to the agent this buffer drives.
+Delegates to `agent-fleet-interrupt'.  Acts on the pane id owned by this
+buffer, so no selection prompt is needed."
+  (interactive)
+  (agent-fleet-interrupt (agent-fleet-attach--current-pane-id)))
+
+(defun agent-fleet-attach-kill ()
+  "Kill the agent this buffer drives by closing its pane.
+Asks for confirmation first, then delegates to `agent-fleet-kill'.  Acts on
+the pane id owned by this buffer, so no selection prompt is needed."
+  (interactive)
+  (let ((pane-id (agent-fleet-attach--current-pane-id)))
+    (when (y-or-n-p (format "Kill agent %s? " pane-id))
+      (agent-fleet-kill pane-id))))
+
+(defun agent-fleet-attach-rename ()
+  "Rename the agent this buffer drives.
+Reads the new name with `read-string' (defaulting to the current display
+name) and delegates to `agent-fleet-rename'.  Acts on the pane id owned by
+this buffer, so no selection prompt is needed."
+  (interactive)
+  (let* ((pane-id (agent-fleet-attach--current-pane-id))
+         (cur (let ((a (agent-fleet--find-agent pane-id)))
+                (or (and a (herdr-agent-display-name a)) pane-id)))
+         (name (read-string "New name: " cur)))
+    (unless (or (null name) (string-empty-p name))
+      (agent-fleet-rename pane-id name))))
+
+(defun agent-fleet-attach-diff ()
+  "Show the working-tree diff of the agent this buffer drives.
+Delegates to `agent-fleet-magit-diff' (Magit optional).  Acts on the pane
+id owned by this buffer, so no selection prompt is needed."
+  (interactive)
+  (require 'agent-fleet-magit nil t)
+  (agent-fleet-magit-diff (agent-fleet-attach--current-pane-id)))
+
+(defun agent-fleet-attach-magit ()
+  "Open Magit status for the agent this buffer drives.
+Delegates to `agent-fleet-magit-status' (Magit optional).  Acts on the pane
+id owned by this buffer, so no selection prompt is needed."
+  (interactive)
+  (require 'agent-fleet-magit nil t)
+  (agent-fleet-magit-status (agent-fleet-attach--current-pane-id)))
+
+(defun agent-fleet-attach-worktree ()
+  "Show the worktree status for the agent this buffer drives.
+Delegates to `agent-fleet-worktree-status'.  Acts on the pane id owned by
+this buffer, so no selection prompt is needed."
+  (interactive)
+  (require 'agent-fleet-worktree nil t)
+  (agent-fleet-worktree-status (agent-fleet-attach--current-pane-id)))
+
+(transient-define-prefix agent-fleet-attach-menu ()
+  "Act on the agent this attach buffer is driving.
+Each entry acts on the pane id owned by this buffer
+(`agent-fleet-attach-pane-id'), so no selection prompt is needed.  Bound to
+`C-c C-a h' or `C-c C-a ?' in attach buffers."
+  [["Agent"
+    ("o" "Inspect output"     agent-fleet-attach-inspect)
+    ("s" "Prompt"             agent-fleet-attach-prompt)
+    ("k" "Send keys"          agent-fleet-attach-send-keys)
+    ("i" "Interrupt"          agent-fleet-attach-interrupt)
+    ("x" "Kill"               agent-fleet-attach-kill)
+    ("r" "Rename"             agent-fleet-attach-rename)]
+   ["Repo"
+    ("d" "Working-tree diff"  agent-fleet-attach-diff)
+    ("m" "Magit status"       agent-fleet-attach-magit)
+    ("w" "Worktree status"    agent-fleet-attach-worktree)]])
+
+(defvar-keymap agent-fleet-attach-mode-map
+  :doc "Keymap for `agent-fleet-attach-mode', active in attach buffers.
+Keys live under the `C-c C-a' prefix: ghostel reserves plain keys for the
+PTY in char mode, and `C-c' is in `ghostel-keymap-exceptions' so it reaches
+Emacs.  The prefix avoids ghostel's own `C-c C-c' and `C-c C-z'."
+  "C-c C-a o" #'agent-fleet-attach-inspect
+  "C-c C-a s" #'agent-fleet-attach-prompt
+  "C-c C-a k" #'agent-fleet-attach-send-keys
+  "C-c C-a i" #'agent-fleet-attach-interrupt
+  "C-c C-a x" #'agent-fleet-attach-kill
+  "C-c C-a r" #'agent-fleet-attach-rename
+  "C-c C-a d" #'agent-fleet-attach-diff
+  "C-c C-a m" #'agent-fleet-attach-magit
+  "C-c C-a w" #'agent-fleet-attach-worktree
+  "C-c C-a h" #'agent-fleet-attach-menu
+  "C-c C-a ?" #'agent-fleet-attach-menu)
+
+(define-minor-mode agent-fleet-attach-mode
+  "Act on the agent this attach terminal drives, without a selection prompt.
+When on, `C-c C-a' prefix keys act on the agent whose pane id is
+`agent-fleet-attach-pane-id' -- the agent you are currently driving -- so
+inspect output, prompt, send keys, interrupt, kill, rename, diff, magit,
+and worktree status all skip the `agent-fleet--read-agent-name' listing.
+`C-c C-a h' (or `?') opens a transient menu of the same actions.  This is a
+buffer-local minor mode, enabled by `agent-fleet-attach--prepare-buffer'; it
+is never global, so it adds no keys outside attach buffers."
+  :init-value nil
+  :lighter " Fleet"
+  :keymap agent-fleet-attach-mode-map)
 
 (provide 'agent-fleet-attach)
 ;;; agent-fleet-attach.el ends here
