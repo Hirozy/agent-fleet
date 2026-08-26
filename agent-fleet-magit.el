@@ -24,8 +24,8 @@
 
 ;; The Magit layer.  Opens Magit's own status /
 ;; diff buffers scoped to an agent's checkout — it does NOT reinvent a diff
-;; or cherry-pick UI ( "不需要重新发明 diff viewer";  "尽量全部调用
-;; Magit public API").  Cherry-pick, merge, and worktree deletion are reached
+;; or cherry-pick UI, and uses Magit's public API throughout.  Cherry-pick,
+;; merge, and worktree deletion are reached
 ;; via Magit's own keys inside the status buffer opened by `m'.
 ;;
 ;; Two entry points, wired to the dashboard `m' / `d' keys:
@@ -85,8 +85,8 @@ is inside a worktree, the root is that worktree's root; for a bare agent
 it is the main repo root.  Resolution is by canonical cwd
 (`agent-fleet-project-root-for-cwd'), reusing its nil/empty/
 non-existent-cwd guards.  When the agent has no usable cwd but a worktree
-is cached, the worktree path is the fallback ( \"open agent
-worktree in Magit\").  Returns nil if no directory is reachable."
+is cached, the worktree path is the fallback.  Returns nil if no directory
+is reachable."
   (when-let* ((a (agent-fleet--find-agent agent)))
     (or (agent-fleet-magit--checkout-root-for-cwd (herdr-agent-cwd a))
         (when-let* ((wt (agent-fleet--worktree-for-agent a))

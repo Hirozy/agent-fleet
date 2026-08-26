@@ -348,7 +348,21 @@ variable marker."
     (should (equal 'pi-agent (cdr (assoc "pi" choices #'equal))))
     ;; The candidate labels shown to the user are executable names, never
     ;; the internal kind symbols.
-    (should-not (member "pi-agent" (mapcar #'car choices)))))
+    (should-not (member "pi-agent" (mapcar #'car choices))))
+  ;; Executable customization must not silently change the protocol kind.
+  (let ((agent-fleet-agent-executables
+         '((claude "/opt/local/claude-wrapper" "Claude Code"))))
+    (should (equal "claude" (agent-fleet--kind-wire-name 'claude)))))
+
+(ert-deftest agent-fleet-start-pi-agent-uses-pi-wire-kind ()
+  "The internal `pi-agent' alias never reaches `agent.start' or auto names."
+  (with-agent-fleet-mock path server
+    (let* ((agent (agent-fleet-start 'pi-agent))
+           (params (agent-fleet-test--last-request server "agent.start")))
+      (should (equal "pi" (plist-get params :kind)))
+      (should (equal "pi" (herdr-agent-agent agent)))
+      (should (string-prefix-p "pi-" (herdr-agent-name agent)))
+      (should-not (string-prefix-p "pi-agent-" (herdr-agent-name agent))))))
 
 (ert-deftest agent-fleet-start-interactive-picks-workspace-and-opens-tab ()
   "An interactive start always prompts for the workspace (manual selection

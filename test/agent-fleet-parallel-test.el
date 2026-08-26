@@ -30,7 +30,8 @@
 (defun agent-fleet-parallel-test--prompt-working-only (params)
   "Mock agent.prompt that transitions to `working' and STAYS there.
 The default mock goes idle->working->done in one step, which hides the
- behavior (one agent done while another runs).  This variant leaves
+important behavior where one agent is done while another still runs.  This
+variant leaves
 the agent `working' so a test can finish agents one at a time."
   (let* ((server herdr-mock--current)
          (target (plist-get params :target))
@@ -70,7 +71,7 @@ later server."
 Each spec yields its own worktree.create + agent.start + agent.prompt; the
 agents get distinct worktrees; the returned task is `running' before any
 status event lands (agents are cached `idle' from the eager start upsert,
-and the prompt's status events stay queued until a pump — )."
+and the prompt's status events stay queued until a pump)."
   (with-agent-fleet-mock path server
     ;; Working-only prompt: the default mock goes idle->working->done in one
     ;; step, and `herdr-request''s pump drains those done events during the

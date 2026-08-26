@@ -44,8 +44,8 @@
 ;; (`:worktree t') is forwarded to `agent-fleet-start'.
 ;;
 ;; The workspace *label* is intentionally not set on creation: the
-;; `workspace.create' label param is undocumented, and forbids relying on
-;; labels anyway.  Project identity comes from agent cwd, not workspace label.
+;; `workspace.create' label param is undocumented, and labels are not used for
+;; identity anyway.  Project identity comes from agent cwd, not workspace label.
 
 ;;; Code:
 
@@ -63,7 +63,7 @@
 For a normal checkout, `git rev-parse --git-common-dir' yields ROOT/.git;
 for a linked worktree it yields that same directory in the primary checkout.
 Mapping both to ROOT makes all worktrees of one repository share the project
-identity required by   Non-standard separate git-dir layouts fall
+identity.  Non-standard separate git-dir layouts fall
 back to `project.el' rather than guessing."
   (when (and (executable-find "git") (file-directory-p dir))
     (let ((default-directory (file-name-as-directory (file-truename dir))))
