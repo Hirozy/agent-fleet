@@ -24,7 +24,7 @@
 
 ;; The parallel-orchestration layer.  Spawns N
 ;; isolated worktree agents, sends each its own prompt, and tracks their
-;; aggregate status live from the event bus — the package's core value (§37).
+;; aggregate status live from the event bus — the package's core value.
 ;;
 ;;   (agent-fleet-parallel
 ;;    '((claude . "Analyze architecture")
@@ -33,24 +33,24 @@
 ;;    :title "auth-refactor" :cwd "~/src/myapp")
 ;;
 ;; Requirements honored:
-;;   §38  NOT a race: no agent is killed when the first one finishes.  The
+;;     NOT a race: no agent is killed when the first one finishes.  The
 ;;        task is `done' only when ALL agents are done.
-;;   §40  NO result extraction.  Agents are persistent interactive workers,
+;;     NO result extraction.  Agents are persistent interactive workers,
 ;;        not RPC functions; `agent.read' is terminal state, never a
 ;;        structured final answer.  `task-wait' returns the task model only.
-;;   §25  no timer polling.  `task-wait' pumps `accept-process-output'
+;;     no timer polling.  `task-wait' pumps `accept-process-output'
 ;;        (event-driven I/O, like `agent-fleet-wait'); aggregate status is
 ;;        driven by the status-changed hook, never a timer.
-;;   §72  separate worktrees, independent names, parallel prompt, aggregate
+;;     separate worktrees, independent names, parallel prompt, aggregate
 ;;        status.
 ;;
 ;; Parallel execution is free: `agent-fleet-prompt' blocks only on the submit
 ;; *ack*, not on agent completion, so N serial prompts yield N agents working
 ;; concurrently.  This layer adds the task model + aggregate tracking on top
-;; of the Phase 2/5 primitives (`agent-fleet-start :worktree t',
+;; of the primitives (`agent-fleet-start :worktree t',
 ;; `agent-fleet-prompt', the status hook bus).  It adds no wire protocol.
 ;;
-;; Task ≠ Herdr agent (§41): an agent can run many tasks; this is fleet-side
+;; Task ≠ Herdr agent: an agent can run many tasks; this is fleet-side
 ;; metadata, kept in a registry here, not on the Herdr-mirrored agent struct.
 ;;
 ;; The package entry point loads this feature module through the dashboard
@@ -66,9 +66,9 @@
 (require 'agent-fleet-worktree)
 
 
-;;; --- Task model (§41) -----------------------------------------------
+;;; --- Task model -----------------------------------------------
 
-;; Deviation from the §41 sketch: no `state' slot.  cl-defstruct would
+;; Deviation from the sketch: no `state' slot.  cl-defstruct would
 ;; generate an `agent-fleet-task-state' accessor that clashes with the
 ;; live-compute function below; a stored slot would also go stale the moment
 ;; an agent's status changed between hook fires.  Instead `agent-fleet-task-
@@ -121,7 +121,7 @@ misrepresenting a metadata change as an agent status transition.")
     (agent-fleet-task-find task-id)))
 
 
-;;; --- Aggregate state (live, §72) ------------------------------------
+;;; --- Aggregate state (live) ------------------------------------
 
 (defun agent-fleet-task-state (task)
   "Return TASK's aggregate state: `done', `failed', `blocked', or `running'.
@@ -129,7 +129,7 @@ misrepresenting a metadata change as an agent status transition.")
 missing agent is `failed', not successful: it may have crashed, been killed,
 or disappeared while the client was disconnected.  Once FINISHED-AT records a
 real all-done transition, later pane cleanup does not retroactively fail the
-completed task.  Per §38 one agent finishing never completes the whole task."
+completed task.  One agent finishing never completes the whole task."
   (if (agent-fleet-task-finished-at task)
       'done
     (let* ((agents (agent-fleet-task-agents task))
@@ -155,14 +155,14 @@ Reads the live cache; an exited/missing agent shows as `failed'."
           (agent-fleet-task-agents task)))
 
 
-;;; --- Parallel spawn + prompt (§72) ----------------------------------
+;;; --- Parallel spawn + prompt ----------------------------------
 
 ;;;###autoload
 (cl-defun agent-fleet-parallel (specs &key title cwd branch base focus)
   "Spawn N isolated worktree agents and prompt each in parallel.
 SPECS is an alist (kind . prompt) — each agent gets its own prompt.  KIND is
 a symbol or string (`claude'/`codex'/`pi'/...).  Each agent is started in its
-own git worktree (`:worktree t', Phase 5) with an independent name, then
+own git worktree (`:worktree t') with an independent name, then
 prompted.  Parallel EXECUTION is automatic: `agent-fleet-prompt' blocks only
 on the submit ack, so the N agents work concurrently after this returns.
 
@@ -175,7 +175,7 @@ Herdr decide); FOCUS focuses each new workspace.
 Returns the `agent-fleet-task' struct (state `running').  The task's
 aggregate state is tracked live by the status-changed hook; call
 `agent-fleet-task-wait' to block until it settles, or watch the dashboard
-`T' filter.  Per §38 no agent is killed on first `done'.  A per-agent spawn
+`T' filter.  No agent is killed on first `done'.  A per-agent spawn
 failure is caught and reported; the task records the agents that did launch."
   (interactive
    (let* ((title (read-string "Task title: "))
@@ -251,7 +251,7 @@ failure is caught and reported; the task records the agents that did launch."
         task)))))
 
 
-;;; --- Wait (§38/§25) --------------------------------------------------
+;;; --- Wait --------------------------------------------------
 
 (defun agent-fleet-parallel--normalize-until (until)
   "Normalize UNTIL to status SYMBOLS (default `(done blocked failed)').
@@ -280,14 +280,14 @@ done, any blocked, or an agent disappeared); that settled set is the default.
 TIMEOUT-MS bounds the wait (default `agent-fleet-wait-timeout-ms').
 
 Waits in PARALLEL (wall-clock = slowest agent, not the sum): the loop pumps
-`accept-process-output' — event-driven I/O, NOT timer polling (§25, same
+`accept-process-output' — event-driven I/O, NOT timer polling (same
 pattern as `agent-fleet-wait') — so the live cache updates via status events
-and `agent-fleet-task-state' reads fresh each iteration.  Per §38 a single
+and `agent-fleet-task-state' reads fresh each iteration.  A single
 agent finishing early does NOT end the wait (it ends only when the task as a
 whole reaches an `until' state).
 
 Returns TASK (its state is now terminal, or whatever it reached at timeout).
-NO result extraction (§40): returns task metadata only, never agent output — use
+NO result extraction: returns task metadata only, never agent output — use
 `agent-fleet-read' separately to inspect a finished agent."
   (interactive
    (list (or (agent-fleet-task-for-agent
@@ -297,19 +297,19 @@ NO result extraction (§40): returns task metadata only, never agent output — 
          (deadline (+ (float-time) (/ timeout-ms 1000.0))))
     (while (and (not (memq (agent-fleet-task-state task) until-syms))
                 (< (float-time) deadline))
-      ;; Event-driven I/O pump (§25): drain pending process events so the
+      ;; Event-driven I/O pump: drain pending process events so the
       ;; cache + hooks advance; nil proc = any process.  Short slice so the
       ;; state check re-runs promptly.
       (accept-process-output nil 0.05))
     task))
 
 
-;;; --- Cleanup (§71 delete finished worktrees) ------------------------
+;;; --- Cleanup (delete finished worktrees) ------------------------
 
 ;;;###autoload
 (defun agent-fleet-task-cleanup (task &optional no-confirm)
   "Remove the worktrees of TASK's agents, then drop the task.
-Delegates per-agent to `agent-fleet-worktree-remove' (Phase 5: issues
+Delegates per-agent to `agent-fleet-worktree-remove' (which issues
 `worktree.remove' + eager cache removal).  By default only finished (`done')
 tasks are cleaned; a non-`done' task prompts to confirm removing live agents'
 worktrees.  NO-CONFIRM (prefix arg) skips every prompt.  Returns the number

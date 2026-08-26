@@ -2,8 +2,8 @@
 
 ;; Copyright (C) 2026  agent-fleet contributors
 
-;; Phase 8 tests: the backend abstraction (readiness/preference/fallback
-;; to a nil pick when no backend is ready), the §45.1 stale-module guard,
+;; Tests: the backend abstraction (readiness/preference/fallback
+;; to a nil pick when no backend is ready), the stale-module guard,
 ;; argv + buffer-name, target resolution, live-buffer reuse, the
 ;; per-backend spawn dispatch, and the dashboard `a' key wiring.  ghostel
 ;; are NOT required — they are stubbed via `cl-letf', mirroring how
@@ -43,7 +43,7 @@ program `herdr' is prepended by the backend launch, not by `--argv'."
                    (agent-fleet-attach--buffer-name "arch")))))
 
 
-;;; --- Backend readiness: the §45.1 stale-module guard ----------------
+;;; --- Backend readiness: the stale-module guard ----------------
 
 (ert-deftest agent-fleet-attach-ghostel-ready-p-rejects-stale-module ()
   "ghostel's lisp can `require' successfully while its dynamic module does
@@ -103,7 +103,7 @@ non-nil — `auto' picks ghostel (native libghostty-vt, fastest)."
 
 (ert-deftest agent-fleet-attach-auto-prefers-ghostel-when-ready ()
   "With ghostel's module working, `auto' picks ghostel
-(highest rendering fidelity, §45.1)."
+(highest rendering fidelity)."
   (let ((agent-fleet-attach-backend 'auto))
     (cl-letf (((symbol-function 'agent-fleet-attach--ghostel-ready-p)
                (lambda () t)))
@@ -112,7 +112,7 @@ non-nil — `auto' picks ghostel (native libghostty-vt, fastest)."
 (ert-deftest agent-fleet-attach-auto-with-no-backend-reports-command ()
   "With no Emacs backend ready, `auto' picks nil and the attach command
 `user-error's with the `herdr agent attach' command text so the user can
-run it in their own terminal (§44 path C)."
+run it in their own terminal (path C)."
   (let ((agent-fleet-attach-backend 'auto))
     (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
               ((symbol-function 'agent-fleet--find-agent)

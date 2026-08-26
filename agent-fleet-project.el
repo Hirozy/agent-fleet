@@ -23,28 +23,28 @@
 ;;; Commentary:
 
 ;; The project-integration layer.  Maps Herdr-managed
-;; agents to Emacs `project.el' projects by **canonical cwd** (§31/§32:
+;; agents to Emacs `project.el' projects by **canonical cwd**:
 ;; "不要仅通过 label 判断" — do not judge by workspace label alone; match by
-;; `file-truename (project-root ...)`), and lets the user start/list agents
+;; `file-truename (project-root ...)`, and lets the user start/list agents
 ;; scoped to the current project.
 ;;
 ;; Design rules honored:
-;;   §31  prefer `project.el' over Projectile; use `project-current'/`project-root'.
+;;     prefer `project.el' over Projectile; use `project-current'/`project-root'.
 ;;        Default mapping: one Emacs project ↔ one Herdr workspace.
-;;   §32  match by canonical cwd; allow multiple workspaces per repo (worktrees,
+;;     match by canonical cwd; allow multiple workspaces per repo (worktrees,
 ;;        investigation workspaces).  No label-based matching, no stale table —
 ;;        the association is *derived* from agent cwds each time.
-;;   §69  deliverables: project.el + cwd↔workspace + project-scoped dashboard,
+;;     deliverables: project.el + cwd↔workspace + project-scoped dashboard,
 ;;        plus commands `agent-fleet-start-for-project' and
 ;;        `agent-fleet-project-agents'.
 ;;
-;; This is a thin layer over the Phase 2 control commands (`agent-fleet-start')
-;; and the Phase 1 model accessors (`herdr-agents', `herdr-agent-cwd',
+;; This is a thin layer over the control commands (`agent-fleet-start')
+;; and the model accessors (`herdr-agents', `herdr-agent-cwd',
 ;; `herdr-agent-workspace-id').  It adds no wire protocol.  Worktree isolation
-;; (`:worktree t', Phase 5 §70/§33/§34) is forwarded to `agent-fleet-start'.
+;; (`:worktree t') is forwarded to `agent-fleet-start'.
 ;;
 ;; The workspace *label* is intentionally not set on creation: the
-;; `workspace.create' label param is undocumented, and §32 forbids relying on
+;; `workspace.create' label param is undocumented, and forbids relying on
 ;; labels anyway.  Project identity comes from agent cwd, not workspace label.
 
 ;;; Code:
@@ -63,7 +63,7 @@
 For a normal checkout, `git rev-parse --git-common-dir' yields ROOT/.git;
 for a linked worktree it yields that same directory in the primary checkout.
 Mapping both to ROOT makes all worktrees of one repository share the project
-identity required by §32.  Non-standard separate git-dir layouts fall
+identity required by   Non-standard separate git-dir layouts fall
 back to `project.el' rather than guessing."
   (when (and (executable-find "git") (file-directory-p dir))
     (let ((default-directory (file-name-as-directory (file-truename dir))))
@@ -126,7 +126,7 @@ Returns nil when PROJECT-OR-ROOT is nil."
 (defun agent-fleet-project-label (agent)
   "Return a Project label for AGENT.
 Prefers the canonical project-root basename, then the cwd basename, then
-\"—\".  Keeps the Phase 3 fallback shape so non-repo dirs still label by
+\"—\".  Keeps the fallback shape so non-repo dirs still label by
 cwd basename (e.g. \"/tmp/demo\" -> \"demo\")."
   (let ((root (agent-fleet-project-for-agent agent)))
     (cond
@@ -157,7 +157,7 @@ when not connected or when PROJECT resolves to no root."
 
 (defun agent-fleet--workspace-for-root (root)
   "Return a workspace id hosting an agent whose project root is ROOT, or nil.
-Used to co-locate a project's agents in one workspace (§31: one
+Used to co-locate a project's agents in one workspace (one
 project ↔ one workspace, by default).  Returns the first match."
   (cl-loop for a in (herdr-agents)
            when (equal (agent-fleet-project-for-agent a) root)

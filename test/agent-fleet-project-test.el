@@ -2,9 +2,9 @@
 
 ;; Copyright (C) 2026  agent-fleet contributors
 
-;; Phase 4 tests: project.el root resolution (canonical cwd, §32), the
+;; Tests: project.el root resolution (canonical cwd), the
 ;; project label/column, project-scoped agent queries, start-for-project,
-;; and the dashboard `P' project filter (§69).
+;; and the dashboard `P' project filter.
 ;; Run:
 ;;   emacs -batch -L . -L test -l ert -l herdr -l agent-fleet \
 ;;         -l agent-fleet-project -l agent-fleet-dashboard \
@@ -55,7 +55,7 @@ The dashboard is in `*Agent Fleet*'.  Robust to sort order."
           (make-directory sub)
           (should (agent-fleet-project-root-for-cwd repo))
           (should (file-equal-p repo (agent-fleet-project-root-for-cwd repo)))
-          ;; a subdir resolves to the REPO root, not the subdir (§32: canonical cwd)
+          ;; a subdir resolves to the REPO root, not the subdir (canonical cwd)
           (should (file-equal-p repo (agent-fleet-project-root-for-cwd sub))))
       (when (file-exists-p repo) (delete-directory repo t)))))
 
@@ -93,7 +93,7 @@ The dashboard is in `*Agent Fleet*'.  Robust to sort order."
   (should-not (agent-fleet-project-root-for-cwd "/nonexistent/agent-fleet/xyz")))
 
 
-;;; --- Project label (dashboard column, §69) --------------------------
+;;; --- Project label (dashboard column) --------------------------
 
 (ert-deftest agent-fleet-project-label ()
   "Label = project-root basename, else cwd basename, else \"—\"."
@@ -117,13 +117,13 @@ The dashboard is in `*Agent Fleet*'.  Robust to sort order."
       (when (file-exists-p repo) (delete-directory repo t)))))
 
 
-;;; --- Project-scoped queries (§32: match by canonical cwd) -----------
+;;; --- Project-scoped queries (match by canonical cwd) -----------
 
 (ert-deftest agent-fleet-project-agents-filter ()
   "`agent-fleet-project-agents' returns only agents in the given project.
 Two agents in repo-a, one in repo-b; the canned w1:p1 (/tmp/demo, no
 project) is excluded from both.  Matching is by cwd, so worktree agents
-of one repo would all match (§32)."
+of one repo would all match."
   (let ((repo-a (agent-fleet-project-test--make-git-repo))
         (repo-b (agent-fleet-project-test--make-git-repo)))
     (unwind-protect
@@ -172,12 +172,12 @@ of one repo would all match (§32)."
       (when (file-exists-p repo) (delete-directory repo t)))))
 
 
-;;; --- Start for project (§69) ----------------------------------------
+;;; --- Start for project -------------------------------------------
 
 (ert-deftest agent-fleet-start-for-project ()
   "Start an agent for a project: it starts at the project root and is
 project-associated.  Reuses the focused workspace when no project agent
-exists yet (§31: one project ↔ one workspace), so no workspace.create."
+exists yet (one project ↔ one workspace), so no workspace.create."
   (let ((repo (agent-fleet-project-test--make-git-repo)))
     (unwind-protect
         (with-agent-fleet-mock path server
@@ -194,7 +194,7 @@ exists yet (§31: one project ↔ one workspace), so no workspace.create."
       (when (file-exists-p repo) (delete-directory repo t)))))
 
 
-;;; --- Dashboard: real Project column + P filter (§69) ----------------
+;;; --- Dashboard: real Project column + P filter -------------------
 
 (ert-deftest agent-fleet-dashboard-project-column-real ()
   "The Project column shows the project-root basename for a repo agent."

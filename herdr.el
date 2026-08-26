@@ -30,7 +30,7 @@
 ;;   herdr-model.el      snapshot/event cache
 ;;   herdr-events.el     subscription logic + local event bus
 ;;
-;; The connection flow mirrors docs/PROTOCOL.md §9:
+;; The connection flow mirrors docs/PROTOCOL.md :
 ;;
 ;;   discover socket -> ping (check protocol) -> session.snapshot
 ;;       -> replace cache -> events.subscribe -> live
@@ -624,7 +624,7 @@ Verifies Emacs version, the Herdr executable and server, protocol
 compatibility, the socket, schema availability, and optional
 features (Magit, Eat).  Does NOT inspect agents or integrations beyond
 what `ping' reports; see `agent-fleet-doctor' for the full agent
-diagnostic (Phase 2)."
+diagnostic."
   (interactive)
   (herdr--doctor-render (herdr--doctor-checks)
                         "*herdr-doctor*" "Herdr Doctor"))

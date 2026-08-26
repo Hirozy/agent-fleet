@@ -31,17 +31,17 @@
 ;; The `:worktree t' start flow itself lives in `agent-fleet-start'
 ;; (`agent-fleet--provision-worktree'); this file provides the surrounding
 ;; list / open / remove / status commands.  It is a thin layer over the
-;; Phase 1 RPCs (`herdr-request') and the Phase 1 model accessors
+;; RPCs (`herdr-request') and the model accessors
 ;; (`herdr-model-worktrees', `herdr-model-find-worktree-for-workspace',
 ;; `herdr-model-upsert-worktree').  It adds no wire protocol.
 ;;
 ;; Design rules honored:
-;;   §25  no polling.  `worktree.list' is called only on user action
+;;     no polling.  `worktree.list' is called only on user action
 ;;        (a command or the dashboard `w' key), never on a timer.
-;;   §33  worktree.create/open/remove are the worktree RPCs.
-;;   §34  worktree isolation: an agent started with `:worktree t' works in
+;;     worktree.create/open/remove are the worktree RPCs.
+;;     worktree isolation: an agent started with `:worktree t' works in
 ;;        its own checkout.
-;;   §46/§23  the status view shows worktree METADATA only (path/branch/
+;;     the status view shows worktree METADATA only (path/branch/
 ;;        repo); no pane output is ever persisted or mirrored.
 ;;
 ;; The package entry point loads this feature module through the dashboard
@@ -65,7 +65,7 @@ CWD, when non-empty, scopes the query to the repo at that path (otherwise
 all known worktrees are listed).  Returns a cons (STRUCTS . SOURCE):
 STRUCTS is the list of parsed worktree structs now in the cache, and
 SOURCE is the `WorktreeSourceInfo' plist (repo metadata) or nil.
-User-initiated (never a timer; §25)."
+User-initiated (never a timer; )."
   (let* ((res (herdr-request "worktree.list"
                              (if (and cwd (not (string-empty-p cwd)))
                                  `(("cwd" . ,cwd))
@@ -92,7 +92,7 @@ User-initiated (never a timer; §25)."
 With a prefix arg, prompt for a repo CWD to scope the query; otherwise
 list all known worktrees.  Each result is upserted into the cache — the
 only way to seed worktree state besides events (user-initiated, not
-polling; §25).  Returns the worktree structs.  When called
+polling; ).  Returns the worktree structs.  When called
 interactively, messages the count and paths."
   (interactive
    (list (when current-prefix-arg
@@ -165,7 +165,7 @@ workspaces are deliberately excluded: `worktree.remove' is invalid for them."
 
 ;;;###autoload
 (defun agent-fleet-worktree-remove (workspace-id &optional force)
-  "Remove the worktree hosted by WORKSPACE-ID via `worktree.remove' (§33).
+  "Remove the worktree hosted by WORKSPACE-ID via `worktree.remove'.
 FORCE (prefix arg, interactively) removes the worktree even if it has
 uncommitted changes.  The worktree is removed from the cache eagerly; the
 pushed `worktree_removed' event also removes it.  Returns the RPC result."
@@ -244,8 +244,8 @@ is a `WorktreeSourceInfo' plist or nil."
   "Show the worktree for TARGET's workspace (the dashboard `w' action).
 TARGET is an agent name, pane id, symbol, or `herdr-agent' struct.
 Displays the worktree path/branch/repo/metadata read-only
-(§46/§23: no pane output is persisted).  Refreshes worktree state from
-`worktree.list' on each call (user-initiated, never a timer; §25), so the
+(no pane output is persisted).  Refreshes worktree state from
+`worktree.list' on each call (user-initiated, never a timer), so the
 status reflects the live worktree set and repo source.
 Returns the worktree struct, or nil and messages when no worktree is open
 for the workspace."
@@ -270,7 +270,7 @@ for the workspace."
       nil)))
 
 
-;;; --- Cleanup (§71: delete finished worktrees) -----------------------
+;;; --- Cleanup (delete finished worktrees) -----------------------
 
 ;;;###autoload
 (defun agent-fleet-worktree-cleanup (&optional no-confirm)

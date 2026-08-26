@@ -2,7 +2,7 @@
 
 ;; Copyright (C) 2026  agent-fleet contributors
 
-;; Phase 6 tests: Magit root resolution, the availability guard, and the
+;; Tests: Magit root resolution, the availability guard, and the
 ;; status/diff commands' wiring (Magit stubbed — it need not be installed),
 ;; plus the worktree-cleanup batch command.  Run:
 ;;   emacs -batch -L . -L test -l ert -l herdr -l agent-fleet \
@@ -91,7 +91,7 @@ worktree root; here a plain repo cwd returns the repo root."
 
 (ert-deftest agent-fleet-magit-root-worktree-fallback ()
   "An agent with no usable cwd but a cached worktree falls back to the
-worktree path (§36 \"open agent worktree in Magit\").  A non-existent
+worktree path ( \"open agent worktree in Magit\").  A non-existent
 worktree path yields nil."
   (let* ((real-dir (make-temp-file "af-magit-wt-" t))
          (session (herdr-model--empty-session))
@@ -129,7 +129,7 @@ worktree path yields nil."
 
 (ert-deftest agent-fleet-magit-status-errors-when-magit-absent ()
   "When Magit is not installed, `agent-fleet-magit-status' `user-error's
-clearly (Magit is an optional dependency, §55).  The guard fires
+clearly (Magit is an optional dependency).  The guard fires
 before agent resolution, so any target triggers it."
   (skip-unless (not (featurep 'magit)))
   (should-error (agent-fleet-magit-status (make-herdr-agent :id "x"))
@@ -195,7 +195,7 @@ even when Magit is available."
       (when (file-exists-p dir) (delete-directory dir t)))))
 
 
-;;; --- Worktree cleanup (§71 delete finished worktrees) ---------------
+;;; --- Worktree cleanup (delete finished worktrees) ----------------
 
 (ert-deftest agent-fleet-worktree-cleanup-removes-done-agent-worktrees ()
   "`worktree-cleanup' removes the worktrees of `done' agents (issuing
