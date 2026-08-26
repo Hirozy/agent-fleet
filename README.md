@@ -255,6 +255,30 @@ Choose a backend explicitly via `agent-fleet-attach-backend`; see
 agent-fleet reports the `herdr agent attach` command to run in your own
 terminal.
 
+### Acting on the attached agent
+
+An attach buffer already knows which agent it is driving, so once attached you
+do not need to return to the dashboard or pick from a completion listing. A
+`C-c C-a` prefix acts on the current agent directly:
+
+| Key | Action |
+|---|---|
+| `C-c C-a o` | Inspect recent output |
+| `C-c C-a d` | Open the working-tree diff (Magit) |
+| `C-c C-a m` | Open Magit status |
+| `C-c C-a w` | Show worktree status |
+| `C-c C-a s` | Send a prompt |
+| `C-c C-a k` | Send keys |
+| `C-c C-a i` | Send `Ctrl-C` |
+| `C-c C-a x` | Kill the agent |
+| `C-c C-a r` | Rename the agent |
+| `C-c C-a h` | Open the transient action menu |
+
+`C-c` passes through to Emacs in the terminal's char mode, so the prefix
+reaches Emacs rather than the PTY; `C-c C-a h` (or `?`) lists the same actions
+for discoverability. The commands are also available as `M-x
+agent-fleet-attach-*` and signal a clear error outside an attach buffer.
+
 ### Evil and evil-escape
 
 Attach buffers inhibit `evil-escape` locally by default. Some terminal modes
