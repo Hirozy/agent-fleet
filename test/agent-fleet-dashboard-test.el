@@ -2,7 +2,7 @@
 
 ;; Copyright (C) 2026  agent-fleet contributors
 
-;; Phase 3 tests: dashboard rendering, event-driven refresh, faces,
+;; Tests: dashboard rendering, event-driven refresh, faces,
 ;; column fallbacks, and notification gating.
 ;; Run:
 ;;   emacs -batch -L . -L test -l ert -l herdr -l agent-fleet \
@@ -51,8 +51,7 @@ Columns: 0 Project, 1 Agent, 2 Kind, 3 State, 4 Task."
   (with-temp-buffer
     (agent-fleet-mode)
     (should (eq #'agent-fleet-dashboard-help (key-binding (kbd "h")))))
-  (dolist (entry '(("RET" . agent-fleet-dashboard-inspect)
-                   ("o" . agent-fleet-dashboard-inspect)
+  (dolist (entry '(("o" . agent-fleet-dashboard-inspect)
                    ("s" . agent-fleet-dashboard-prompt)
                    ("i" . agent-fleet-dashboard-interrupt)
                    ("x" . agent-fleet-dashboard-kill)
@@ -64,6 +63,7 @@ Columns: 0 Project, 1 Agent, 2 Kind, 3 State, 4 Task."
                    ("d" . agent-fleet-dashboard-diff)
                    ("m" . agent-fleet-dashboard-magit)
                    ("a" . agent-fleet-dashboard-attach)
+                   ("N" . agent-fleet-dashboard-new)
                    ("q" . agent-fleet-dashboard-quit)))
     (let ((suffix (transient-get-suffix
                    'agent-fleet-dashboard-help (car entry))))
@@ -488,6 +488,41 @@ the parent's window, not the child dashboard."
     (should-not deleted)
     (should (eq current-frame 'child))))
 
+(ert-deftest agent-fleet-dashboard-new-delegates-to-start-and-closes-child ()
+  "`agent-fleet-dashboard-new' starts a new agent via `agent-fleet-start'
+(interactive dispatch, so workspace-picking and auto-attach apply), then
+closes the child dashboard on success — the same lifecycle as `a'.
+`agent-fleet-start' is stubbed with an interactive lambda so
+`call-interactively' dispatches without real prompts or RPC."
+  (let ((current-frame 'child)
+        started deleted)
+    (cl-letf (((symbol-function 'selected-frame)
+               (lambda () current-frame))
+              ((symbol-function 'frame-parameter)
+               (lambda (frame parameter)
+                 (cond
+                  ((and (eq frame 'child)
+                        (eq parameter 'agent-fleet-dashboard-display))
+                   'child-frame)
+                  ((and (eq frame 'child)
+                        (eq parameter
+                            'agent-fleet-dashboard-origin-frame))
+                   'parent))))
+              ((symbol-function 'frame-parent)
+               (lambda (frame) (and (eq frame 'child) 'parent)))
+              ((symbol-function 'frame-live-p)
+               (lambda (frame) (memq frame '(child parent))))
+              ((symbol-function 'select-frame-set-input-focus)
+               (lambda (frame) (setq current-frame frame)))
+              ((symbol-function 'agent-fleet-start)
+               (lambda (&rest _args) (interactive) (setq started t) 'started))
+              ((symbol-function 'delete-frame)
+               (lambda (frame &optional _force) (setq deleted frame))))
+      (should (eq 'started (agent-fleet-dashboard-new))))
+    (should started)
+    (should (eq current-frame 'parent))
+    (should (eq deleted 'child))))
+
 (ert-deftest agent-fleet-dashboard-quit-respects-display-container ()
   "Dashboard q deletes owned frames but only quits ordinary windows."
   (let (deleted quit)
@@ -620,7 +655,7 @@ state without a manual refresh or a polling timer."
 The faithful detection payload carries only the agent kind (NO status:
 `final_status' is set only when `released' is true — src/app/actions.rs).
 So the row appears with Kind from the detection and State from a
-following `pane.agent_status_changed' (dotted per-pane kind, §7.3) event."
+following `pane.agent_status_changed' (dotted per-pane kind) event."
   (with-agent-fleet-mock path server
     (with-dashboard-fresh
       (agent-fleet)
@@ -677,7 +712,7 @@ following `pane.agent_status_changed' (dotted per-pane kind, §7.3) event."
       (agent-fleet-test--pump)
       ;; add a second, blocked agent; the existing w1:p1 is WORKING.
       ;; the detection establishes the agent; the dotted per-pane status
-      ;; event sets it blocked (§7.3: detection carries no status).
+      ;; event sets it blocked (detection carries no status).
       (herdr-mock-push-event server "pane_agent_detected"
                              '(:pane_id "w1:p2" :workspace_id "w1"
                                :agent "codex" :released :false))
@@ -720,7 +755,7 @@ following `pane.agent_status_changed' (dotted per-pane kind, §7.3) event."
     (should (eq 'agent-fleet-unknown-face (get-text-property 0 'face cell)))))
 
 
-;;; --- Column fallbacks (provisional, §27/§69) ----------------
+;;; --- Column fallbacks (provisional) ----------------
 
 (ert-deftest agent-fleet-dashboard-columns ()
   "Project/Kind/Task/State helpers fall back gracefully."
@@ -818,18 +853,18 @@ following `pane.agent_status_changed' (dotted per-pane kind, §7.3) event."
 ;;; --- Row keys -----------------------------------------
 
 (ert-deftest agent-fleet-dashboard-row-keys-d-and-m ()
-  "The dashboard binds `d' to the diff command and `m' to the magit command
-\(Phase 6), not the old `--not-yet' stubs."
+  "The dashboard binds `d' to the diff command and `m' to the magit command,
+not the old `--not-yet' stubs."
   (should (eq #'agent-fleet-dashboard-diff
               (lookup-key agent-fleet-mode-map "d")))
   (should (eq #'agent-fleet-dashboard-magit
               (lookup-key agent-fleet-mode-map "m"))))
 
 
-;;; --- Task column + T filter (Phase 7, §72) ---------------------------
+;;; --- Task column + T filter ---------------------------
 
 (ert-deftest agent-fleet-dashboard-row-keys-t-and-p ()
-  "`T' narrows to a task (Phase 7, §72); `P' narrows to a project (§69)."
+  "`T' narrows to a task; `P' narrows to a project."
   (should (eq #'agent-fleet-dashboard-toggle-task-filter
               (lookup-key agent-fleet-mode-map "T")))
   (should (eq #'agent-fleet-dashboard-toggle-project-filter
@@ -838,7 +873,7 @@ following `pane.agent_status_changed' (dotted per-pane kind, §7.3) event."
 (ert-deftest agent-fleet-dashboard-task-filter-and-column ()
   "The Task column shows a task agent's task title; the `T' filter narrows
 to that task's agents and the mode-line banner shows the live aggregate
-state (§72)."
+state."
   (with-agent-fleet-mock path server
     (with-dashboard-fresh
       (let* ((task (agent-fleet-parallel
