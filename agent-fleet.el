@@ -63,6 +63,12 @@
 ;; load time).  The module is loaded before any start runs, via
 ;; `agent-fleet--load-feature-modules' at the end of this file.
 (declare-function agent-fleet-attach "agent-fleet-attach" (target &optional takeover))
+;; `agent-fleet-parallel' is another one-way feature module (loaded by
+;; `agent-fleet--load-feature-modules' below).  The candidate builder surfaces a
+;; parallel task's title, so it calls these; `declare-function' keeps the
+;; module out of the require graph exactly as for `agent-fleet-attach' above.
+(declare-function agent-fleet-task-for-agent "agent-fleet-parallel" (pane-id))
+(declare-function agent-fleet-task-title "agent-fleet-parallel" (task))
 
 
 ;;; --- Customization --------------------------------------------------
@@ -981,35 +987,112 @@ Unwraps the `agent_info' envelope before caching."
     (and info (herdr-model-find-agent (plist-get info :pane_id)))))
 
 
+;;; --- Candidate builders (completion + consult) --------------------
+
+(defun agent-fleet--agent-task-label (agent name)
+  "Return the task label for AGENT, whose display name is NAME.
+A parallel task title wins when the agent is in one; otherwise the
+stripped terminal title, unless it duplicates NAME; otherwise \"—\".
+This mirrors `agent-fleet-dashboard--task-label' so completion
+candidates and the dashboard Task column agree.  The parallel lookup
+is guarded with `fboundp' so the base layer stays usable before
+`agent-fleet-parallel' is loaded."
+  (or (and (fboundp 'agent-fleet-task-for-agent)
+           (when-let* ((task (agent-fleet-task-for-agent
+                               (herdr-agent-id agent))))
+             (agent-fleet-task-title task)))
+      (let ((title (herdr-agent-terminal-title-stripped agent)))
+        (and title
+             (not (string-empty-p title))
+             (not (string= title name))
+             title))
+      "—"))
+
+(defun agent-fleet-agent-candidates ()
+  "Return cached agents as candidate property lists for completion.
+Each element is a plist with keys `:agent' (the struct), `:pane-id',
+`:name' (the `herdr-agent-display-name' identity), `:label' (that
+name disambiguated with the pane id in brackets when two agents share
+one), and `:kind', `:task', and `:workspace' mirroring the dashboard
+columns.  Any completion UI -- or a separate `consult-agent-fleet'
+package built on `consult--read' with an `:annotate' function and the
+`consult--lookup-cdr' lookup -- can show the same fields from this
+data.  Returns nil when no agents are cached."
+  (let* ((agents (herdr-agents))
+         (counts (let ((h (make-hash-table :test 'equal)))
+                   (dolist (a agents)
+                     (let ((n (herdr-agent-display-name a)))
+                       (puthash n (1+ (gethash n h 0)) h)))
+                   h)))
+    (mapcar
+     (lambda (agent)
+       (let* ((name (herdr-agent-display-name agent))
+              (pane-id (herdr-agent-id agent))
+              (kind (let ((k (herdr-agent-agent agent)))
+                      (if (and k (not (string-empty-p k)))
+                          (capitalize k)
+                        "—")))
+              (task (agent-fleet--agent-task-label agent name))
+              (workspace (or (herdr-model--agent-workspace-label agent) "—"))
+              (label (if (> (gethash name counts 0) 1)
+                         (format "%s  [%s]" name pane-id)
+                       name)))
+         (list :agent agent
+               :pane-id pane-id
+               :name name
+               :label label
+               :kind kind
+               :task task
+               :workspace workspace)))
+     agents)))
+
+(defun agent-fleet-agent-candidate-suffix (entry)
+  "Return the kind/task/workspace suffix for candidate ENTRY.
+ENTRY is one element of `agent-fleet-agent-candidates'.  The suffix
+joins the kind, task, and workspace with the `·' separator
+`agent-fleet--list-label' already uses, so it can serve as the inline
+tail of a `completing-read' candidate and as a `consult' `:annotate'
+string; a separate `consult-agent-fleet' package can reuse it for
+consistent formatting.  The workspace is dropped when it is missing or
+duplicates the candidate name, since an unnamed agent's identity is
+already its workspace label."
+  (let ((kind (plist-get entry :kind))
+        (task (plist-get entry :task))
+        (workspace (plist-get entry :workspace)))
+    (if (and workspace
+             (not (string= workspace "—"))
+             (not (string= workspace (plist-get entry :name))))
+        (format "%s · %s · %s" kind task workspace)
+      (format "%s · %s" kind task))))
+
+
 ;;; --- Output viewer (read snapshot) --------------------
 
 (defun agent-fleet--read-agent-name (prompt)
   "Read an agent pane id from the minibuffer, completing over cached agents.
-Candidates are `herdr-agent-display-name' labels (the workspace identity,
-falling back to the cwd basename, terminal title, or pane id when the
-agent has no name), disambiguated with the pane id in brackets when two
-agents share a label.  Returns the pane id so it round-trips through
+Each candidate shows the agent identity (`herdr-agent-display-name')
+followed by its kind, task, and workspace -- the same fields the
+dashboard shows -- so the listing carries the same information as the
+dashboard.  Agents sharing an identity are disambiguated with the pane
+id in brackets.  Returns the pane id so it round-trips through
 `agent-fleet--find-agent'."
-  (let* ((agents (herdr-agents))
-         (counts (let ((h (make-hash-table :test 'equal)))
-                   (dolist (a agents)
-                     (let ((l (herdr-agent-display-name a)))
-                       (puthash l (1+ (gethash l h 0)) h)))
-                   h))
-         (alist (mapcar (lambda (a)
-                          (let ((label (herdr-agent-display-name a)))
-                            (cons (if (> (gethash label counts 0) 1)
-                                      (format "%s  [%s]" label (herdr-agent-id a))
-                                    label)
-                                  (herdr-agent-id a))))
-                        agents))
-         (default (and alist (caar alist))))
+  (let* ((entries (agent-fleet-agent-candidates))
+         (alist (mapcar
+                 (lambda (entry)
+                   (cons (format "%s  %s"
+                                 (plist-get entry :label)
+                                 (agent-fleet-agent-candidate-suffix entry))
+                         (plist-get entry :pane-id)))
+                 entries))
+         (default (and alist (caar alist)))
+         (default-name (and entries (plist-get (car entries) :label))))
     (unless alist
       (user-error "No agents are available"))
-    (cdr (assoc (completing-read (if default
-                                     (format "%s (default %s): " prompt default)
-                                   (concat prompt ": "))
-                                 alist nil t nil nil default)
+    (cdr (assoc (completing-read
+                 (if default-name
+                     (format "%s (default %s): " prompt default-name)
+                   (concat prompt ": "))
+                 alist nil t nil nil default)
                 alist))))
 
 ;;;###autoload
