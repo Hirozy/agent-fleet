@@ -81,7 +81,9 @@ command prompts; defaults are covered in [Configuration](#configuration).
 
 `M-x agent-fleet` opens `*Agent Fleet*`. Each row shows the agent's project,
 name, kind, state, and task. The buffer updates from Herdr events; it does not
-periodically poll the server.
+periodically poll the server. Opening also reconciles the list from the server,
+like the `g` action, so the dashboard opens on fresh state rather than a
+possibly-stale cache.
 
 | Key | Action |
 |---|---|

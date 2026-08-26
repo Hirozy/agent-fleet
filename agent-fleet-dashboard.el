@@ -720,14 +720,21 @@ action function.  PARENT-FRAME defaults to the selected frame."
     parameters))
 
 (defun agent-fleet-dashboard--prepare-buffer ()
-  "Create, initialize and refresh the shared dashboard buffer."
+  "Create, initialize and refresh the shared dashboard buffer.
+Refresh FROM SERVER (`agent.list') so the buffer opens on Herdr's
+authoritative state, not a possibly-stale cache.  A cache can lag between
+connects: `pane.agent_status_changed' is per-pane and is NOT replayed on
+reconnect, so a status transition missed during a subscription gap leaves
+the cache stale until the next server fetch.  The `g' action does the same
+fetch on demand; this just also does it on open.  A failed fetch signals
+and is caught upstream, leaving the prior cache intact."
   (let ((buffer (get-buffer-create agent-fleet-dashboard-buffer-name)))
     (with-current-buffer buffer
       ;; Preserve buffer-local project/task filters when reopening a live
       ;; dashboard.  Calling the major mode again would erase them.
       (unless (derived-mode-p 'agent-fleet-mode)
         (agent-fleet-mode))
-      (agent-fleet-dashboard-refresh))
+      (agent-fleet-dashboard-refresh t))
     buffer))
 
 (defun agent-fleet-dashboard--display-in-buffer (buffer)
@@ -972,8 +979,9 @@ happen inside each backend's own display function)."
 The display form is `agent-fleet-dashboard-display' and only that
 variable selects how this command presents the dashboard; for a one-shot
 override use `agent-fleet-dashboard-open-buffer', `-open-child-frame', or
-`-open-frame'.  The dashboard lists every Herdr-managed agent, refreshes
-from the event bus, and connects according to `agent-fleet-auto-connect'."
+`-open-frame'.  The dashboard lists every Herdr-managed agent, reconciles
+the list from `agent.list' on open, refreshes from the event bus, and
+connects according to `agent-fleet-auto-connect'."
   (interactive)
   (agent-fleet-dashboard--open agent-fleet-dashboard-display))
 
