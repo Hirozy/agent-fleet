@@ -422,5 +422,91 @@ both that precondition and the attach argv (TAKEOVER adds `--takeover')."
   (should (eq #'agent-fleet-dashboard-attach
               (lookup-key agent-fleet-mode-map "a"))))
 
+;;; --- Current-agent actions (attach buffer keymap + transient) --------
+
+(ert-deftest agent-fleet-attach-current-pane-id-signals-outside-attach ()
+  "Outside an attach buffer, `--current-pane-id' signals `user-error' so the
+leaf commands fail fast instead of acting on nil."
+  (let ((buf (generate-new-buffer " *af-current*")))
+    (unwind-protect
+        (with-current-buffer buf
+          (should-not (buffer-local-value 'agent-fleet-attach-pane-id buf))
+          (should-error (agent-fleet-attach--current-pane-id)
+                        :type 'user-error))
+      (kill-buffer buf))))
+
+(ert-deftest agent-fleet-attach-inspect-acts-on-current-agent ()
+  "`agent-fleet-attach-inspect' calls `agent-fleet-show-output' with the
+buffer's pane id and no line count (called as a function, so no prefix
+arg) — no selection prompt, no `agent-fleet--read-agent-name'."
+  (let ((buf (generate-new-buffer " *af-inspect*"))
+        captured)
+    (unwind-protect
+        (with-current-buffer buf
+          (setq-local agent-fleet-attach-pane-id "w1:p2")
+          (cl-letf (((symbol-function #'agent-fleet-show-output)
+                     (lambda (agent &optional _lines _source)
+                       (push agent captured))))
+            (agent-fleet-attach-inspect)))   ; non-interactive: lines nil
+      (kill-buffer buf))
+    (should (equal '("w1:p2") captured))))
+
+(ert-deftest agent-fleet-attach-interrupt-acts-on-current-agent ()
+  "`agent-fleet-attach-interrupt' calls `agent-fleet-interrupt' with the
+buffer's pane id — no selection prompt."
+  (let ((buf (generate-new-buffer " *af-interrupt*"))
+        captured)
+    (unwind-protect
+        (with-current-buffer buf
+          (setq-local agent-fleet-attach-pane-id "w1:p3")
+          (cl-letf (((symbol-function #'agent-fleet-interrupt)
+                     (lambda (agent) (push agent captured))))
+            (agent-fleet-attach-interrupt)))
+      (kill-buffer buf))
+    (should (equal '("w1:p3") captured))))
+
+(ert-deftest agent-fleet-attach-kill-confirms-current-agent ()
+  "`agent-fleet-attach-kill' asks for confirmation then calls
+`agent-fleet-kill' with the buffer's pane id; with confirmation declined,
+`agent-fleet-kill' is not called."
+  (let ((buf (generate-new-buffer " *af-kill*"))
+        called)
+    (unwind-protect
+        (with-current-buffer buf
+          (setq-local agent-fleet-attach-pane-id "w1:p4")
+          (cl-letf (((symbol-function #'y-or-n-p) (lambda (_p) t))
+                    ((symbol-function #'agent-fleet-kill)
+                     (lambda (agent) (push agent called))))
+            (agent-fleet-attach-kill))
+          (should (equal '("w1:p4") called))
+          (setq called nil)
+          (cl-letf (((symbol-function #'y-or-n-p) (lambda (_p) nil))
+                    ((symbol-function #'agent-fleet-kill)
+                     (lambda (agent) (push agent called))))
+            (agent-fleet-attach-kill))
+          (should-not called))
+      (kill-buffer buf))))
+
+(ert-deftest agent-fleet-attach-mode-map-binds-prefix ()
+  "The attach minor-mode map binds `C-c C-a o' to inspect and `C-c C-a h'
+to the transient menu — the prefix ghostel passes through to Emacs in
+char mode (its own `C-c C-c'/`C-c C-z' are left untouched)."
+  (should (eq #'agent-fleet-attach-inspect
+              (lookup-key agent-fleet-attach-mode-map (kbd "C-c C-a o"))))
+  (should (eq #'agent-fleet-attach-menu
+              (lookup-key agent-fleet-attach-mode-map (kbd "C-c C-a h")))))
+
+(ert-deftest agent-fleet-attach-prepare-buffer-enables-mode ()
+  "`--prepare-buffer' enables `agent-fleet-attach-mode' buffer-locally so the
+`C-c C-a' prefix is live in attach buffers; the global default stays off
+(the mode is never global)."
+  (let ((buf (generate-new-buffer " *af-prepare*")))
+    (unwind-protect
+        (progn
+          (should (eq buf (agent-fleet-attach--prepare-buffer buf)))
+          (should (eq t (buffer-local-value 'agent-fleet-attach-mode buf)))
+          (should-not (default-value 'agent-fleet-attach-mode)))
+      (kill-buffer buf))))
+
 (provide 'agent-fleet-attach-test)
 ;;; agent-fleet-attach-test.el ends here
