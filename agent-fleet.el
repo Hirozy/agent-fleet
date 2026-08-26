@@ -994,16 +994,19 @@ When called interactively, also display the agents in a read-only
     (ignore-errors (agent-fleet--ensure-connected)))
   (when refresh
     (ignore-errors
-      (let ((infos (agent-fleet--agent-list-from-result
-                    (herdr-request "agent.list" nil))))
-        ;; agent.list is authoritative, not a stream of deltas.  Replacing
-        ;; the table removes agents whose close event was missed while Emacs
-        ;; was suspended or disconnected; merely upserting retained ghosts
-        ;; in the dashboard forever.
-        (when-let* ((session (herdr-model-cache)))
-          (clrhash (herdr-session-agents session)))
-        (dolist (info infos)
-          (herdr-model-upsert-agent-info info)))))
+      (herdr-call-with-deferred-events
+       (lambda ()
+         (let ((infos (agent-fleet--agent-list-from-result
+                       (herdr-request "agent.list" nil))))
+           ;; agent.list is authoritative, not a stream of deltas.  Replace
+           ;; the table before replaying any subscription events received
+           ;; while the request was in flight.  The replay makes newer event
+           ;; state win over this snapshot and avoids losing status/lifecycle
+           ;; transitions during synchronous request pumping.
+           (when-let* ((session (herdr-model-cache)))
+             (clrhash (herdr-session-agents session)))
+           (dolist (info infos)
+             (herdr-model-upsert-agent-info info)))))))
   (let ((agents (herdr-agents)))
     (when (called-interactively-p 'any)
       (agent-fleet--list-buffer agents))
