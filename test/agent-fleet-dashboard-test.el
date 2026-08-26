@@ -26,7 +26,7 @@
 (defun agent-fleet-dashboard-test--cell (pane-id col)
   "Return column COL (0-based) for PANE-ID in the dashboard, or nil.
 Columns: 0 Project, 1 Agent, 2 Kind, 3 State, 4 Task."
-  (when-let ((buf (get-buffer "*Agent Fleet*")))
+  (when-let* ((buf (get-buffer "*Agent Fleet*")))
     (with-current-buffer buf
       (let ((entry (assoc pane-id tabulated-list-entries)))
         (and entry (aref (cadr entry) col))))))
@@ -67,12 +67,15 @@ Columns: 0 Project, 1 Agent, 2 Kind, 3 State, 4 Task."
                    ("q" . agent-fleet-dashboard-quit)))
     (let ((suffix (transient-get-suffix
                    'agent-fleet-dashboard-help (car entry))))
-      ;; Transient 0.7 returns its raw (LEVEL CLASS PLIST) layout entry;
-      ;; newer releases may return the original vector specification.
+      ;; Transient represents a suffix several ways across versions: a
+      ;; vector of key/description/command, a layout entry whose third
+      ;; element is a plist, and a specification list whose cdr is a plist.
       (should (eq (cdr entry)
-                  (if (vectorp suffix)
-                      (aref suffix 2)
-                    (plist-get (nth 2 suffix) :command)))))))
+                  (cond
+                   ((vectorp suffix) (aref suffix 2))
+                   ((keywordp (cadr suffix))
+                    (plist-get (cdr suffix) :command))
+                   (t (plist-get (nth 2 suffix) :command))))))))
 
 (ert-deftest agent-fleet-dashboard-installs-bindings-for-evil-states ()
   "Dashboard commands override Evil normal/motion keys when Evil is present."
