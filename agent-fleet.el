@@ -50,6 +50,7 @@
 
 (require 'cl-lib)
 (require 'subr-x)
+(require 'tabulated-list)
 (require 'herdr)
 (require 'herdr-model)
 (require 'herdr-events)
@@ -935,6 +936,48 @@ project).  Falls back to the display name alone when the kind is nil."
         (format "%s · %s" name kind)
       name)))
 
+(defun agent-fleet--list-entry (agent)
+  "Return a `tabulated-list-entries' row for AGENT.
+The entry is `(ID [NAME STATUS KIND TASK WORKSPACE])': ID is the pane
+id, and the five cells are the display name, status, kind (the CLI),
+task label, and workspace id."
+  (let ((name (herdr-agent-display-name agent)))
+    (list (herdr-agent-id agent)
+          (vector name
+                  (or (herdr-agent-agent-status agent) "unknown")
+                  (or (herdr-agent-agent agent) "")
+                  (agent-fleet--agent-task-label agent name)
+                  (or (herdr-agent-workspace-id agent) "")))))
+
+(defun agent-fleet--list-buffer (agents)
+  "Display AGENTS (a list of `herdr-agent' structs) in a read-only table.
+One row per agent with columns Name, Status, Kind, Task, Workspace -- the
+same fields as the dashboard, so the buffer reads as a quick snapshot of
+the cache.  Uses `tabulated-list-mode' (parent `special-mode', so `q'
+quits and the buffer is read-only); rows are rebuilt on each call, so
+re-running `agent-fleet-list' refreshes it.  When not connected, a short
+notice is shown instead of an empty table."
+  (let ((buf (get-buffer-create "*Agent Fleet List*")))
+    (with-current-buffer buf
+      (tabulated-list-mode)
+      (setq tabulated-list-format
+            `[("Name" 22 t) ("Status" 10 t) ("Kind" 8 t)
+              ("Task" 28 nil) ("Workspace" 14 t)])
+      (setq tabulated-list-padding 2)
+      (setq tabulated-list-sort-key nil)
+      (if (null (herdr-model-cache))
+          (let ((inhibit-read-only t))
+            (erase-buffer)
+            (setq header-line-format nil)
+            (insert "Not connected to Herdr.\n\n"
+                    "A dashboard or control command connects on demand.\n"))
+        (setq tabulated-list-entries
+              (mapcar #'agent-fleet--list-entry agents))
+        (tabulated-list-init-header)
+        (tabulated-list-print t)))
+    (pop-to-buffer buf)
+    buf))
+
 ;;;###autoload
 (defun agent-fleet-list (&optional refresh)
   "Return the cached agent structs as a list.
@@ -944,7 +987,8 @@ operations Herdr does not notify about.
 An interactive call, or a REFRESH call, tries the configured automatic
 connection first.  It still returns nil rather than signalling when the
 server is unavailable, so cache inspection remains safe while offline.
-When called interactively, also message the count or connection state."
+When called interactively, also display the agents in a read-only
+`*Agent Fleet List*' table (Name, Status, Kind, Task, Workspace)."
   (interactive "P")
   (when (or refresh (called-interactively-p 'any))
     (ignore-errors (agent-fleet--ensure-connected)))
@@ -962,15 +1006,7 @@ When called interactively, also message the count or connection state."
           (herdr-model-upsert-agent-info info)))))
   (let ((agents (herdr-agents)))
     (when (called-interactively-p 'any)
-      (cond
-       ((null (herdr-model-cache))
-        (message "Not connected to Herdr; a control command will connect on demand"))
-       (agents
-        (message "%d agent(s): %s"
-                 (length agents)
-                 (mapconcat #'agent-fleet--list-label agents ", ")))
-       (t
-        (message "No agents"))))
+      (agent-fleet--list-buffer agents))
     agents))
 
 ;;;###autoload
