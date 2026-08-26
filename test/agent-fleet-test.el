@@ -662,6 +662,71 @@ no-op and would have left it missing)."
     (should-not (herdr-model-find-agent "gone:p1"))
     (should (herdr-model-find-agent "w1:p1"))))
 
+(ert-deftest agent-fleet-list-refresh-replays-concurrent-event-after-snapshot ()
+  "An event received during agent.list is replayed after its stale snapshot.
+`herdr-request' synchronously pumps process output, so the subscription can
+deliver a newer event before the request returns.  The refresh must rebuild
+from the response first and then apply that queued event, making the event's
+status authoritative."
+  (let* ((session (herdr-model--empty-session))
+         (herdr-model--cache session)
+         (herdr--event-deferral-depth 0)
+         (herdr--deferred-events nil))
+    (puthash "w1:p1"
+             (make-herdr-agent :id "w1:p1" :workspace-id "w1"
+                               :agent "claude" :agent-status "working")
+             (herdr-session-agents session))
+    (cl-letf (((symbol-function 'agent-fleet--ensure-connected)
+               (lambda () t))
+              ((symbol-function 'herdr-request)
+               (lambda (method &optional _params &rest _keys)
+                 (should (equal method "agent.list"))
+                 ;; Model a subscription frame handled by
+                 ;; `accept-process-output' while the request is in flight.
+                 (herdr--on-event
+                  "pane_agent_status_changed"
+                  '(:pane_id "w1:p1" :agent "claude"
+                    :agent_status "done"))
+                 '(:type "agent_list"
+                   :agents ((:pane_id "w1:p1" :workspace_id "w1"
+                              :agent "claude" :agent_status "working"))))))
+      (agent-fleet-list t))
+    (should (equal "done"
+                   (herdr-agent-agent-status
+                    (herdr-model-find-agent session "w1:p1"))))))
+
+(ert-deftest herdr-deferred-events-preserve-order-and-survive-error ()
+  "Deferred events replay in arrival order even when the protected call fails."
+  (let* ((session (herdr-model--empty-session))
+         (herdr-model--cache session)
+         (herdr--event-deferral-depth 0)
+         (herdr--deferred-events nil)
+         (seen nil)
+         (herdr-event-agent-status-hook
+          (list (lambda (descriptor)
+                  (setq seen (append seen (list (plist-get descriptor :status))))))))
+    (puthash "w1:p1"
+             (make-herdr-agent :id "w1:p1" :workspace-id "w1"
+                               :agent "claude" :agent-status "working")
+             (herdr-session-agents session))
+    (should-error
+     (herdr-call-with-deferred-events
+      (lambda ()
+        (herdr--on-event
+         "pane_agent_status_changed"
+         '(:pane_id "w1:p1" :agent "claude" :agent_status "blocked"))
+        (herdr--on-event
+         "pane_agent_status_changed"
+         '(:pane_id "w1:p1" :agent "claude" :agent_status "done"))
+        (should (equal "working"
+                       (herdr-agent-agent-status
+                        (herdr-model-find-agent session "w1:p1"))))
+        (error "simulated request failure"))))
+    (should (equal '("blocked" "done") seen))
+    (should (equal "done"
+                   (herdr-agent-agent-status
+                    (herdr-model-find-agent session "w1:p1"))))))
+
 (ert-deftest agent-fleet-unwraps-typed-envelopes ()
   "agent result envelopes (the live Herdr shape) are unwrapped to payloads."
   ;; agent.list envelope -> list of AgentInfo
