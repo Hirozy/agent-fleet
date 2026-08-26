@@ -72,7 +72,7 @@ Returns a `herdr-mock--server'.  Use `herdr-mock-stop' to tear down."
     ;; includes agents started outside this client (the snapshot agents),
     ;; not just those started via `agent.start'.
     (dolist (info (plist-get snapshot :agents))
-      (when-let ((pid (plist-get info :pane_id)))
+      (when-let* ((pid (plist-get info :pane_id)))
         (puthash pid info (herdr-mock--server-agents server))))
     ;; Seed the pane table from the snapshot too, so `pane.list' (ground
     ;; truth for pane existence) reports every pane the snapshot claims —
@@ -80,7 +80,7 @@ Returns a `herdr-mock--server'.  Use `herdr-mock-stop' to tear down."
     ;; would omit snapshot panes and the client's reconciliation would
     ;; wrongly drop them as stale.
     (dolist (pn (plist-get snapshot :panes))
-      (when-let ((pid (plist-get pn :pane_id)))
+      (when-let* ((pid (plist-get pn :pane_id)))
         (puthash pid pn (herdr-mock--server-panes server))))
     (let* ((sname (format "herdr-mock-%d" (cl-incf herdr-mock--seq)))
            (proc (make-network-process
