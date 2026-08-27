@@ -556,6 +556,24 @@ response lacks a workspace or root pane."
                 (or kind "agent"))))
     (format "%s-%d" base agent-fleet--name-counter)))
 
+(defun agent-fleet--suggest-name (workspace-id kind)
+  "Suggest a default agent name for a new agent in WORKSPACE-ID.
+Return `<label>-<N>': <label> is the workspace's display name
+\(`herdr-workspace-label') and <N> is the smallest positive integer
+whose `<label>-<N>' is not already a live agent's name, so successive
+agents in one workspace get distinct serials.  When WORKSPACE-ID is
+nil or no cached workspace matches it, fall back to
+`agent-fleet--fresh-name' (KIND), the global kind+counter default."
+  (let ((ws (and workspace-id (herdr-find-workspace workspace-id))))
+    (if ws
+        (let ((label (herdr-workspace-label ws))
+              (n 1))
+          (while (herdr-model-find-agent-by-name
+                  (format "%s-%d" label n))
+            (cl-incf n))
+          (format "%s-%d" label n))
+      (agent-fleet--fresh-name kind))))
+
 ;;;###autoload
 (cl-defun agent-fleet-start (kind &key name cwd workspace pane args
                                      (timeout-ms agent-fleet-start-timeout-ms)
@@ -575,9 +593,11 @@ source repo); BRANCH/BASE optionally override Herdr's default branch.
 When called interactively, the user is always prompted to pick the
 workspace the agent starts in (unless :workspace/:pane/:worktree is given
 explicitly); the agent then opens as a fresh tab in the selected
-workspace, rather than a new frame.  After a successful interactive
-start, the agent's terminal is attached automatically (see
-`agent-fleet-attach').
+workspace, rather than a new frame.  The name prompt is prefilled with
+`<workspace-label>-<serial>' — the workspace's display name plus the
+smallest serial not already a live agent's name; accept it or type your
+own.  After a successful interactive start, the agent's terminal is
+attached automatically (see `agent-fleet-attach').
 
 Keyword args:
   :name        agent name (unique across live agents); auto-generated if nil
@@ -599,8 +619,15 @@ Returns the `herdr-agent' struct for the started agent.  Signals an
    (let* ((choices (agent-fleet--kind-choices))
           (sel (completing-read "Agent kind: " (mapcar #'car choices) nil t))
           (kind (cdr (assoc sel choices #'equal)))
-          (nm (read-string "Name (empty for auto): ")))
-     (list kind :name (and (not (string-empty-p nm)) nm))))
+          ;; Resolve the workspace before the name so the prompt can
+          ;; suggest a workspace-derived default.  Passing :workspace
+          ;; short-circuits the body's own --read-workspace, so the
+          ;; workspace is prompted exactly once.
+          (ws-id (agent-fleet--read-workspace "Start in workspace: "))
+          (suggested (agent-fleet--suggest-name ws-id kind))
+          (nm (read-string "Name: " suggested)))
+     (list kind :workspace ws-id
+           :name (if (string-empty-p nm) suggested nm))))
   (agent-fleet--ensure-connected)
   (let ((candidate (agent-fleet--kind-wire-name kind)))
     (unless (and kind (stringp candidate) (not (string-empty-p candidate)))
