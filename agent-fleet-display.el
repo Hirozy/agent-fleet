@@ -178,6 +178,31 @@ full-screen interfaces such as Magit do not open in a half-size surface.
 At most one auxiliary child exists per origin and is reused on repeated
 opens.  Entries are forgotten when the child is deleted.")
 
+(defconst agent-fleet-display--aux-buffer-name " *agent-fleet-aux*"
+  "Name of the throwaway placeholder buffer shown in a new auxiliary child.
+It is replaced by the view buffer once the presentation thunk runs, and
+any window still showing it after the thunk is deleted so the child
+contains only the view's own windows.")
+
+(defun agent-fleet-display--aux-cleanup-placeholder (child)
+  "Delete windows in CHILD that still show the placeholder buffer.
+Third-party commands such as `magit-status' may split the child frame's
+window instead of replacing the placeholder; without this cleanup the
+placeholder stays visible as an empty pane alongside the real content."
+  (when (frame-live-p child)
+    (let* ((placeholder (get-buffer agent-fleet-display--aux-buffer-name))
+           (windows (window-list child))
+           (ph-windows (if placeholder
+                           (cl-remove-if-not
+                            (lambda (w) (eq (window-buffer w) placeholder))
+                            windows)
+                         nil)))
+      ;; Only delete placeholder windows when there are other windows
+      ;; to take their place; never delete the last window on the frame.
+      (when (and ph-windows (> (length windows) (length ph-windows)))
+        (dolist (w ph-windows)
+          (ignore-errors (delete-window w)))))))
+
 (defun agent-fleet-display--aux-origin-frame (&optional frame)
   "Return the non-child parent frame to own an auxiliary child for FRAME.
 FRAME defaults to the selected frame.  An auxiliary child opened from
@@ -209,7 +234,7 @@ display lands in it.  Signal a `user-error' when Emacs cannot create it."
                     (agent-fleet-auxiliary-origin-frame . ,origin)))
          (parameters (agent-fleet-display--merge-frame-parameters
                       agent-fleet-display--aux-frame-parameters private))
-         (buffer (get-buffer-create " *agent-fleet-aux*")))
+         (buffer (get-buffer-create agent-fleet-display--aux-buffer-name)))
     (condition-case err
         (if-let* ((window (display-buffer
                            buffer
@@ -339,6 +364,11 @@ explicit `-in-child-frame' command never falls back to an ordinary buffer."
         (condition-case err
             (let* ((result (funcall thunk))
                    (opened (agent-fleet-display--outcome-opened-p result)))
+              (when opened
+                ;; Third-party commands (e.g. `magit-status') may split the
+                ;; child's window instead of replacing the placeholder; remove
+                ;; any placeholder windows so the child shows only real content.
+                (agent-fleet-display--aux-cleanup-placeholder child))
               (cond
                ((and (not opened) created-p)
                 (agent-fleet-display--aux-close child))
