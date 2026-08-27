@@ -79,8 +79,9 @@
 AGENTS is a list of pane-id strings.  PROMPT is the shared task description
 (each agent may have received a distinct prompt text; this is the label).
 STARTED-AT / FINISHED-AT are float seconds (nil until the task is done).
-WORKSPACES maps pane ids to their created workspace ids, so cleanup still
-works after a closed pane has disappeared from the live agent cache."
+WORKSPACES maps pane ids to their originally-created worktree workspace ids,
+so cleanup still targets the owning worktree after a pane move or after a
+closed pane has disappeared from the live agent cache."
   id title prompt agents workspaces started-at finished-at)
 
 
@@ -339,9 +340,14 @@ of worktrees removed."
                (lambda (pid)
                  (let ((agent (agent-fleet--find-agent pid)))
                    (cons pid
-                         (or (and agent (herdr-agent-workspace-id agent))
-                             (cdr (assoc pid
-                                         (agent-fleet-task-workspaces task)))))))
+                         ;; The recorded workspace owns the worktree.  A live
+                         ;; agent may since have moved to another workspace,
+                         ;; whose id is not a valid cleanup target for the
+                         ;; originally-created worktree.
+                         (or (cdr (assoc pid
+                                        (agent-fleet-task-workspaces task)))
+                             (and agent
+                                  (herdr-agent-workspace-id agent))))))
                agents))
              (seen-workspaces (make-hash-table :test 'equal))
              removed-workspaces failed-workspaces)
@@ -382,6 +388,32 @@ of worktrees removed."
 
 ;;; --- Live status tracking (hook) ------------------------------------
 
+(defun agent-fleet-parallel--on-pane-event (descriptor)
+  "Migrate task metadata after a `pane_moved' DESCRIPTOR.
+A cross-workspace move can change the workspace-qualified pane id.  The Herdr
+model has already moved the cached agent before this hook runs; update the task
+member list, the pane->task reverse index, and the saved worktree-workspace
+mapping to the new id without changing that mapping's owning workspace."
+  (when (equal (plist-get descriptor :event) "pane_moved")
+    (let ((old-id (plist-get descriptor :previous-pane-id))
+          (new-id (plist-get descriptor :id)))
+      (when (and old-id new-id (not (equal old-id new-id)))
+        (when-let* ((task-id (gethash old-id agent-fleet--agent-tasks))
+                    (task (agent-fleet-task-find task-id)))
+          (setf (agent-fleet-task-agents task)
+                (mapcar (lambda (pane-id)
+                          (if (equal pane-id old-id) new-id pane-id))
+                        (agent-fleet-task-agents task))
+                (agent-fleet-task-workspaces task)
+                (mapcar (lambda (entry)
+                          (if (equal (car entry) old-id)
+                              (cons new-id (cdr entry))
+                            entry))
+                        (agent-fleet-task-workspaces task)))
+          (remhash old-id agent-fleet--agent-tasks)
+          (puthash new-id task-id agent-fleet--agent-tasks)
+          (run-hook-with-args 'agent-fleet-task-changed-hook task))))))
+
 (defun agent-fleet-parallel--on-status (descriptor)
   "Stamp a task's `finished-at' when it transitions to `done'.
 Looked up by the descriptor's `:pane-id' (an agent-fleet status-changed or
@@ -395,10 +427,12 @@ state'; this only records when `done' is first reached."
       (setf (agent-fleet-task-finished-at task) (float-time)))))
 
 (defun agent-fleet-parallel--setup ()
-  "Install the task status hook, idempotently.
+  "Install the task identity/status hooks, idempotently.
 Registered before the dashboard hook (this file loads via the dashboard's
 `require', which runs before the dashboard's own `--setup') so `finished-at'
 is stamped before the dashboard refreshes.  Safe to call repeatedly."
+  (unless (memq #'agent-fleet-parallel--on-pane-event herdr-event-pane-hook)
+    (add-hook 'herdr-event-pane-hook #'agent-fleet-parallel--on-pane-event))
   (unless (memq #'agent-fleet-parallel--on-status
                 agent-fleet-agent-status-changed-hook)
     (add-hook 'agent-fleet-agent-status-changed-hook

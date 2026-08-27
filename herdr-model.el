@@ -582,7 +582,14 @@ DATA is the decoded event payload plist.  Returns a descriptor plist
              (herdr-model--remove-pane-cascade session prev))
            (herdr-model--upsert-pane session pn)
            (herdr-model--maybe-upsert-agent-from-pane session pn previous-agent)
-           `(:event ,kind :what :pane-updated :id ,id)))))
+           (let ((descriptor `(:event ,kind :what :pane-updated :id ,id)))
+             ;; A pane move may change the workspace-qualified pane id.
+             ;; Downstream identity owners (for example parallel-task
+             ;; metadata) need the retired id to migrate their own indexes
+             ;; after the model has installed the new agent projection.
+             (if (and (equal kind "pane_moved") prev)
+                 (plist-put descriptor :previous-pane-id prev)
+               descriptor))))))
     ((or "pane_closed" "pane_exited")
      (let* ((pid (plist-get data :pane_id))
             (already-gone (and pid
@@ -786,12 +793,18 @@ remhash unconditionally) or a later event carrying `:agent' nil."
               ;; name after an ordinary cwd/title/focus update.
               (when old
                 (setf (herdr-agent-name new) (herdr-agent-name old)
+                      (herdr-agent-display-agent new)
+                      (herdr-agent-display-agent old)
+                      (herdr-agent-title new) (herdr-agent-title old)
                       (herdr-agent-state-change-seq new)
                       (herdr-agent-state-change-seq old)
                       (herdr-agent-interactive-ready new)
                       (herdr-agent-interactive-ready old)
                       (herdr-agent-launch-pending new)
-                      (herdr-agent-launch-pending old)))
+                      (herdr-agent-launch-pending old)
+                      (herdr-agent-state-labels new)
+                      (herdr-agent-state-labels old)
+                      (herdr-agent-tokens new) (herdr-agent-tokens old)))
               (puthash id new (herdr-session-agents session)))
           (remhash id (herdr-session-agents session)))
       ;; No :agent key: a partial pane delta — preserve the cached agent.
