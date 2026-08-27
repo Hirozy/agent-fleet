@@ -993,5 +993,180 @@ state."
                            (agent-fleet-dashboard-test--cell pid 4)))))))))
 
 
+;;; --- Auxiliary child frame -------------------------------------------
+
+;; Dynamic scratch for the shared frame stubs below: `let'-binding these in a
+;; test makes them visible inside the stub lambdas.
+(defvar agent-fleet-dashboard-test--current-frame nil)
+(defvar agent-fleet-dashboard-test--displayed 0)
+(defvar agent-fleet-dashboard-test--deleted nil)
+
+(defmacro agent-fleet-dashboard-test--with-aux-frames (&rest body)
+  "Run BODY with the frame APIs stubbed for auxiliary child-frame tests.
+`selected-frame' answers `agent-fleet-dashboard-test--current-frame',
+which the `select-frame-set-input-focus' stub updates, so the test can
+observe the final focus.  The auxiliary child is tagged `aux-child' with
+its origin recorded, as `--aux-create' would stamp on a real frame."
+  (declare (indent 0))
+  `(cl-letf (((symbol-function 'selected-frame)
+              (lambda () agent-fleet-dashboard-test--current-frame))
+             ((symbol-function 'display-graphic-p) (lambda (&optional _) t))
+             ((symbol-function 'frame-parameter)
+              (lambda (frame parameter)
+                (cond
+                 ((and (eq frame 'aux-child)
+                       (eq parameter 'agent-fleet-auxiliary-origin-frame))
+                  'origin)
+                 ((and (eq frame 'aux-child)
+                       (eq parameter 'agent-fleet-auxiliary-frame))
+                  t)
+                 (t nil))))
+             ((symbol-function 'frame-parent) (lambda (_) nil))
+             ((symbol-function 'frame-live-p)
+              (lambda (frame) (memq frame '(origin aux-child))))
+             ((symbol-function 'display-buffer)
+              (lambda (_buffer &optional _action &rest _)
+                (cl-incf agent-fleet-dashboard-test--displayed)
+                'aux-window))
+             ((symbol-function 'window-frame) (lambda (_) 'aux-child))
+             ((symbol-function 'modify-frame-parameters) (lambda (&rest _)))
+             ((symbol-function 'select-frame-set-input-focus)
+              (lambda (frame)
+                (setq agent-fleet-dashboard-test--current-frame frame)))
+             ((symbol-function 'agent-fleet-dashboard--center-child-frame)
+              (lambda (&rest _)))
+             ((symbol-function 'delete-frame)
+              (lambda (frame &optional _)
+                (setq agent-fleet-dashboard-test--deleted frame))))
+     ,@body))
+
+(ert-deftest agent-fleet-dashboard-aux-run-errors-without-fallback ()
+  "An unsupported runtime is a `user-error', never a buffer fallback.
+The thunk must not run at all: an explicit `-in-child-frame' command
+either opens a child frame or signals."
+  (let (ran)
+    (cl-letf (((symbol-function 'selected-frame) (lambda () 'origin))
+              ((symbol-function 'frame-parameter) (lambda (&rest _) nil))
+              ((symbol-function 'display-graphic-p) (lambda (&optional _) nil)))
+      (should-error
+       (agent-fleet-dashboard--aux-run (lambda () (setq ran t) 'fallback))
+       :type 'user-error))
+    (should-not ran)))
+
+(ert-deftest agent-fleet-dashboard-aux-run-nil-closes-new-child ()
+  "A nil thunk result closes a child created this call and refocuses origin.
+An empty new child must not linger."
+  (let ((agent-fleet-dashboard--aux-frames (make-hash-table :test 'eq))
+        (agent-fleet-dashboard-test--current-frame 'origin)
+        (agent-fleet-dashboard-test--displayed 0)
+        (agent-fleet-dashboard-test--deleted nil))
+    (agent-fleet-dashboard-test--with-aux-frames
+      (should-not (agent-fleet-dashboard--aux-run (lambda () nil))))
+    (should (= 1 agent-fleet-dashboard-test--displayed))
+    (should (eq 'aux-child agent-fleet-dashboard-test--deleted))
+    (should (eq 'origin agent-fleet-dashboard-test--current-frame))
+    (should-not (gethash 'origin agent-fleet-dashboard--aux-frames))
+    (when (get-buffer " *agent-fleet-aux*")
+      (kill-buffer (get-buffer " *agent-fleet-aux*")))))
+
+(ert-deftest agent-fleet-dashboard-aux-run-nil-keeps-reused-child ()
+  "A nil thunk result keeps a reused child showing its prior view.
+No new child is created and nothing is deleted."
+  (let ((agent-fleet-dashboard--aux-frames (make-hash-table :test 'eq))
+        (agent-fleet-dashboard-test--current-frame 'origin)
+        (agent-fleet-dashboard-test--displayed 0)
+        (agent-fleet-dashboard-test--deleted nil))
+    (puthash 'origin 'aux-child agent-fleet-dashboard--aux-frames)
+    (agent-fleet-dashboard-test--with-aux-frames
+      (should-not (agent-fleet-dashboard--aux-run (lambda () nil))))
+    (should (zerop agent-fleet-dashboard-test--displayed))
+    (should-not agent-fleet-dashboard-test--deleted)
+    (should (eq 'aux-child agent-fleet-dashboard-test--current-frame))
+    (should (eq 'aux-child (gethash 'origin agent-fleet-dashboard--aux-frames)))))
+
+(ert-deftest agent-fleet-dashboard-aux-run-error-closes-and-resignals ()
+  "A thunk error deletes a newly created child, refocuses origin, resignals."
+  (let ((agent-fleet-dashboard--aux-frames (make-hash-table :test 'eq))
+        (agent-fleet-dashboard-test--current-frame 'origin)
+        (agent-fleet-dashboard-test--displayed 0)
+        (agent-fleet-dashboard-test--deleted nil))
+    (agent-fleet-dashboard-test--with-aux-frames
+      (should-error
+       (agent-fleet-dashboard--aux-run (lambda () (error "boom")))
+       :type 'error))
+    (should (= 1 agent-fleet-dashboard-test--displayed))
+    (should (eq 'aux-child agent-fleet-dashboard-test--deleted))
+    (should (eq 'origin agent-fleet-dashboard-test--current-frame))
+    (should-not (gethash 'origin agent-fleet-dashboard--aux-frames))
+    (when (get-buffer " *agent-fleet-aux*")
+      (kill-buffer (get-buffer " *agent-fleet-aux*")))))
+
+(ert-deftest agent-fleet-dashboard-aux-run-reuses-one-child-per-origin ()
+  "Repeated successful opens reuse the same auxiliary child."
+  (let ((agent-fleet-dashboard--aux-frames (make-hash-table :test 'eq))
+        (agent-fleet-dashboard-test--current-frame 'origin)
+        (agent-fleet-dashboard-test--displayed 0)
+        (agent-fleet-dashboard-test--deleted nil))
+    (agent-fleet-dashboard-test--with-aux-frames
+      (dotimes (_ 3)
+        (should (eq 'ok (agent-fleet-dashboard--aux-run (lambda () 'ok)))))
+      (should (eq 'aux-child (gethash 'origin agent-fleet-dashboard--aux-frames))))
+    (should (= 1 agent-fleet-dashboard-test--displayed))
+    (should-not agent-fleet-dashboard-test--deleted)
+    (should (eq 'aux-child agent-fleet-dashboard-test--current-frame))
+    (when (get-buffer " *agent-fleet-aux*")
+      (kill-buffer (get-buffer " *agent-fleet-aux*")))))
+
+(ert-deftest agent-fleet-dashboard-aux-origin-frame-prevents-nesting ()
+  "An auxiliary child never nests under another child frame.
+An aux child opened from an aux child reuses its recorded origin; a
+dashboard child-frame resolves to its native parent."
+  (cl-letf (((symbol-function 'selected-frame) (lambda () 'aux-child))
+            ((symbol-function 'frame-parameter)
+             (lambda (frame parameter)
+               (and (eq frame 'aux-child)
+                    (eq parameter 'agent-fleet-auxiliary-origin-frame)
+                    'origin)))
+            ((symbol-function 'frame-live-p)
+             (lambda (frame) (memq frame '(origin aux-child)))))
+    (should (eq 'origin (agent-fleet-dashboard--aux-origin-frame))))
+  (cl-letf (((symbol-function 'selected-frame) (lambda () 'dashboard-child))
+            ((symbol-function 'frame-parameter)
+             (lambda (_frame parameter)
+               (and (eq parameter 'agent-fleet-dashboard-display)
+                    'child-frame)))
+            ((symbol-function 'frame-parent)
+             (lambda (frame) (and (eq frame 'dashboard-child) 'parent))))
+    (should (eq 'parent (agent-fleet-dashboard--aux-origin-frame)))))
+
+(ert-deftest agent-fleet-dashboard-aux-forget-removes-from-reuse-table ()
+  "Deleting an aux child forgets its reuse entry; others stay untouched.
+A frame without the auxiliary marker, or mapped to a different origin
+entry, leaves the table alone."
+  (let ((agent-fleet-dashboard--aux-frames (make-hash-table :test 'eq)))
+    (puthash 'origin 'aux-child agent-fleet-dashboard--aux-frames)
+    (cl-letf (((symbol-function 'frame-parameter)
+               (lambda (frame parameter)
+                 (cond
+                  ((and (eq frame 'aux-child)
+                        (eq parameter 'agent-fleet-auxiliary-frame))
+                   t)
+                  ((and (eq frame 'aux-child)
+                        (eq parameter 'agent-fleet-auxiliary-origin-frame))
+                   'origin)
+                  (t nil)))))
+      (agent-fleet-dashboard--aux-forget 'aux-child)
+      (should-not (gethash 'origin agent-fleet-dashboard--aux-frames))
+      ;; A non-auxiliary frame is never forgotten.
+      (puthash 'origin 'aux-child agent-fleet-dashboard--aux-frames)
+      (agent-fleet-dashboard--aux-forget 'ordinary)
+      (should (eq 'aux-child (gethash 'origin agent-fleet-dashboard--aux-frames)))
+      ;; A frame not matching the mapped child is never forgotten.
+      (puthash 'origin 'other-child agent-fleet-dashboard--aux-frames)
+      (agent-fleet-dashboard--aux-forget 'aux-child)
+      (should (eq 'other-child
+                  (gethash 'origin agent-fleet-dashboard--aux-frames))))))
+
+
 (provide 'agent-fleet-dashboard-test)
 ;;; agent-fleet-dashboard-test.el ends here

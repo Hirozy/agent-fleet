@@ -54,6 +54,11 @@
 (declare-function magit-status "magit-status" (&optional directory))
 (declare-function magit-diff-working-tree "magit-diff" (&optional range args files))
 
+;; The auxiliary child-frame presentation API lives in the dashboard
+;; module, which loads this feature; declared here so byte-compilation
+;; does not warn, and required at runtime by the `-in-child-frame' entries.
+(declare-function agent-fleet-dashboard--aux-run "agent-fleet-dashboard" (thunk))
+
 
 ;;; --- Availability guard --------------------------------------------
 
@@ -124,22 +129,40 @@ it is an optional dependency"))
 ;;; --- Commands (dashboard `m' / `d') ---------------------------------
 
 ;;;###autoload
-(defun agent-fleet-magit-status (target)
-  "Open Magit status on TARGET's checkout.
+(defun agent-fleet-magit-status-in-buffer (target)
+  "Open Magit status on TARGET's checkout in an ordinary buffer.
 TARGET is an agent name, pane id, symbol, or `herdr-agent' struct.  For a
 worktree agent, status opens on the worktree root; for a bare agent, the
 main repo root.  Cherry-pick, merge, and worktree deletion are then
-Magit's own keys inside the status buffer (use Magit public
-API, do not reinvent).  `user-error's if Magit is not installed."
+Magit's own keys inside the status buffer (use Magit public API, do not
+reinvent).  `user-error's if Magit is not installed."
   (interactive (list (agent-fleet--read-agent-name "Magit status for agent")))
   (agent-fleet-magit--with-root
    target "Magit status"
    (lambda (root) (magit-status root))))
 
 ;;;###autoload
-(defun agent-fleet-magit-diff (target)
-  "Show TARGET's working-tree diff.
-Opens `magit-diff-working-tree' scoped to TARGET's checkout — the
+(defun agent-fleet-magit-status-in-child-frame (target)
+  "Open Magit status on TARGET's checkout in an auxiliary child frame.
+Opens Magit inside a native child frame that floats over the terminal's
+parent frame, leaving its window geometry untouched; Magit may split
+windows inside the child, but never the terminal parent.  TARGET is an
+agent name, pane id, symbol, or `herdr-agent' struct.  Signal a
+`user-error' when child frames are unsupported; there is no silent
+buffer fallback (use `agent-fleet-magit-status-in-buffer' for that).
+`user-error's if Magit is not installed."
+  (interactive (list (agent-fleet--read-agent-name "Magit status for agent")))
+  (require 'agent-fleet-dashboard nil t)
+  (agent-fleet-dashboard--aux-run
+   (lambda ()
+     (agent-fleet-magit--with-root
+      target "Magit status"
+      (lambda (root) (magit-status root))))))
+
+;;;###autoload
+(defun agent-fleet-magit-diff-in-buffer (target)
+  "Show TARGET's working-tree diff in an ordinary buffer.
+Opens `magit-diff-working-tree' scoped to TARGET's checkout -- the
 uncommitted changes the agent is making right now (HEAD vs working tree).
 The branch-vs-base review diff is reachable by opening Magit status (`m')
 and pressing `d' there.  `user-error's if Magit is not installed."
@@ -147,6 +170,44 @@ and pressing `d' there.  `user-error's if Magit is not installed."
   (agent-fleet-magit--with-root
    target "Diff"
    (lambda (_root) (magit-diff-working-tree))))
+
+;;;###autoload
+(defun agent-fleet-magit-diff-in-child-frame (target)
+  "Show TARGET's working-tree diff in an auxiliary child frame.
+Opens `magit-diff-working-tree' scoped to TARGET's checkout inside a
+native child frame that floats over the terminal's parent frame, leaving
+its window geometry untouched.  TARGET is an agent name, pane id, symbol,
+or `herdr-agent' struct.  Signal a `user-error' when child frames are
+unsupported; there is no silent buffer fallback (use
+`agent-fleet-magit-diff-in-buffer' for that).  `user-error's if Magit is
+not installed."
+  (interactive (list (agent-fleet--read-agent-name "Diff for agent")))
+  (require 'agent-fleet-dashboard nil t)
+  (agent-fleet-dashboard--aux-run
+   (lambda ()
+     (agent-fleet-magit--with-root
+      target "Diff"
+      (lambda (_root) (magit-diff-working-tree))))))
+
+;;;###autoload
+(defun agent-fleet-magit-status (target)
+  "Open Magit status on TARGET's checkout.
+Delegates to `agent-fleet-magit-status-in-buffer'.  TARGET is an agent
+name, pane id, symbol, or `herdr-agent' struct.  For a worktree agent,
+status opens on the worktree root; for a bare agent, the main repo root.
+`user-error's if Magit is not installed."
+  (interactive (list (agent-fleet--read-agent-name "Magit status for agent")))
+  (agent-fleet-magit-status-in-buffer target))
+
+;;;###autoload
+(defun agent-fleet-magit-diff (target)
+  "Show TARGET's working-tree diff.
+Delegates to `agent-fleet-magit-diff-in-buffer'.  Opens
+`magit-diff-working-tree' scoped to TARGET's checkout -- the uncommitted
+changes the agent is making right now (HEAD vs working tree).  `user-error's
+if Magit is not installed."
+  (interactive (list (agent-fleet--read-agent-name "Diff for agent")))
+  (agent-fleet-magit-diff-in-buffer target))
 
 (provide 'agent-fleet-magit)
 ;;; agent-fleet-magit.el ends here
