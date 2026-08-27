@@ -36,7 +36,7 @@
     (file-name-directory agent-fleet-interactive-test--file)))
   "Repository directory containing the package source files.")
 
-(defconst agent-fleet-interactive-test--coverage
+(defconst agent-fleet-interactive-test--public-commands
   '((herdr-connect . agent-fleet-interactive-herdr-lifecycle)
     (herdr-disconnect . agent-fleet-interactive-herdr-lifecycle)
     (herdr-doctor . agent-fleet-interactive-doctors)
@@ -68,9 +68,15 @@
     (agent-fleet-task-wait . agent-fleet-interactive-task-commands)
     (agent-fleet-task-cleanup . agent-fleet-interactive-task-commands)
     (agent-fleet-attach . agent-fleet-interactive-attach)
-    (agent-fleet-attach-mode . agent-fleet-interactive-attach-current-agent)
-    (agent-fleet-attach-menu . agent-fleet-interactive-attach-current-agent)
-    (agent-fleet-attach-prompt . agent-fleet-interactive-attach-current-agent)
+    (agent-fleet . agent-fleet-interactive-dashboard-entry-and-mode)
+    (agent-fleet-dashboard-open-buffer . agent-fleet-interactive-dashboard-display-backends)
+    (agent-fleet-dashboard-open-child-frame . agent-fleet-interactive-dashboard-display-backends)
+    (agent-fleet-dashboard-open-frame . agent-fleet-interactive-dashboard-display-backends)
+    (agent-fleet-dashboard-aux-quit . agent-fleet-interactive-aux-child-frame))
+  "Public commands: standalone M-x entry points with autoload and docs.")
+
+(defconst agent-fleet-interactive-test--context-commands
+  '((agent-fleet-attach-prompt . agent-fleet-interactive-attach-current-agent)
     (agent-fleet-attach-send-keys . agent-fleet-interactive-attach-current-agent)
     (agent-fleet-attach-interrupt . agent-fleet-interactive-attach-current-agent)
     (agent-fleet-attach-kill . agent-fleet-interactive-attach-current-agent)
@@ -83,17 +89,10 @@
     (agent-fleet-attach-magit-in-buffer . agent-fleet-interactive-attach-current-agent)
     (agent-fleet-attach-diff-in-child-frame . agent-fleet-interactive-attach-current-agent)
     (agent-fleet-attach-diff-in-buffer . agent-fleet-interactive-attach-current-agent)
-    (agent-fleet-mode . agent-fleet-interactive-dashboard-entry-and-mode)
-    (agent-fleet . agent-fleet-interactive-dashboard-entry-and-mode)
-    (agent-fleet-dashboard-open-buffer . agent-fleet-interactive-dashboard-display-backends)
-    (agent-fleet-dashboard-open-child-frame . agent-fleet-interactive-dashboard-display-backends)
-    (agent-fleet-dashboard-open-frame . agent-fleet-interactive-dashboard-display-backends)
     (agent-fleet-dashboard-quit . agent-fleet-interactive-dashboard-display-backends)
-    (agent-fleet-dashboard-aux-quit . agent-fleet-interactive-aux-child-frame)
     (agent-fleet-dashboard-refresh . agent-fleet-interactive-dashboard-refresh-and-filters)
     (agent-fleet-dashboard-toggle-project-filter . agent-fleet-interactive-dashboard-refresh-and-filters)
     (agent-fleet-dashboard-toggle-task-filter . agent-fleet-interactive-dashboard-refresh-and-filters)
-    (agent-fleet-dashboard-help . agent-fleet-interactive-dashboard-help)
     (agent-fleet-dashboard-inspect . agent-fleet-interactive-dashboard-row-actions)
     (agent-fleet-dashboard-prompt . agent-fleet-interactive-dashboard-row-actions)
     (agent-fleet-dashboard-interrupt . agent-fleet-interactive-dashboard-row-actions)
@@ -104,7 +103,19 @@
     (agent-fleet-dashboard-magit . agent-fleet-interactive-dashboard-row-actions)
     (agent-fleet-dashboard-attach . agent-fleet-interactive-dashboard-row-actions)
     (agent-fleet-dashboard-new . agent-fleet-interactive-dashboard-row-actions))
-  "Alist mapping every package command to its interactive regression test.")
+  "Context commands: dashboard row actions and attach-buffer wrappers.")
+
+(defconst agent-fleet-interactive-test--mode-commands
+  '((agent-fleet-mode . agent-fleet-interactive-dashboard-entry-and-mode)
+    (agent-fleet-attach-mode . agent-fleet-interactive-attach-current-agent)
+    (agent-fleet-attach-menu . agent-fleet-interactive-attach-current-agent)
+    (agent-fleet-dashboard-help . agent-fleet-interactive-dashboard-help))
+  "Mode and transient prefix commands.")
+
+(defconst agent-fleet-interactive-test--optional-commands
+  '(consult-agent-fleet-mode)
+  "Optional integration commands.  Statically checked only: their tests
+require optional dependencies (consult) and are not part of `make test'.")
 
 (defun agent-fleet-interactive-test--read-forms (file)
   "Read and return all top-level Lisp forms in FILE."
@@ -132,7 +143,7 @@ module cannot evade the inventory merely because no existing module requires
 it yet."
   (let ((files (directory-files
                 agent-fleet-interactive-test--source-directory t
-                "\\`\\(?:agent-fleet\\|herdr\\).*\\.el\\'"))
+                "\\`\\(?:agent-fleet\\|consult-agent-fleet\\|herdr\\).*\\.el\\'"))
         commands)
     (dolist (file files)
       (dolist (form (agent-fleet-interactive-test--read-forms file))
@@ -174,17 +185,37 @@ it yet."
     result))
 
 (ert-deftest agent-fleet-interactive-command-inventory ()
-  "Every package command is registered and points to a real ERT test."
-  (let ((actual (agent-fleet-interactive-test--commands))
-        (registered (sort (mapcar #'car agent-fleet-interactive-test--coverage)
-                          (lambda (a b) (string< (symbol-name a)
-                                                (symbol-name b)))))
-        (test-calls (agent-fleet-interactive-test--test-calls)))
+  "Every package command is registered and classified in the inventory.
+The scanner parses source files (including optional integrations), so a
+newly added command must be registered in one of the four categories or
+the bidirectional check fails.  Core commands (public, context, mode)
+must be `commandp', point to a bound ERT test, and have a literal
+`call-interactively' in that test.  Optional commands are statically
+checked only — their tests require optional dependencies and are not
+part of `make test'.  The category counts are reported in the test
+message for quick auditing."
+  (let* ((actual (agent-fleet-interactive-test--commands))
+         (core (append agent-fleet-interactive-test--public-commands
+                       agent-fleet-interactive-test--context-commands
+                       agent-fleet-interactive-test--mode-commands))
+         (optional agent-fleet-interactive-test--optional-commands)
+         (registered (sort (append (mapcar #'car core) optional)
+                           (lambda (a b) (string< (symbol-name a)
+                                                 (symbol-name b)))))
+         (test-calls (agent-fleet-interactive-test--test-calls)))
     (should (equal actual registered))
-    (dolist (entry agent-fleet-interactive-test--coverage)
+    (dolist (entry core)
       (should (commandp (car entry)))
       (should (ert-test-boundp (cdr entry)))
-      (should (memq (car entry) (alist-get (cdr entry) test-calls))))))
+      (should (memq (car entry) (alist-get (cdr entry) test-calls))))
+    ;; Optional commands: static declaration only (consult may be absent).
+    (dolist (cmd optional)
+      (should (memq cmd actual)))
+    (message "inventory: public=%d context=%d mode=%d optional=%d"
+             (length agent-fleet-interactive-test--public-commands)
+             (length agent-fleet-interactive-test--context-commands)
+             (length agent-fleet-interactive-test--mode-commands)
+             (length optional))))
 
 
 ;;; --- Shared state ----------------------------------------------------
