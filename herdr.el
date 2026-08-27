@@ -252,8 +252,16 @@ schedules a reconnect that retries with a fresh snapshot."
 (defvar herdr--resubscribe-timer nil
   "The pending deferred-resubscribe timer, so `herdr-disconnect' can cancel it.")
 
-(defun herdr--on-event (kind data)
-  "Event callback for the fleet subscription: dispatch + maybe resubscribe."
+(defvar herdr--event-deferral-depth 0
+  "Non-zero while pushed Herdr events are being deferred.")
+
+(defvar herdr--deferred-events nil
+  "Pushed Herdr events queued while `herdr--event-deferral-depth' is non-zero.
+Each entry is a cons (KIND . DATA).  Entries are pushed in reverse arrival
+order and replayed in arrival order by `herdr-call-with-deferred-events'.")
+
+(defun herdr--dispatch-event-now (kind data)
+  "Dispatch pushed event KIND with DATA and schedule any needed resubscribe."
   (let ((descriptor (herdr-events-dispatch kind data)))
     (when (herdr-events-rebuild-needed-p descriptor)
       ;; Defer + coalesce: a burst of pane-set changes triggers a single
@@ -262,6 +270,37 @@ schedules a reconnect that retries with a fresh snapshot."
         (setq herdr--resubscribe-pending t)
         (setq herdr--resubscribe-timer
               (run-at-time 0 nil #'herdr--resubscribe))))))
+
+(defun herdr--flush-deferred-events ()
+  "Replay all currently deferred events in their original arrival order.
+Keep draining until empty: an event hook may perform an RPC that pumps more
+subscription input while replay is in progress, and those events must be
+replayed too rather than being stranded in the queue."
+  (while herdr--deferred-events
+    (let ((batch (nreverse herdr--deferred-events)))
+      (setq herdr--deferred-events nil)
+      (dolist (event batch)
+        (herdr--dispatch-event-now (car event) (cdr event))))))
+
+(defun herdr-call-with-deferred-events (function)
+  "Call FUNCTION while queuing pushed events, then replay them in order.
+This makes a synchronous authoritative-cache update atomic with respect to
+the long-lived subscription stream: request pumping may receive events, but
+they are applied only after FUNCTION finishes rebuilding the cache.  Events
+are replayed even if FUNCTION signals.  Nested calls share the outer queue."
+  (if (> herdr--event-deferral-depth 0)
+      (funcall function)
+    (let ((herdr--event-deferral-depth 1)
+          (herdr--deferred-events nil))
+      (unwind-protect
+          (funcall function)
+        (herdr--flush-deferred-events)))))
+
+(defun herdr--on-event (kind data)
+  "Event callback for the fleet subscription: dispatch + maybe resubscribe."
+  (if (> herdr--event-deferral-depth 0)
+      (push (cons kind (copy-tree data t)) herdr--deferred-events)
+    (herdr--dispatch-event-now kind data)))
 
 (defun herdr--resubscribe ()
   "Tear down and re-establish the subscription with a fresh per-pane set.
