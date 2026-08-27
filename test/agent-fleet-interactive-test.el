@@ -811,7 +811,7 @@ single auxiliary child frame for the origin and reuses it on repeated opens
 deletes the child and restores focus to the origin.  Frame primitives are
 stubbed so the lifecycle runs in batch."
   (let ((herdr-model--cache (agent-fleet-interactive-test--session))
-        (agent-fleet-dashboard--aux-frames (make-hash-table :test 'eq))
+        (agent-fleet-display--aux-frames (make-hash-table :test 'eq))
         (current-frame 'origin)
         display-actions setwb magit-calls deleted)
     (unwind-protect
@@ -855,7 +855,7 @@ stubbed so the lifecycle runs in batch."
                   ((symbol-function 'modify-frame-parameters) #'ignore)
                   ((symbol-function 'select-frame-set-input-focus)
                    (lambda (frame) (setq current-frame frame)))
-                  ((symbol-function 'agent-fleet-dashboard--center-child-frame)
+                  ((symbol-function 'agent-fleet-display--center-child-frame)
                    #'ignore)
                   ((symbol-function 'set-window-buffer)
                    (lambda (&rest args) (push args setwb)))
@@ -875,7 +875,7 @@ stubbed so the lifecycle runs in batch."
           (should (member '(diff) magit-calls))
           (should (eq 'aux-child deleted))
           (should (eq 'origin current-frame))
-          (should-not (gethash 'origin agent-fleet-dashboard--aux-frames)))
+          (should-not (gethash 'origin agent-fleet-display--aux-frames)))
       (dolist (buf (list " *agent-fleet-aux*"
                          "*Agent Output: arch*"
                          agent-fleet-worktree-buffer-name))

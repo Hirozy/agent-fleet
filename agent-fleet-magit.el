@@ -54,10 +54,10 @@
 (declare-function magit-status "magit-status" (&optional directory))
 (declare-function magit-diff-working-tree "magit-diff" (&optional range args files))
 
-;; The auxiliary child-frame presentation API lives in the dashboard
-;; module, which loads this feature; declared here so byte-compilation
+;; The auxiliary child-frame presentation API lives in the display
+;; module, which loads before this feature; declared here so byte-compilation
 ;; does not warn, and required at runtime by the `-in-child-frame' entries.
-(declare-function agent-fleet-dashboard--aux-run "agent-fleet-dashboard" (thunk))
+(declare-function agent-fleet-display--aux-run "agent-fleet-display" (thunk))
 
 
 ;;; --- Availability guard --------------------------------------------
@@ -152,8 +152,8 @@ agent name, pane id, symbol, or `herdr-agent' struct.  Signal a
 buffer fallback (use `agent-fleet-magit-status-in-buffer' for that).
 `user-error's if Magit is not installed."
   (interactive (list (agent-fleet--read-agent-name "Magit status for agent")))
-  (require 'agent-fleet-dashboard nil t)
-  (agent-fleet-dashboard--aux-run
+  (require 'agent-fleet-display nil t)
+  (agent-fleet-display--aux-run
    (lambda ()
      (agent-fleet-magit--with-root
       target "Magit status"
@@ -182,8 +182,8 @@ unsupported; there is no silent buffer fallback (use
 `agent-fleet-magit-diff-in-buffer' for that).  `user-error's if Magit is
 not installed."
   (interactive (list (agent-fleet--read-agent-name "Diff for agent")))
-  (require 'agent-fleet-dashboard nil t)
-  (agent-fleet-dashboard--aux-run
+  (require 'agent-fleet-display nil t)
+  (agent-fleet-display--aux-run
    (lambda ()
      (agent-fleet-magit--with-root
       target "Diff"

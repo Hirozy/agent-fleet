@@ -54,11 +54,15 @@ Herdr server and agent PTYs
             ▼
       agent-fleet.el
             │ control commands and target resolution
-      ┌─────┼───────────────┬──────────────┐
-      ▼     ▼               ▼              ▼
- dashboard attach      worktrees       projects/tasks
-      │     │               │              │
-      └─────┴────── Emacs views and integrations
+      ┌─────┴──────────────┐
+      ▼                    ▼
+ agent-fleet-display.el   feature modules
+ presentation lifecycle    worktree / magit / project / parallel
+      │                    │
+      └──────┬─────────────┘
+             ▼
+     dashboard / attach
+     contextual interaction
 ```
 
 ### Data and control flow
@@ -91,6 +95,12 @@ Herdr server and agent PTYs
 - Feature modules build on the control plane and model. They should not create
   a second connection, duplicate target resolution, or bypass the model with
   ad-hoc socket calls.
+- The display module (`agent-fleet-display.el`) owns generic frame lifecycle:
+  child-frame capability checks, frame parameter merging, parent resolution,
+  centering, auxiliary child reuse/close, and the `quit-restore-window` advice.
+  It depends only on Emacs primitives, not on Magit, worktree, attach, the
+  dashboard buffer, or any Herdr RPC. Feature modules call its `--aux-run`
+  API; the dashboard calls its capability and centering helpers.
 - GUI and optional integrations are leaves of the dependency graph. Their
   absence must not prevent the core control plane from loading.
 - The dashboard is a view and interaction layer. It may invoke control
@@ -130,9 +140,9 @@ The dashboard display backend is independent from the control-plane data flow:
 - external actions select the recorded origin frame, display the destination,
   and then close the temporary child frame only after success.
 
-Keep frame lifecycle handling centralized in the dashboard module. New display
-backends must preserve the same success, nil-result, error, and no-GUI fallback
-semantics.
+Keep frame lifecycle handling centralized in the display module
+(`agent-fleet-display.el`). New display backends must preserve the same
+success, nil-result, error, and no-GUI fallback semantics.
 
 ## Current dashboard implementation
 
