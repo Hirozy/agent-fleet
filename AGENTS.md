@@ -188,10 +188,10 @@ lifecycle:
 
 1. Switch back to the frame from which the dashboard was opened.
 2. Run the requested action.
-3. If the destination opens successfully and returns a non-nil result, close
-   the dashboard child frame.
-4. If the destination returns nil, fails, or signals an error, keep the child
-   dashboard open and restore its focus.
+3. If the action's outcome has `:opened` non-nil, close the dashboard child
+   frame.
+4. If the outcome is not opened, or the action signals an error, keep the
+   child dashboard open and restore its focus.
 
 Attach has one additional requirement: after a successful attach, the terminal
 must replace the current window in the origin frame, and the dashboard child
@@ -231,14 +231,14 @@ computed once regardless of presentation. The requirements this satisfies:
 - no splits, side windows, or other layout changes touch the terminal PTY's
   rows or columns; Magit may split only inside the auxiliary child frame;
 - genuine parent-frame resizes still propagate to the PTY immediately;
-- the auxiliary child frame is owned by `agent-fleet-dashboard.el` (one child
-  per origin, reused across opens, never nested under another child frame);
-  it fills the parent frame rather than inheriting the dashboard's compact
-  dimensions, and the base layer stays free of frame lifecycle;
+- the auxiliary child frame is owned by `agent-fleet-display.el` (one
+  child per origin, reused across opens, never nested under another child
+  frame); it fills the parent frame rather than inheriting the dashboard's
+  compact dimensions;
 - closing an auxiliary child (via `q` inside the view, which is intercepted
   with `quit-restore-window` advice scoped to auxiliary frames, via
-  `agent-fleet-dashboard-aux-quit`, or the lifecycle rules on nil/error
-  results) deletes it, forgets the reuse entry, and refocuses the origin —
+  `agent-fleet-dashboard-aux-quit`, or the lifecycle rules on a not-opened
+  outcome) deletes it, forgets the reuse entry, and refocuses the origin —
   no nested or orphaned frames.
 
 The scoped `quit-restore-window` advice is a known design debt: it

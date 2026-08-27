@@ -7,12 +7,12 @@ ALL_EL = $(SOURCES) test/herdr-mock-server.el $(TESTS)
 .PHONY: compile test test-live clean doctor autoloads
 
 autoloads:
-	$(EMACS) --batch --eval \
+	$(EMACS) --batch --eval "(require 'loaddefs-gen)" --eval \
 	  "(let ((generated-autoload-file (expand-file-name \"agent-fleet-autoloads.el\" default-directory))) \
 	    (update-directory-autoloads default-directory) \
 	    (save-buffer))"
 
-compile:
+compile: autoloads
 	@set -e; for f in $(ALL_EL); do \
 	  $(EMACS) --batch $(LOAD_PATH) \
 	    --eval '(setq byte-compile-error-on-warn t)' \

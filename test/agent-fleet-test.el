@@ -1082,9 +1082,10 @@ teeth test: push the faithful dotted kind and assert the hook fires."
 (ert-deftest agent-fleet-core-does-not-load-features ()
   "Requiring `agent-fleet' loads only the core control plane.
 Feature modules (dashboard, attach, magit, worktree, parallel) are NOT
-loaded by a bare `require'; they autoload on demand.  This is verified
-in a fresh Emacs subprocess so the already-loaded test environment does
-not mask the result."
+loaded by a bare `require', while their public entry points and the prefix
+map remain available through generated autoloads.  This is verified in a
+fresh Emacs subprocess so the already-loaded test environment does not
+mask the result."
   (skip-unless (executable-find "emacs"))
   (let* ((dir (or (file-name-directory (locate-library "agent-fleet"))
                   default-directory))
@@ -1092,24 +1093,33 @@ not mask the result."
                     (concat "(require 'agent-fleet)\n"
                             "(princ \"START\")\n"
                             "(princ (format \"%S\"\n"
-                            "  (mapcar #'symbol-name\n"
-                            "    (seq-filter (lambda (f)\n"
-                            "      (string-prefix-p \"agent-fleet\" (symbol-name f)))\n"
-                            "    features))))\n"))))
+                            "  (list :features\n"
+                            "    (mapcar #'symbol-name\n"
+                            "      (seq-filter (lambda (f)\n"
+                            "        (string-prefix-p \"agent-fleet\" (symbol-name f)))\n"
+                            "      features))\n"
+                            "    :dashboard-command (commandp 'agent-fleet)\n"
+                            "    :attach-command (commandp 'agent-fleet-attach)\n"
+                            "    :command-map (boundp 'agent-fleet-command-map))))\n"))))
     (unwind-protect
         (let* ((cmd (format "emacs --batch -L %s -l %s 2>&1"
                             (shell-quote-argument dir)
                             (shell-quote-argument script)))
                (output (shell-command-to-string cmd))
                (start (string-match "START" output))
-               (feats (when start
-                        (condition-case nil
-                            (read (substring output (+ start 5)))
-                          (error nil)))))
+               (result (when start
+                         (condition-case nil
+                             (read (substring output (+ start 5)))
+                           (error nil))))
+               (feats (plist-get result :features)))
+          (should (locate-library "agent-fleet-autoloads"))
           (should (member "agent-fleet" feats))
           (should-not (member "agent-fleet-dashboard" feats))
           (should-not (member "agent-fleet-attach" feats))
-          (should-not (member "agent-fleet-magit" feats)))
+          (should-not (member "agent-fleet-magit" feats))
+          (should (plist-get result :dashboard-command))
+          (should (plist-get result :attach-command))
+          (should (plist-get result :command-map)))
       (delete-file script))))
 
 (ert-deftest agent-fleet-start-validates-required-fields-before-provisioning ()

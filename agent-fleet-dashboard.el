@@ -507,19 +507,23 @@ pane output).  Delegates to `agent-fleet-worktree-status-in-buffer'."
 
 (defun agent-fleet-dashboard-diff ()
   "Show the working-tree diff for the agent at point.
-Delegates to `agent-fleet-magit-diff-in-buffer' (Magit optional)."
+Uses the same operation as `agent-fleet-magit-diff-in-buffer' while retaining
+its explicit presentation outcome for child-dashboard lifecycle decisions."
   (interactive)
   (let ((pane-id (agent-fleet-dashboard--agent-at-point)))
-    (agent-fleet-dashboard--visit-external-interface
-     (lambda () (agent-fleet-magit-diff-in-buffer pane-id)))))
+    (agent-fleet-display--outcome-value
+     (agent-fleet-dashboard--visit-external-interface
+      (lambda () (agent-fleet-magit--diff-outcome pane-id))))))
 
 (defun agent-fleet-dashboard-magit ()
   "Open Magit status for the agent at point.
-Delegates to `agent-fleet-magit-status-in-buffer' (Magit optional)."
+Uses the same operation as `agent-fleet-magit-status-in-buffer' while retaining
+its explicit presentation outcome for child-dashboard lifecycle decisions."
   (interactive)
   (let ((pane-id (agent-fleet-dashboard--agent-at-point)))
-    (agent-fleet-dashboard--visit-external-interface
-     (lambda () (agent-fleet-magit-status-in-buffer pane-id)))))
+    (agent-fleet-display--outcome-value
+     (agent-fleet-dashboard--visit-external-interface
+      (lambda () (agent-fleet-magit--status-outcome pane-id))))))
 
 (defun agent-fleet-dashboard-attach ()
   "Attach live to the agent at point's terminal.
@@ -758,6 +762,7 @@ frame) is its own parent."
                            (error-message-string err)))))))))
 
 
+;;;###autoload
 (defun agent-fleet-dashboard-aux-quit ()
   "Close the auxiliary child frame, or quit the current window.
 When the selected frame is an auxiliary child, delete it and restore

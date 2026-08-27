@@ -371,7 +371,7 @@ prefix arg, prompt for the line count; otherwise the default
 child frames are unsupported; there is no silent buffer fallback (use
 `agent-fleet-attach-inspect-in-buffer' for that)."
   (interactive "P")
-  (require 'agent-fleet-dashboard nil t)
+  (require 'agent-fleet-display nil t)
   (let ((pane-id (agent-fleet-attach--current-pane-id)))
     (agent-fleet-show-output-in-child-frame pane-id
                              (and lines

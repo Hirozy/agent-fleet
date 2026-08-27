@@ -415,14 +415,14 @@ would not catch an accidental `add-function' wrapper around a nil hook."
                (lambda (target)
                  (push (list 'worktree target) calls)
                  'opened))
-              ((symbol-function 'agent-fleet-magit-diff-in-buffer)
+              ((symbol-function 'agent-fleet-magit--diff-outcome)
                (lambda (target)
                  (push (list 'diff target) calls)
-                 'opened))
-              ((symbol-function 'agent-fleet-magit-status-in-buffer)
+                 (agent-fleet-display--make-outcome t nil)))
+              ((symbol-function 'agent-fleet-magit--status-outcome)
                (lambda (target)
                  (push (list 'magit target) calls)
-                 'opened)))
+                 (agent-fleet-display--make-outcome t nil))))
       (dolist (command '(agent-fleet-dashboard-inspect
                          agent-fleet-dashboard-worktree
                          agent-fleet-dashboard-diff
