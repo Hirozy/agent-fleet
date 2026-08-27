@@ -531,29 +531,39 @@ child frame, uppercase the buffer."
     ("M" "Magit status"      agent-fleet-attach-magit-in-buffer)
     ("W" "Worktree status"   agent-fleet-attach-worktree-in-buffer)]])
 
-(defvar-keymap agent-fleet-attach-mode-map
-  :doc "Keymap for `agent-fleet-attach-mode', active in attach buffers.
-Keys live under the `C-c C-a' prefix: ghostel reserves plain keys for the
-PTY in char mode, and `C-c' is in `ghostel-keymap-exceptions' so it reaches
-Emacs.  The prefix avoids ghostel's own `C-c C-c' and `C-c C-z'.
+;;;###autoload
+(defvar-keymap agent-fleet-attach-command-map
+  :doc "Prefix map for attach-buffer current-agent commands.
+Bound to `C-c C-a' in `agent-fleet-attach-mode-map'.  You can rebind it
+there, e.g. (keymap-set agent-fleet-attach-mode-map \"C-c C-f\"
+\\='agent-fleet-attach-command-map).
 Lowercase repo/view keys (`o'/`w'/`m'/`d') open an auxiliary child frame
 over the terminal parent, leaving its window geometry untouched; uppercase
 (`O'/`W'/`M'/`D') open an ordinary buffer."
-  "C-c C-a o" #'agent-fleet-attach-inspect-in-child-frame
-  "C-c C-a O" #'agent-fleet-attach-inspect-in-buffer
-  "C-c C-a s" #'agent-fleet-attach-prompt
-  "C-c C-a k" #'agent-fleet-attach-send-keys
-  "C-c C-a i" #'agent-fleet-attach-interrupt
-  "C-c C-a x" #'agent-fleet-attach-kill
-  "C-c C-a r" #'agent-fleet-attach-rename
-  "C-c C-a d" #'agent-fleet-attach-diff-in-child-frame
-  "C-c C-a D" #'agent-fleet-attach-diff-in-buffer
-  "C-c C-a m" #'agent-fleet-attach-magit-in-child-frame
-  "C-c C-a M" #'agent-fleet-attach-magit-in-buffer
-  "C-c C-a w" #'agent-fleet-attach-worktree-in-child-frame
-  "C-c C-a W" #'agent-fleet-attach-worktree-in-buffer
-  "C-c C-a h" #'agent-fleet-attach-menu
-  "C-c C-a ?" #'agent-fleet-attach-menu)
+  "o" #'agent-fleet-attach-inspect-in-child-frame
+  "O" #'agent-fleet-attach-inspect-in-buffer
+  "s" #'agent-fleet-attach-prompt
+  "k" #'agent-fleet-attach-send-keys
+  "i" #'agent-fleet-attach-interrupt
+  "x" #'agent-fleet-attach-kill
+  "r" #'agent-fleet-attach-rename
+  "d" #'agent-fleet-attach-diff-in-child-frame
+  "D" #'agent-fleet-attach-diff-in-buffer
+  "m" #'agent-fleet-attach-magit-in-child-frame
+  "M" #'agent-fleet-attach-magit-in-buffer
+  "w" #'agent-fleet-attach-worktree-in-child-frame
+  "W" #'agent-fleet-attach-worktree-in-buffer
+  "h" #'agent-fleet-attach-menu
+  "?" #'agent-fleet-attach-menu)
+
+;;;###autoload
+(defvar-keymap agent-fleet-attach-mode-map
+  :doc "Keymap for `agent-fleet-attach-mode', active in attach buffers.
+The `C-c C-a' prefix is bound to `agent-fleet-attach-command-map' so the
+full key set lives in one rebindable map.  Ghostel reserves plain keys
+for the PTY in char mode, and `C-c' is in `ghostel-keymap-exceptions' so
+it reaches Emacs.  The prefix avoids ghostel's own `C-c C-c' and `C-c C-z'."
+  "C-c C-a" agent-fleet-attach-command-map)
 
 (define-minor-mode agent-fleet-attach-mode
   "Act on the agent this attach terminal drives, without a selection prompt.

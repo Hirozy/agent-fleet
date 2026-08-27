@@ -489,43 +489,45 @@ buffer's pane id — no selection prompt."
       (kill-buffer buf))))
 
 (ert-deftest agent-fleet-attach-mode-map-binds-prefix ()
-  "The attach minor-mode map binds the `C-c C-a' prefix keys: lowercase
-view keys (`o'/`d'/`m'/`w') open an auxiliary child frame, uppercase
-(`O'/`D'/`M'/`W') open an ordinary buffer, and the control keys
-(`s'/`k'/`i'/`x'/`r') plus `h'/`?' reach the transient menu.  The prefix
-ghostel passes through to Emacs in char mode (its own `C-c C-c'/`C-c C-z'
-are left untouched)."
-  (let ((map agent-fleet-attach-mode-map))
+  "The attach minor-mode map binds `C-c C-a' to `agent-fleet-attach-command-map',
+which holds the single-key bindings: lowercase view keys (`o'/`d'/`m'/`w')
+open an auxiliary child frame, uppercase (`O'/`D'/`M'/`W') open an ordinary
+buffer, and the control keys (`s'/`k'/`i'/`x'/`r') plus `h'/`?' reach the
+transient menu.  The prefix ghostel passes through to Emacs in char mode
+(its own `C-c C-c'/`C-c C-z' are left untouched)."
+  (should (eq agent-fleet-attach-command-map
+              (lookup-key agent-fleet-attach-mode-map (kbd "C-c C-a"))))
+  (let ((map agent-fleet-attach-command-map))
     (should (eq #'agent-fleet-attach-inspect-in-child-frame
-                (lookup-key map (kbd "C-c C-a o"))))
+                (lookup-key map (kbd "o"))))
     (should (eq #'agent-fleet-attach-inspect-in-buffer
-                (lookup-key map (kbd "C-c C-a O"))))
+                (lookup-key map (kbd "O"))))
     (should (eq #'agent-fleet-attach-diff-in-child-frame
-                (lookup-key map (kbd "C-c C-a d"))))
+                (lookup-key map (kbd "d"))))
     (should (eq #'agent-fleet-attach-diff-in-buffer
-                (lookup-key map (kbd "C-c C-a D"))))
+                (lookup-key map (kbd "D"))))
     (should (eq #'agent-fleet-attach-magit-in-child-frame
-                (lookup-key map (kbd "C-c C-a m"))))
+                (lookup-key map (kbd "m"))))
     (should (eq #'agent-fleet-attach-magit-in-buffer
-                (lookup-key map (kbd "C-c C-a M"))))
+                (lookup-key map (kbd "M"))))
     (should (eq #'agent-fleet-attach-worktree-in-child-frame
-                (lookup-key map (kbd "C-c C-a w"))))
+                (lookup-key map (kbd "w"))))
     (should (eq #'agent-fleet-attach-worktree-in-buffer
-                (lookup-key map (kbd "C-c C-a W"))))
+                (lookup-key map (kbd "W"))))
     (should (eq #'agent-fleet-attach-prompt
-                (lookup-key map (kbd "C-c C-a s"))))
+                (lookup-key map (kbd "s"))))
     (should (eq #'agent-fleet-attach-send-keys
-                (lookup-key map (kbd "C-c C-a k"))))
+                (lookup-key map (kbd "k"))))
     (should (eq #'agent-fleet-attach-interrupt
-                (lookup-key map (kbd "C-c C-a i"))))
+                (lookup-key map (kbd "i"))))
     (should (eq #'agent-fleet-attach-kill
-                (lookup-key map (kbd "C-c C-a x"))))
+                (lookup-key map (kbd "x"))))
     (should (eq #'agent-fleet-attach-rename
-                (lookup-key map (kbd "C-c C-a r"))))
+                (lookup-key map (kbd "r"))))
     (should (eq #'agent-fleet-attach-menu
-                (lookup-key map (kbd "C-c C-a h"))))
+                (lookup-key map (kbd "h"))))
     (should (eq #'agent-fleet-attach-menu
-                (lookup-key map (kbd "C-c C-a ?"))))))
+                (lookup-key map (kbd "?"))))))
 
 (ert-deftest agent-fleet-attach-prepare-buffer-enables-mode ()
   "`--prepare-buffer' enables `agent-fleet-attach-mode' buffer-locally so the
