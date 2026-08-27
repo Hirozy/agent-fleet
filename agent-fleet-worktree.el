@@ -56,6 +56,11 @@
 (require 'herdr-model)
 (require 'agent-fleet)
 
+;; The auxiliary child-frame presentation API lives in the dashboard
+;; module, which loads this feature; declared here so byte-compilation
+;; does not warn, and required at runtime by the `-in-child-frame' entry.
+(declare-function agent-fleet-dashboard--aux-run "agent-fleet-dashboard" (thunk))
+
 
 ;;; --- Fetch helper ---------------------------------------------------
 
@@ -208,11 +213,14 @@ is the agent's workspace."
   "Insert a formatted LABEL / VALUE field line into the current buffer."
   (insert (format "%-12s %s\n" label value)))
 
-(defun agent-fleet-worktree--display (wt ws-id source)
-  "Render worktree WT (workspace WS-ID, repo SOURCE) in a read-only buffer.
-Shows worktree METADATA only.  SOURCE
-is a `WorktreeSourceInfo' plist or nil."
-  (let ((buf (get-buffer-create "*Agent Fleet Worktree*")))
+(defconst agent-fleet-worktree-buffer-name "*Agent Fleet Worktree*"
+  "Name of the read-only worktree status view buffer.")
+
+(defun agent-fleet-worktree--render-worktree-buffer (wt ws-id source)
+  "Render worktree WT (workspace WS-ID, repo SOURCE) in its read-only buffer.
+Shows worktree METADATA only.  SOURCE is a `WorktreeSourceInfo' plist or
+nil.  Return the buffer; display is the caller's responsibility."
+  (let ((buf (get-buffer-create agent-fleet-worktree-buffer-name)))
     (with-current-buffer buf
       (special-mode)                 ; read-only view: `q' quits, etc.
       (let ((inhibit-read-only t))
@@ -237,20 +245,21 @@ is a `WorktreeSourceInfo' plist or nil."
          "Prunable" (if (herdr-worktree-is-prunable wt) "yes" "no"))
         (goto-char (point-min))
         (set-buffer-modified-p nil)))
-    (pop-to-buffer buf)))            ; select the worktree window
+    buf))
 
-;;;###autoload
-(defun agent-fleet-worktree-status (target)
-  "Show the worktree for TARGET's workspace (the dashboard `w' action).
-TARGET is an agent name, pane id, symbol, or `herdr-agent' struct.
-Displays the worktree path/branch/repo/metadata read-only
-(no pane output is persisted).  Refreshes worktree state from
-`worktree.list' on each call (user-initiated, never a timer), so the
-status reflects the live worktree set and repo source.
-Returns the worktree struct, or nil and messages when no worktree is open
-for the workspace."
-  (interactive
-   (list (agent-fleet--read-agent-name "Worktree status for agent")))
+(defun agent-fleet-worktree--display (wt ws-id source)
+  "Render worktree WT and select its buffer in an ordinary window.
+Delegates rendering to `agent-fleet-worktree--render-worktree-buffer'."
+  (pop-to-buffer (agent-fleet-worktree--render-worktree-buffer wt ws-id source)))
+
+(defun agent-fleet-worktree--status-op (target)
+  "Refresh and render TARGET's worktree status; return the worktree or nil.
+Ensure the connection, resolve TARGET, fetch `worktree.list', and when a
+worktree is open for the agent's workspace, render its metadata into the
+view buffer.  Return the worktree struct, or nil and message when none is
+open.  Display is the caller's responsibility -- this is the shared
+operation behind the `-in-buffer' and `-in-child-frame' presentation
+commands, so the fetch runs exactly once regardless of presentation."
   (agent-fleet--ensure-connected)
   (let* ((agent (or (agent-fleet--find-agent target)
                     (signal 'agent-fleet-target-not-found (list :agent target))))
@@ -263,11 +272,60 @@ for the workspace."
               structs)))
     (if wt
         (progn
-          (agent-fleet-worktree--display wt ws-id source)
+          (agent-fleet-worktree--render-worktree-buffer wt ws-id source)
           wt)
       (message "No worktree for %s (workspace %s)"
                (herdr-agent-display-name agent) (or ws-id "?"))
       nil)))
+
+;;;###autoload
+(defun agent-fleet-worktree-status-in-buffer (target)
+  "Show the worktree for TARGET's workspace in an ordinary buffer.
+TARGET is an agent name, pane id, symbol, or `herdr-agent' struct.
+Displays the worktree path/branch/repo/metadata read-only (no pane output
+is persisted).  Refreshes worktree state from `worktree.list' on each call
+(user-initiated, never a timer).  Returns the worktree struct, or nil and
+messages when no worktree is open for the workspace."
+  (interactive
+   (list (agent-fleet--read-agent-name "Worktree status for agent")))
+  (let ((wt (agent-fleet-worktree--status-op target)))
+    (when wt
+      (pop-to-buffer (get-buffer agent-fleet-worktree-buffer-name)))
+    wt))
+
+;;;###autoload
+(defun agent-fleet-worktree-status-in-child-frame (target)
+  "Show the worktree for TARGET's workspace in an auxiliary child frame.
+Opens the read-only worktree view inside a native child frame that floats
+over the terminal's parent frame, leaving its window geometry untouched.
+TARGET is an agent name, pane id, symbol, or `herdr-agent' struct.
+Signal a `user-error' when child frames are unsupported; there is no
+silent buffer fallback (use `agent-fleet-worktree-status-in-buffer' for
+that).  Returns the worktree struct, or nil and messages when no worktree
+is open for the workspace."
+  (interactive
+   (list (agent-fleet--read-agent-name "Worktree status for agent")))
+  (require 'agent-fleet-dashboard nil t)
+  (agent-fleet-dashboard--aux-run
+   (lambda ()
+     (let ((wt (agent-fleet-worktree--status-op target)))
+       (when wt
+         (set-window-buffer nil (get-buffer agent-fleet-worktree-buffer-name)))
+       wt))))
+
+;;;###autoload
+(defun agent-fleet-worktree-status (target)
+  "Show the worktree for TARGET's workspace (the dashboard `w' action).
+Delegates to `agent-fleet-worktree-status-in-buffer'.  TARGET is an agent
+name, pane id, symbol, or `herdr-agent' struct.  Displays the worktree
+path/branch/repo/metadata read-only (no pane output is persisted).
+Refreshes worktree state from `worktree.list' on each call
+(user-initiated, never a timer), so the status reflects the live worktree
+set and repo source.  Returns the worktree struct, or nil and messages
+when no worktree is open for the workspace."
+  (interactive
+   (list (agent-fleet--read-agent-name "Worktree status for agent")))
+  (agent-fleet-worktree-status-in-buffer target))
 
 
 ;;; --- Cleanup (delete finished worktrees) -----------------------

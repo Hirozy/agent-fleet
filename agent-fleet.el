@@ -1161,16 +1161,15 @@ id in brackets.  Returns the pane id so it round-trips through
                  alist nil t nil nil default)
                 alist))))
 
-;;;###autoload
-(defun agent-fleet-show-output (agent &optional lines source)
-  "Read AGENT's recent output and display it in a read-only buffer.
-Opens `*Agent Output: <name>*' with the text from `agent.read'.  This is
-a read-snapshot view, NOT a continuously mirrored terminal.
-With a prefix arg, prompt for the line count."
-  (interactive
-   (list (agent-fleet--read-agent-name "Show output for agent")
-         (and current-prefix-arg
-              (read-number "Lines: " agent-fleet-default-read-lines))))
+(defun agent-fleet--show-output-op (agent &optional lines source)
+  "Read AGENT's recent output and render it into its view buffer.
+Ensure the connection, resolve AGENT, run `agent.read', and fill the
+read-only `*Agent Output: <name>*' buffer with the text.  Return
+\(BUFFER . RES), where RES is the `agent.read' result plist; signal
+`agent-fleet-target-not-found' when AGENT is unknown.  Display is the
+caller's responsibility -- this is the shared operation behind the
+`-in-buffer' and `-in-child-frame' presentation commands, so the read
+runs exactly once regardless of presentation."
   (agent-fleet--ensure-connected)
   (let* ((struct (or (agent-fleet--find-agent agent)
                      (signal 'agent-fleet-target-not-found
@@ -1180,16 +1179,44 @@ With a prefix arg, prompt for the line count."
                                 :lines (or lines agent-fleet-default-read-lines)
                                 :source (or source agent-fleet-default-read-source)))
          (text (or (plist-get res :text) ""))
-         (buf-name (concat agent-fleet-output-buffer-prefix name "*")))
-    (with-current-buffer (get-buffer-create buf-name)
+         (buf-name (concat agent-fleet-output-buffer-prefix name "*"))
+         (buf (get-buffer-create buf-name)))
+    (with-current-buffer buf
       (special-mode)                 ; read-only view: `q' quits, etc.
       (let ((inhibit-read-only t))
         (erase-buffer)
         (insert text)
         (goto-char (point-min))
         (set-buffer-modified-p nil)))
-    (pop-to-buffer buf-name)         ; select the output window
-    res))
+    (cons buf res)))
+
+;;;###autoload
+(defun agent-fleet-show-output-in-buffer (agent &optional lines source)
+  "Read AGENT's recent output and display it in an ordinary buffer.
+Opens `*Agent Output: <name>*' with the text from `agent.read' in the
+selected frame's window tree.  This is a read-snapshot view, NOT a
+continuously mirrored terminal.  With a prefix arg, prompt for the line
+count."
+  (interactive
+   (list (agent-fleet--read-agent-name "Show output for agent")
+         (and current-prefix-arg
+              (read-number "Lines: " agent-fleet-default-read-lines))))
+  (let ((pair (agent-fleet--show-output-op agent lines source)))
+    (pop-to-buffer (car pair))
+    (cdr pair)))
+
+;;;###autoload
+(defun agent-fleet-show-output (agent &optional lines source)
+  "Read AGENT's recent output and display it in a read-only buffer.
+Delegates to `agent-fleet-show-output-in-buffer'.  Opens
+`*Agent Output: <name>*' with the text from `agent.read' -- a
+read-snapshot view, NOT a continuously mirrored terminal.  With a prefix
+arg, prompt for the line count."
+  (interactive
+   (list (agent-fleet--read-agent-name "Show output for agent")
+         (and current-prefix-arg
+              (read-number "Lines: " agent-fleet-default-read-lines))))
+  (agent-fleet-show-output-in-buffer agent lines source))
 
 
 ;;; --- Hook bus ----------------------------------------
