@@ -416,10 +416,10 @@ both that precondition and the attach argv (TAKEOVER adds `--takeover')."
 
 ;;; --- Dashboard `a' key wiring ---------------------------------------
 
-(ert-deftest agent-fleet-dashboard-attach-key-bound ()
-  "The dashboard mode-map binds `a' to `agent-fleet-dashboard-attach'
+(ert-deftest agent-fleet-dashboard--attach-key-bound ()
+  "The dashboard mode-map binds `a' to `agent-fleet-dashboard--attach'
 ."
-  (should (eq #'agent-fleet-dashboard-attach
+  (should (eq #'agent-fleet-dashboard--attach
               (lookup-key agent-fleet-mode-map "a"))))
 
 ;;; --- Current-agent actions (attach buffer keymap + transient) --------

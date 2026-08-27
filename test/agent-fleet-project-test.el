@@ -244,7 +244,7 @@ exists yet (one project ↔ one workspace), so no workspace.create."
           ;; filter to repo-a (the project of the agent at point w1:p2)
           (with-current-buffer "*Agent Fleet*"
             (should (agent-fleet-project-test--goto-row "w1:p2"))
-            (agent-fleet-dashboard-toggle-project-filter))
+            (agent-fleet-dashboard--toggle-project-filter))
           (agent-fleet-test--pump)
           ;; only repo-a agents remain: w1:p2 (w1:p1 has no project, p3 is repo-b)
           (should (= 1 (length (with-current-buffer "*Agent Fleet*"
@@ -253,7 +253,7 @@ exists yet (one project ↔ one workspace), so no workspace.create."
                     (assoc "w1:p2" tabulated-list-entries)))
           ;; re-press (filter active) clears it
           (with-current-buffer "*Agent Fleet*"
-            (agent-fleet-dashboard-toggle-project-filter))
+            (agent-fleet-dashboard--toggle-project-filter))
           (agent-fleet-test--pump)
           (should (= 3 (length (with-current-buffer "*Agent Fleet*"
                                  tabulated-list-entries)))))
