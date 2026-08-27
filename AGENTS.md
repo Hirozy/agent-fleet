@@ -241,6 +241,14 @@ computed once regardless of presentation. The requirements this satisfies:
   results) deletes it, forgets the reuse entry, and refocuses the origin —
   no nested or orphaned frames.
 
+The scoped `quit-restore-window` advice is a known design debt: it
+intercepts the global quit path (checking the auxiliary-frame marker to
+short-circuit).  Removing it requires a native alternative that covers
+all quit paths (output `q`, worktree `q`, Magit status/diff `q`, multi-
+window Magit, repeated open/reuse, deleted origin, and ordinary-frame
+quit) verified in a graphical Emacs.  Without that verification, the
+advice stays — do not replace it with an unverified alternative.
+
 The child-frame presentation contract is stricter than the dashboard's: an
 explicit `-in-child-frame` command signals a `user-error` on an unsupported
 runtime (Emacs older than 29.1, non-graphical frame, missing
