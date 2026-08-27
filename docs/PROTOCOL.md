@@ -539,3 +539,164 @@ Herdr server → one live agent pane
   `pane_updated` (never a workspace event) and flow straight into the derived
   label with no resync needed. A `workspace_renamed` sets the `custom-name`,
   which wins over the cwd-derived name (matching the server).
+
+## 10. Full RPC catalog (not yet implemented)
+
+The methods below are available in the Herdr socket API
+(<https://herdr.dev/docs/socket-api/>) but not currently issued by
+agent-fleet. They are documented here as a reference for future
+feature work — workspace/tab management, layout export/import, pane
+navigation, notifications, plugins, and integrations. Parameter and
+result field names follow the Herdr JSON wire convention
+(`snake_case`); the Emacs client maps them to `:kebab-case` plists.
+
+### 10.1 Workspace management
+
+| Method | Params | Result |
+|---|---|---|
+| `workspace.list` | `{}` | list of `WorkspaceInfo` |
+| `workspace.get` | `{workspace_id}` | `WorkspaceInfo` |
+| `workspace.focus` | `{workspace_id}` | focused workspace info |
+| `workspace.rename` | `{workspace_id, label}` | `WorkspaceInfo` |
+| `workspace.move` | `{workspace_id, before_workspace_id?}` | reordered list |
+| `workspace.move_block` | `{workspace_ids: [...], before_workspace_id?}` | authoritative ordered list (`workspace_ids` must be unique; the anchor cannot be part of the block) |
+| `workspace.close` | `{workspace_id}` | closed ack |
+| `workspace.report_metadata` | `{workspace_id, source, tokens, ttl_ms}` | metadata ack |
+
+Notes:
+- The session snapshot already carries all workspaces (`snapshot.workspaces`),
+  so `workspace.list` is only needed for a live refresh without re-snapshotting.
+- `workspace.move` / `workspace.move_block` reorder workspaces; the result is
+  the authoritative ordered list (the server assigns `number` fields).
+- `workspace.report_metadata` attaches display-only token metadata with a TTL;
+  it does not change the workspace's identity or label.
+
+### 10.2 Tab management
+
+| Method | Params | Result |
+|---|---|---|
+| `tab.list` | `{}` | list of `TabInfo` |
+| `tab.get` | `{tab_id}` | `TabInfo` |
+| `tab.focus` | `{tab_id}` | focused tab info |
+| `tab.rename` | `{tab_id, label}` | `TabInfo` |
+| `tab.move` | `{tab_id, before_tab_id?}` | reordered list |
+| `tab.close` | `{tab_id}` | closed ack |
+
+Notes:
+- The snapshot carries all tabs (`snapshot.tabs`); `tab.list` is a live
+  refresh without re-snapshotting.
+- `tab.create` is already used internally by `agent-fleet-start`
+  (§8.1); `tab.close` would close a tab without killing the agent pane
+  (unlike `pane.close`).
+
+### 10.3 Pane management (beyond §8.1)
+
+| Method | Params | Result |
+|---|---|---|
+| `pane.list` | `{}` | list of `PaneInfo` |
+| `pane.get` | `{pane_id?}` | `PaneInfo` (defaults to focused pane) |
+| `pane.rename` | `{pane_id, label}` | `PaneInfo` |
+| `pane.close` | `{pane_id}` | `ok` |
+| `pane.swap` | `{pane_id, direction}` or `{source_pane_id, target_pane_id}` | `pane_swap` (`changed`, `focused_pane_id`, `layout`, `reason?`) |
+| `pane.move` | `{pane_id, destination, focus}` | `pane_move` (`changed`, previous ids, `pane`, layouts, `focused_pane_id`, `reason?`) |
+| `pane.zoom` | `{pane_id?, mode: "toggle"\|"on"\|"off"}` | `pane_zoom` (`changed`, `zoom_changed`, `focus_changed`, `pane_id`, `zoomed`, `layout`, `reason?`) |
+| `pane.resize` | `{pane_id, direction, amount}` | layout update |
+| `pane.focus_direction` | `{direction}` | focused pane info |
+| `pane.layout` | `{pane_id?}` | tab layout snapshot (`workspace_id`, `tab_id`, `zoomed`, `area`, `focused_pane_id`, pane/split rectangles) |
+| `pane.process_info` | `{pane_id}` | shell PID, foreground PGID, process details (PID, name, argv, cwd) |
+| `pane.neighbor` | `{pane_id, direction}` | adjacent pane info |
+| `pane.edges` | `{pane_id}` | layout geometry |
+| `pane.send_text` | `{pane_id, text}` | ack |
+| `pane.send_input` | `{pane_id, ...}` | ack |
+| `pane.input.set` | `{pane_id, right_click}` | ack |
+| `pane.report_agent` | `{pane_id, source, agent, state, message}` | ack |
+| `pane.report_agent_session` | `{pane_id, source, agent, agent_session_id}` | ack |
+| `pane.report_metadata` | `{pane_id, title, display_agent, state_labels, tokens, ttl_ms, seq}` | ack |
+| `pane.clear_agent_authority` | `{pane_id}` | ack |
+| `pane.release_agent` | `{pane_id}` | ack |
+| `pane.wait_for_output` | `{pane_id, ...}` | output match result |
+| `pane.graphics.info` | `{}` | client display metrics + visibility |
+| `pane.graphics.set` | `{pane_id, format, data_base64, placement}` | ack |
+| `pane.graphics.clear` | `{pane_id}` | ack |
+| `pane.graphics.stream` | `{pane_id, ...}` | ack |
+
+Notes:
+- `pane.send_text` / `pane.send_input` inject raw text/input; agent-fleet
+  uses `agent.send_keys` instead (§8.1) which resolves a target by name or
+  pane id.
+- `pane.report_agent` / `pane.report_agent_session` / `pane.report_metadata`
+  are for integration reporting (external tools pushing state into Herdr);
+  agent-fleet does not push state, it only reads it.
+- `pane.graphics.*` manages experimental image overlays on panes.
+
+### 10.4 Layout management
+
+| Method | Params | Result |
+|---|---|---|
+| `layout.export` | `{tab_id?, pane_id?}` | BSP tree (`workspace_id`, `tab_id`, `zoomed`, `focused_pane_id`, `root`) |
+| `layout.apply` | `{workspace_id, tab_id?, tab_label, focus, root}` | creates a fresh tab |
+| `layout.set_split_ratio` | `{tab_id, path, ratio}` | `layout_split_ratio_set` |
+
+Notes:
+- `layout.export` serializes a tab's pane tree into a portable BSP structure.
+- `layout.apply` reconstructs a tab from a declarative tree (splits, panes with
+  labels, cwd, commands, env vars).
+
+### 10.5 Agent view and explain
+
+| Method | Params | Result |
+|---|---|---|
+| `agent.view.set` | `{source, label, filter, sort}` | `agent_view` (`active`, `source`, `label?`) |
+| `agent.view.clear` | `{source?}` | `agent_view` |
+| `agent.explain` | `{target}` | detection rules, manifest source/version, matched rule, evidence, skip-state reason, idle fallback reason |
+
+Notes:
+- `agent.view.set` / `clear` configure Herdr's UI agent projections (filtering
+  and sorting the sidebar). The `filter` uses operations like `any`/`eq`/`in`
+  with fields and context values; `sort` specifies fields and asc/desc.
+- `agent.explain` returns the detection rules and state evaluation for a
+  specific agent, useful for debugging why an agent was or was not detected.
+
+### 10.6 Server, client, notification
+
+| Method | Params | Result |
+|---|---|---|
+| `server.stop` | `{}` | stopped |
+| `server.reload_config` | `{}` | reloaded |
+| `server.agent_manifests` | `{}` | `agent_manifest_status` (update diagnostics) |
+| `server.reload_agent_manifests` | `{}` | `agent_manifest_reload` |
+| `client.window_title.set` | `{title}` | `client_window_title` (`changed`, `reason`) |
+| `client.window_title.clear` | `{}` | `client_window_title` |
+| `notification.show` | `{title, body?, position?, sound?}` | `notification_show` (`shown`, `reason`) |
+
+Notes:
+- `notification.show` `sound` values: `none`, `done`, `request`. `position`
+  and `sound` are optional. The `shown` boolean and `reason` (e.g.
+  `shown`, `disabled`, `rate_limited`, `no_foreground_client`, `busy`)
+  indicate whether the notification was actually displayed.
+- `server.agent_manifests` / `server.reload_agent_manifests` manage the
+  agent CLI manifest cache; `herdr-doctor` already reports manifest status
+  via the `herdr.el` doctor layer (no direct RPC from agent-fleet).
+
+### 10.7 Plugin and integration management
+
+| Method | Params | Result |
+|---|---|---|
+| `plugin.link` | `{path, plugin_id, source}` | ack |
+| `plugin.list` | `{}` | list of plugins |
+| `plugin.unlink` | `{plugin_id}` | ack |
+| `plugin.enable` | `{plugin_id}` | ack |
+| `plugin.disable` | `{plugin_id}` | ack |
+| `plugin.action.list` | `{plugin_id}` | list of actions |
+| `plugin.action.invoke` | `{plugin_id, action_id, context}` | ack |
+| `plugin.log.list` | `{plugin_id}` | list of logs |
+| `plugin.pane.open` | `{plugin_id, entrypoint, placement}` | pane info |
+| `plugin.pane.focus` | `{plugin_id}` | pane info |
+| `plugin.pane.close` | `{plugin_id}` | ack |
+| `integration.install` | `{...}` | ack |
+| `integration.uninstall` | `{...}` | ack |
+
+Notes:
+- The plugin system allows external tools to register manifests, invoke
+  actions, and manage plugin-owned terminal panes. agent-fleet does not
+  currently interact with the plugin system.
