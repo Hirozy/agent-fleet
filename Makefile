@@ -4,7 +4,13 @@ SOURCES = herdr-protocol.el herdr-model.el herdr-events.el herdr.el agent-fleet.
 TESTS = test/herdr-protocol-test.el test/herdr-model-test.el test/herdr-events-test.el test/herdr-integration-test.el test/agent-fleet-test.el test/agent-fleet-dashboard-test.el test/agent-fleet-project-test.el test/agent-fleet-worktree-test.el test/agent-fleet-magit-test.el test/agent-fleet-parallel-test.el test/agent-fleet-attach-test.el test/agent-fleet-interactive-test.el
 ALL_EL = $(SOURCES) test/herdr-mock-server.el $(TESTS)
 
-.PHONY: compile test test-live clean doctor
+.PHONY: compile test test-live clean doctor autoloads
+
+autoloads:
+	$(EMACS) --batch --eval \
+	  "(let ((generated-autoload-file (expand-file-name \"agent-fleet-autoloads.el\" default-directory))) \
+	    (update-directory-autoloads default-directory) \
+	    (save-buffer))"
 
 compile:
 	@set -e; for f in $(ALL_EL); do \
@@ -35,3 +41,4 @@ doctor:
 
 clean:
 	find . -name '*.elc' -delete
+	rm -f agent-fleet-autoloads.el
