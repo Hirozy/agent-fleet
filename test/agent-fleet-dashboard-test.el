@@ -51,20 +51,20 @@ Columns: 0 Project, 1 Agent, 2 Kind, 3 State, 4 Task."
   (with-temp-buffer
     (agent-fleet-mode)
     (should (eq #'agent-fleet-dashboard-help (key-binding (kbd "h")))))
-  (dolist (entry '(("o" . agent-fleet-dashboard-inspect)
-                   ("s" . agent-fleet-dashboard-prompt)
-                   ("i" . agent-fleet-dashboard-interrupt)
-                   ("x" . agent-fleet-dashboard-kill)
-                   ("r" . agent-fleet-dashboard-rename)
-                   ("g" . agent-fleet-dashboard-refresh)
-                   ("P" . agent-fleet-dashboard-toggle-project-filter)
-                   ("T" . agent-fleet-dashboard-toggle-task-filter)
-                   ("w" . agent-fleet-dashboard-worktree)
-                   ("d" . agent-fleet-dashboard-diff)
-                   ("m" . agent-fleet-dashboard-magit)
-                   ("a" . agent-fleet-dashboard-attach)
-                   ("N" . agent-fleet-dashboard-new)
-                   ("q" . agent-fleet-dashboard-quit)))
+  (dolist (entry '(("o" . agent-fleet-dashboard--inspect)
+                   ("s" . agent-fleet-dashboard--prompt)
+                   ("i" . agent-fleet-dashboard--interrupt)
+                   ("x" . agent-fleet-dashboard--kill)
+                   ("r" . agent-fleet-dashboard--rename)
+                   ("g" . agent-fleet-dashboard--refresh)
+                   ("P" . agent-fleet-dashboard--toggle-project-filter)
+                   ("T" . agent-fleet-dashboard--toggle-task-filter)
+                   ("w" . agent-fleet-dashboard--worktree)
+                   ("d" . agent-fleet-dashboard--diff)
+                   ("m" . agent-fleet-dashboard--magit)
+                   ("a" . agent-fleet-dashboard--attach)
+                   ("N" . agent-fleet-dashboard--new)
+                   ("q" . agent-fleet-dashboard--quit)))
     (let ((suffix (transient-get-suffix
                    'agent-fleet-dashboard-help (car entry))))
       ;; Transient represents a suffix several ways across versions: a
@@ -100,7 +100,7 @@ Columns: 0 Project, 1 Agent, 2 Kind, 3 State, 4 Task."
   "Reinstalling bindings repairs additions and removals in an older map."
   (let ((agent-fleet-mode-map (make-sparse-keymap)))
     (define-key agent-fleet-mode-map (kbd "RET")
-                #'agent-fleet-dashboard-inspect)
+                #'agent-fleet-dashboard--inspect)
     (should-not (lookup-key agent-fleet-mode-map (kbd "h")))
     (agent-fleet-dashboard--install-key-bindings)
     (should (eq #'agent-fleet-dashboard-help
@@ -377,7 +377,7 @@ would not catch an accidental `add-function' wrapper around a nil hook."
                (lambda (frame) (setq focused frame)))
               ((symbol-function 'agent-fleet-show-output-in-buffer)
                (lambda (pane-id &rest _) (setq shown pane-id))))
-      (agent-fleet-dashboard-inspect))
+      (agent-fleet-dashboard--inspect))
     (should (eq 'origin focused))
     (should (equal "w1:p1" shown))))
 
@@ -423,10 +423,10 @@ would not catch an accidental `add-function' wrapper around a nil hook."
                (lambda (target)
                  (push (list 'magit target) calls)
                  (agent-fleet-display--make-outcome t nil))))
-      (dolist (command '(agent-fleet-dashboard-inspect
-                         agent-fleet-dashboard-worktree
-                         agent-fleet-dashboard-diff
-                         agent-fleet-dashboard-magit))
+      (dolist (command '(agent-fleet-dashboard--inspect
+                         agent-fleet-dashboard--worktree
+                         agent-fleet-dashboard--diff
+                         agent-fleet-dashboard--magit))
         (setq current-frame 'child
               deleted nil)
         (funcall command)
@@ -461,7 +461,7 @@ would not catch an accidental `add-function' wrapper around a nil hook."
                (lambda (frame &optional _force) (setq deleted frame)))
               ((symbol-function 'agent-fleet-worktree-status-in-buffer)
                (lambda (_) nil)))
-      (should-not (agent-fleet-dashboard-worktree)))
+      (should-not (agent-fleet-dashboard--worktree)))
     (should (eq current-frame 'child))
     (should-not deleted)))
 
@@ -513,10 +513,10 @@ non-nil value but failed to open a view must keep the dashboard child."
                (lambda (&rest _) (push 'rename calls)))
               ((symbol-function 'agent-fleet-dashboard--after-row-change)
                #'ignore))
-      (agent-fleet-dashboard-prompt)
-      (agent-fleet-dashboard-interrupt)
-      (agent-fleet-dashboard-kill)
-      (agent-fleet-dashboard-rename))
+      (agent-fleet-dashboard--prompt)
+      (agent-fleet-dashboard--interrupt)
+      (agent-fleet-dashboard--kill)
+      (agent-fleet-dashboard--rename))
     (should-not external)
     (should (equal '(rename interrupt prompt) calls))))
 
@@ -553,7 +553,7 @@ the parent's window, not the child dashboard."
                  'attached))
               ((symbol-function 'delete-frame)
                (lambda (frame &optional _force) (setq deleted frame))))
-      (should (eq 'attached (agent-fleet-dashboard-attach))))
+      (should (eq 'attached (agent-fleet-dashboard--attach))))
     (should (equal '("w1:p1" nil) attached))
     (should (eq current-frame 'parent))
     (should (eq deleted 'child))))
@@ -581,12 +581,12 @@ the parent's window, not the child dashboard."
                (lambda (&rest _) (user-error "backend unavailable")))
               ((symbol-function 'delete-frame)
                (lambda (frame &optional _force) (setq deleted frame))))
-      (should-error (agent-fleet-dashboard-attach) :type 'user-error))
+      (should-error (agent-fleet-dashboard--attach) :type 'user-error))
     (should-not deleted)
     (should (eq current-frame 'child))))
 
-(ert-deftest agent-fleet-dashboard-new-delegates-to-start-and-closes-child ()
-  "`agent-fleet-dashboard-new' starts a new agent via `agent-fleet-start'
+(ert-deftest agent-fleet-dashboard--new-delegates-to-start-and-closes-child ()
+  "`agent-fleet-dashboard--new' starts a new agent via `agent-fleet-start'
 (interactive dispatch, so workspace-picking and auto-attach apply), then
 closes the child dashboard on success — the same lifecycle as `a'.
 `agent-fleet-start' is stubbed with an interactive lambda so
@@ -615,12 +615,12 @@ closes the child dashboard on success — the same lifecycle as `a'.
                (lambda (&rest _args) (interactive) (setq started t) 'started))
               ((symbol-function 'delete-frame)
                (lambda (frame &optional _force) (setq deleted frame))))
-      (should (eq 'started (agent-fleet-dashboard-new))))
+      (should (eq 'started (agent-fleet-dashboard--new))))
     (should started)
     (should (eq current-frame 'parent))
     (should (eq deleted 'child))))
 
-(ert-deftest agent-fleet-dashboard-quit-respects-display-container ()
+(ert-deftest agent-fleet-dashboard--quit-respects-display-container ()
   "Dashboard q deletes owned frames but only quits ordinary windows."
   (let (deleted quit)
     (cl-letf (((symbol-function 'selected-frame) (lambda () 'dashboard))
@@ -632,7 +632,7 @@ closes the child dashboard on success — the same lifecycle as `a'.
                (lambda (frame &optional _) (setq deleted frame)))
               ((symbol-function 'quit-window)
                (lambda (&rest _) (setq quit t))))
-      (agent-fleet-dashboard-quit))
+      (agent-fleet-dashboard--quit))
     (should (eq deleted 'dashboard))
     (should-not quit))
   (let (deleted quit)
@@ -642,7 +642,7 @@ closes the child dashboard on success — the same lifecycle as `a'.
                (lambda (&rest _) (setq deleted t)))
               ((symbol-function 'quit-window)
                (lambda (&rest _) (setq quit t))))
-      (agent-fleet-dashboard-quit))
+      (agent-fleet-dashboard--quit))
     (should quit)
     (should-not deleted)))
 
@@ -691,7 +691,7 @@ closes the child dashboard on success — the same lifecycle as `a'.
         (should (eq 'agent-fleet-blocked-face
                     (get-text-property 0 'face cell)))))))
 
-(ert-deftest agent-fleet-dashboard-refreshes-on-reconnect ()
+(ert-deftest agent-fleet-dashboard--refreshes-on-reconnect ()
   "An open dashboard refreshes from the post-reconnect snapshot (no `g').
 The synced hook fires after `herdr--reconnect' replaces the cache from a
 fresh `session.snapshot'; an already-open dashboard picks up the new
@@ -784,7 +784,7 @@ following `pane.agent_status_changed' (dotted per-pane kind) event."
       (agent-fleet-test--pump)
       (should-not (agent-fleet-dashboard-test--cell "w1:p1" 3)))))
 
-(ert-deftest agent-fleet-dashboard-refresh-from-server ()
+(ert-deftest agent-fleet-dashboard--refresh-from-server ()
   "`g' (from-server refresh) repopulates a dropped agent from `agent.list'."
   (with-agent-fleet-mock path server
     (with-dashboard-fresh
@@ -794,10 +794,10 @@ following `pane.agent_status_changed' (dotted per-pane kind) event."
       ;; Drop it from the LOCAL cache only (no event, no server state change).
       (remhash "w1:p1" (herdr-session-agents (herdr-model-cache)))
       (with-current-buffer "*Agent Fleet*"
-        (agent-fleet-dashboard-refresh))            ; local reprint -> gone
+        (agent-fleet-dashboard--refresh))            ; local reprint -> gone
       (should-not (agent-fleet-dashboard-test--cell "w1:p1" 3))
       (with-current-buffer "*Agent Fleet*"
-        (agent-fleet-dashboard-refresh t))          ; g: re-fetch from server
+        (agent-fleet-dashboard--refresh t))          ; g: re-fetch from server
       (agent-fleet-test--pump)
       (should (agent-fleet-dashboard-test--cell "w1:p1" 3)))))
 
@@ -952,9 +952,9 @@ following `pane.agent_status_changed' (dotted per-pane kind) event."
 (ert-deftest agent-fleet-dashboard-row-keys-d-and-m ()
   "The dashboard binds `d' to the diff command and `m' to the magit command,
 not the old `--not-yet' stubs."
-  (should (eq #'agent-fleet-dashboard-diff
+  (should (eq #'agent-fleet-dashboard--diff
               (lookup-key agent-fleet-mode-map "d")))
-  (should (eq #'agent-fleet-dashboard-magit
+  (should (eq #'agent-fleet-dashboard--magit
               (lookup-key agent-fleet-mode-map "m"))))
 
 
@@ -962,9 +962,9 @@ not the old `--not-yet' stubs."
 
 (ert-deftest agent-fleet-dashboard-row-keys-t-and-p ()
   "`T' narrows to a task; `P' narrows to a project."
-  (should (eq #'agent-fleet-dashboard-toggle-task-filter
+  (should (eq #'agent-fleet-dashboard--toggle-task-filter
               (lookup-key agent-fleet-mode-map "T")))
-  (should (eq #'agent-fleet-dashboard-toggle-project-filter
+  (should (eq #'agent-fleet-dashboard--toggle-project-filter
               (lookup-key agent-fleet-mode-map "P"))))
 
 (ert-deftest agent-fleet-dashboard-task-filter-and-column ()
@@ -988,7 +988,7 @@ state."
         ;; narrow to the task.
         (with-current-buffer "*Agent Fleet*"
           (setq agent-fleet-dashboard--task-filter (agent-fleet-task-id task))
-          (agent-fleet-dashboard-refresh))
+          (agent-fleet-dashboard--refresh))
         (let ((ids (mapcar #'car
                            (with-current-buffer "*Agent Fleet*"
                              tabulated-list-entries))))
@@ -1286,14 +1286,14 @@ entry, leaves the table alone."
                   (gethash 'origin agent-fleet-display--aux-frames))))))
 
 
-(ert-deftest agent-fleet-dashboard-quit-window-advice-is-installed ()
+(ert-deftest agent-fleet-dashboard--quit-window-advice-is-installed ()
   "`quit-restore-window' is advised so auxiliary child frames close on q.
 Installed by `agent-fleet-display--setup-frame-hooks'; the advice is
 idempotent (a single member on the symbol)."
   (should (advice-member-p #'agent-fleet-display--aux-quit-restore-window
                             'quit-restore-window)))
 
-(ert-deftest agent-fleet-dashboard-quit-window-closes-aux-child ()
+(ert-deftest agent-fleet-dashboard--quit-window-closes-aux-child ()
   "Quitting a view window closes the auxiliary child, not switch buffers.
 `quit-restore-window' on a window inside an auxiliary child deletes the
 child, forgets the reuse entry, and refocuses the origin.  The bury
@@ -1335,7 +1335,7 @@ variant leaves the view buffer alive; the kill variant kills it."
         (should (buffer-live-p view-buf))
         (kill-buffer view-buf)))))
 
-(ert-deftest agent-fleet-dashboard-quit-window-passes-through-ordinary-frames ()
+(ert-deftest agent-fleet-dashboard--quit-window-passes-through-ordinary-frames ()
   "Quitting a window on an ordinary frame keeps the default behavior."
   (let ((switched nil))
     (cl-letf (((symbol-function 'frame-parameter) (lambda (&rest _) nil))
