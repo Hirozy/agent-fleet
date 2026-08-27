@@ -269,18 +269,29 @@ it yet."
 ;;; --- Agent control commands -----------------------------------------
 
 (ert-deftest agent-fleet-interactive-start ()
-  "Interactive start reads kind/name and provisions with the selected values."
+  "Interactive start reads kind/workspace/name and provisions with them.
+The name prompt is prefilled with a workspace-derived suggestion
+\(`<label>-<serial>'), and the workspace picked interactively is the one
+used for provisioning — the body does not prompt a second time."
   (let ((herdr-model--cache (agent-fleet-interactive-test--session))
         (agent-fleet--name-counter 0)
         (agent-fleet-agent-started-hook nil)
-        captured)
+        name-init provisioned-ws captured)
     (cl-letf (((symbol-function 'completing-read)
-               (lambda (&rest _) "codex"))
+               (lambda (prompt &rest _)
+                 (cond
+                  ((string-match-p "Agent kind" prompt) "codex")
+                  ((string-match-p "workspace" prompt) "w1 (demo)")
+                  (t (error "unexpected completing-read: %s" prompt)))))
               ((symbol-function 'read-string)
-               (lambda (&rest _) "reviewer"))
+               (lambda (_prompt &optional initial-input &rest _)
+                 (setq name-init initial-input)
+                 "reviewer"))
               ((symbol-function 'agent-fleet--ensure-connected) #'ignore)
               ((symbol-function 'agent-fleet--provision-pane)
-               (lambda (&rest _) "w1:p2"))
+               (lambda (ws-id &rest _)
+                 (setq provisioned-ws ws-id)
+                 "w1:p2"))
               ((symbol-function 'herdr-request)
                (lambda (method &optional params &rest _)
                  (setq captured (list method params))
@@ -291,6 +302,8 @@ it yet."
       (let ((agent (call-interactively #'agent-fleet-start)))
         (should (equal "reviewer" (herdr-agent-name agent)))
         (should (equal "codex" (herdr-agent-agent agent)))))
+    (should (equal "demo-1" name-init))
+    (should (equal "w1" provisioned-ws))
     (should (equal "agent.start" (car captured)))
     (should (equal "reviewer"
                    (agent-fleet-interactive-test--param

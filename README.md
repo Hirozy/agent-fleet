@@ -73,7 +73,9 @@ menu, or start an agent directly with:
 M-x agent-fleet-start
 ```
 
-The interactive command asks for an agent kind and an optional name. The
+The interactive command asks for an agent kind, the workspace to start
+in, and a name. A default of `<workspace-label>-<serial>` (for example
+`demo-1`) is suggested — press `RET` to accept it or type your own. The
 working directory, branch, and extra CLI arguments can be supplied through the
 command prompts; defaults are covered in [Configuration](#configuration).
 
