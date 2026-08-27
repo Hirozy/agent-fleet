@@ -114,19 +114,19 @@ Columns: 0 Project, 1 Agent, 2 Kind, 3 State, 4 Task."
   "Native child dashboards require the documented Emacs version and GUI."
   (cl-letf (((symbol-function 'display-graphic-p) (lambda (&optional _) t)))
     (let ((emacs-version "28.2"))
-      (should-not (agent-fleet-dashboard-child-frame-available-p 'parent))
+      (should-not (agent-fleet-display-child-frame-available-p 'parent))
       (should (string-match-p
                "require Emacs 29\\.1"
-               (agent-fleet-dashboard--child-frame-unavailable-reason
+               (agent-fleet-display--child-frame-unavailable-reason
                 'parent))))
     (let ((emacs-version "29.1"))
-      (should (agent-fleet-dashboard-child-frame-available-p 'parent))))
+      (should (agent-fleet-display-child-frame-available-p 'parent))))
   (cl-letf (((symbol-function 'display-graphic-p) (lambda (&optional _) nil)))
     (let ((emacs-version "30.2"))
-      (should-not (agent-fleet-dashboard-child-frame-available-p 'parent))
+      (should-not (agent-fleet-display-child-frame-available-p 'parent))
       (should (string-match-p
                "graphical Emacs frame"
-               (agent-fleet-dashboard--child-frame-unavailable-reason
+               (agent-fleet-display--child-frame-unavailable-reason
                 'parent))))))
 
 (ert-deftest agent-fleet-dashboard-child-frame-defaults-to-center ()
@@ -165,7 +165,7 @@ a metadata table; adding a backend must not change these classifications."
     (cl-letf (((symbol-function 'selected-frame) (lambda () 'parent))
               ((symbol-function 'frame-parameter) (lambda (&rest _) nil))
               ((symbol-function
-                'agent-fleet-dashboard--child-frame-unavailable-reason)
+                'agent-fleet-display--child-frame-unavailable-reason)
                (lambda (&optional _) nil))
               ((symbol-function 'display-buffer)
                (lambda (_buffer arg-action)
@@ -201,7 +201,7 @@ a metadata table; adding a backend must not change these classifications."
     (cl-letf (((symbol-function 'selected-frame) (lambda () 'parent))
               ((symbol-function 'frame-parameter) (lambda (&rest _) nil))
               ((symbol-function
-                'agent-fleet-dashboard--child-frame-unavailable-reason)
+                'agent-fleet-display--child-frame-unavailable-reason)
                (lambda (&optional _) "unsupported test frame"))
               ((symbol-function 'agent-fleet-dashboard--fallback-to-buffer)
                (lambda (buffer reason)
@@ -226,12 +226,12 @@ a metadata table; adding a backend must not change these classifications."
                  (setq position (list frame left top))))
               ((symbol-function 'frame-parameter)
                (lambda (_f _p) nil)))
-      (let ((agent-fleet-dashboard--centered-children nil))
-        (agent-fleet-dashboard--center-child-frame 'child 'parent)
+      (let ((agent-fleet-display--centered-children nil))
+        (agent-fleet-display--center-child-frame 'child 'parent)
         (should (equal '(child 260 180) position))   ; (1000-480)/2, (800-440)/2
         (should (eq 'parent
                     (alist-get 'child
-                               agent-fleet-dashboard--centered-children)))))))
+                               agent-fleet-display--centered-children)))))))
 
 (ert-deftest agent-fleet-dashboard-child-frame-recenters-on-parent-resize ()
   "A parent resize re-centers its tracked child frame."
@@ -246,11 +246,11 @@ a metadata table; adding a backend must not change these classifications."
                (lambda (_f _l _t) (cl-incf calls)))
               ((symbol-function 'frame-parameter)
                (lambda (f _p) (and (eq f 'child) 'child-frame))))
-      (let ((agent-fleet-dashboard--centered-children (list (cons 'child 'parent))))
-        (agent-fleet-dashboard--recenter-on-parent-resize 'parent)
+      (let ((agent-fleet-display--centered-children (list (cons 'child 'parent))))
+        (agent-fleet-display--recenter-on-parent-resize 'parent)
         (should (= 1 calls))
         ;; A resize of an unrelated frame does not touch the child.
-        (agent-fleet-dashboard--recenter-on-parent-resize 'other)
+        (agent-fleet-display--recenter-on-parent-resize 'other)
         (should (= 1 calls))))))
 
 (ert-deftest agent-fleet-dashboard-frame-callbacks-use-real-hook-lists ()
@@ -259,17 +259,17 @@ This exercises `run-hook-with-args' itself; directly calling the callbacks
 would not catch an accidental `add-function' wrapper around a nil hook."
   (dolist (entry
            '((window-size-change-functions
-              . agent-fleet-dashboard--recenter-on-parent-resize)
+              . agent-fleet-display--recenter-on-parent-resize)
              (delete-frame-functions
-              . agent-fleet-dashboard--forget-centered-child)))
+              . agent-fleet-display--forget-centered-child)))
     (let ((value (default-value (car entry))))
       (should (listp value))
       (should (memq (cdr entry) value))))
   (let ((window-size-change-functions
-         (list #'agent-fleet-dashboard--recenter-on-parent-resize))
+         (list #'agent-fleet-display--recenter-on-parent-resize))
         (delete-frame-functions
-         (list #'agent-fleet-dashboard--forget-centered-child))
-        (agent-fleet-dashboard--centered-children nil))
+         (list #'agent-fleet-display--forget-centered-child))
+        (agent-fleet-display--centered-children nil))
     (should
      (eq 'ok
          (condition-case nil
@@ -285,21 +285,21 @@ would not catch an accidental `add-function' wrapper around a nil hook."
   "Reloading repairs hook values composed by the former `add-function' bug."
   (let ((window-size-change-functions nil)
         (delete-frame-functions nil)
-        (agent-fleet-dashboard--centered-children nil))
+        (agent-fleet-display--centered-children nil))
     ;; Reproduce the old top-level registration exactly.  Each hook becomes
     ;; a single advice wrapper whose original function is nil.
     (add-function :after (default-value 'window-size-change-functions)
-                  #'agent-fleet-dashboard--recenter-on-parent-resize)
+                  #'agent-fleet-display--recenter-on-parent-resize)
     (add-function :after (default-value 'delete-frame-functions)
-                  #'agent-fleet-dashboard--forget-centered-child)
+                  #'agent-fleet-display--forget-centered-child)
     (should-not (listp (default-value 'window-size-change-functions)))
     (should-not (listp (default-value 'delete-frame-functions)))
-    (agent-fleet-dashboard--setup-frame-hooks)
+    (agent-fleet-display--setup-frame-hooks)
     (dolist (entry
              '((window-size-change-functions
-                . agent-fleet-dashboard--recenter-on-parent-resize)
+                . agent-fleet-display--recenter-on-parent-resize)
                (delete-frame-functions
-                . agent-fleet-dashboard--forget-centered-child)))
+                . agent-fleet-display--forget-centered-child)))
       (let ((value (default-value (car entry))))
         (should (listp value))
         (should (memq (cdr entry) value))))
@@ -1006,9 +1006,9 @@ state."
 Magit needs a full-size presentation surface; the compact 0.48 by 0.55
 dimensions belong only to the dashboard child frame."
   (should (= 1.0
-             (alist-get 'width agent-fleet-dashboard--aux-frame-parameters)))
+             (alist-get 'width agent-fleet-display--aux-frame-parameters)))
   (should (= 1.0
-             (alist-get 'height agent-fleet-dashboard--aux-frame-parameters)))
+             (alist-get 'height agent-fleet-display--aux-frame-parameters)))
   (should (= 0.48
              (alist-get 'width
                         agent-fleet-dashboard--child-frame-parameters)))
@@ -1048,7 +1048,7 @@ its origin recorded, as `--aux-create' would stamp on a real frame."
              ((symbol-function 'select-frame-set-input-focus)
               (lambda (frame)
                 (setq agent-fleet-dashboard-test--current-frame frame)))
-             ((symbol-function 'agent-fleet-dashboard--center-child-frame)
+             ((symbol-function 'agent-fleet-display--center-child-frame)
               (lambda (&rest _)))
              ((symbol-function 'delete-frame)
               (lambda (frame &optional _)
@@ -1062,70 +1062,71 @@ either opens a child frame or signals."
   (let (ran)
     (cl-letf (((symbol-function 'selected-frame) (lambda () 'origin))
               ((symbol-function 'frame-parameter) (lambda (&rest _) nil))
+              ((symbol-function 'frame-parent) (lambda (&rest _) nil))
               ((symbol-function 'display-graphic-p) (lambda (&optional _) nil)))
       (should-error
-       (agent-fleet-dashboard--aux-run (lambda () (setq ran t) 'fallback))
+       (agent-fleet-display--aux-run (lambda () (setq ran t) 'fallback))
        :type 'user-error))
     (should-not ran)))
 
 (ert-deftest agent-fleet-dashboard-aux-run-nil-closes-new-child ()
   "A nil thunk result closes a child created this call and refocuses origin.
 An empty new child must not linger."
-  (let ((agent-fleet-dashboard--aux-frames (make-hash-table :test 'eq))
+  (let ((agent-fleet-display--aux-frames (make-hash-table :test 'eq))
         (agent-fleet-dashboard-test--current-frame 'origin)
         (agent-fleet-dashboard-test--displayed 0)
         (agent-fleet-dashboard-test--deleted nil))
     (agent-fleet-dashboard-test--with-aux-frames
-      (should-not (agent-fleet-dashboard--aux-run (lambda () nil))))
+      (should-not (agent-fleet-display--aux-run (lambda () nil))))
     (should (= 1 agent-fleet-dashboard-test--displayed))
     (should (eq 'aux-child agent-fleet-dashboard-test--deleted))
     (should (eq 'origin agent-fleet-dashboard-test--current-frame))
-    (should-not (gethash 'origin agent-fleet-dashboard--aux-frames))
+    (should-not (gethash 'origin agent-fleet-display--aux-frames))
     (when (get-buffer " *agent-fleet-aux*")
       (kill-buffer (get-buffer " *agent-fleet-aux*")))))
 
 (ert-deftest agent-fleet-dashboard-aux-run-nil-keeps-reused-child ()
   "A nil thunk result keeps a reused child showing its prior view.
 No new child is created and nothing is deleted."
-  (let ((agent-fleet-dashboard--aux-frames (make-hash-table :test 'eq))
+  (let ((agent-fleet-display--aux-frames (make-hash-table :test 'eq))
         (agent-fleet-dashboard-test--current-frame 'origin)
         (agent-fleet-dashboard-test--displayed 0)
         (agent-fleet-dashboard-test--deleted nil))
-    (puthash 'origin 'aux-child agent-fleet-dashboard--aux-frames)
+    (puthash 'origin 'aux-child agent-fleet-display--aux-frames)
     (agent-fleet-dashboard-test--with-aux-frames
-      (should-not (agent-fleet-dashboard--aux-run (lambda () nil))))
+      (should-not (agent-fleet-display--aux-run (lambda () nil))))
     (should (zerop agent-fleet-dashboard-test--displayed))
     (should-not agent-fleet-dashboard-test--deleted)
     (should (eq 'aux-child agent-fleet-dashboard-test--current-frame))
-    (should (eq 'aux-child (gethash 'origin agent-fleet-dashboard--aux-frames)))))
+    (should (eq 'aux-child (gethash 'origin agent-fleet-display--aux-frames)))))
 
 (ert-deftest agent-fleet-dashboard-aux-run-error-closes-and-resignals ()
   "A thunk error deletes a newly created child, refocuses origin, resignals."
-  (let ((agent-fleet-dashboard--aux-frames (make-hash-table :test 'eq))
+  (let ((agent-fleet-display--aux-frames (make-hash-table :test 'eq))
         (agent-fleet-dashboard-test--current-frame 'origin)
         (agent-fleet-dashboard-test--displayed 0)
         (agent-fleet-dashboard-test--deleted nil))
     (agent-fleet-dashboard-test--with-aux-frames
       (should-error
-       (agent-fleet-dashboard--aux-run (lambda () (error "boom")))
+       (agent-fleet-display--aux-run (lambda () (error "boom")))
        :type 'error))
     (should (= 1 agent-fleet-dashboard-test--displayed))
     (should (eq 'aux-child agent-fleet-dashboard-test--deleted))
     (should (eq 'origin agent-fleet-dashboard-test--current-frame))
-    (should-not (gethash 'origin agent-fleet-dashboard--aux-frames))
+    (should-not (gethash 'origin agent-fleet-display--aux-frames))
     (when (get-buffer " *agent-fleet-aux*")
       (kill-buffer (get-buffer " *agent-fleet-aux*")))))
 
 (ert-deftest agent-fleet-dashboard-aux-run-reuses-one-child-per-origin ()
   "Repeated successful opens reuse the same auxiliary child."
-  (let ((agent-fleet-dashboard--aux-frames (make-hash-table :test 'eq))
+  (let ((agent-fleet-display--aux-frames (make-hash-table :test 'eq))
         (agent-fleet-dashboard-test--current-frame 'origin)
         (agent-fleet-dashboard-test--displayed 0)
         (agent-fleet-dashboard-test--deleted nil))
     (agent-fleet-dashboard-test--with-aux-frames
       (dotimes (_ 3)
-        (should (eq 'ok (agent-fleet-dashboard--aux-run (lambda () 'ok)))))
-      (should (eq 'aux-child (gethash 'origin agent-fleet-dashboard--aux-frames))))
+        (should (eq 'ok (agent-fleet-display--aux-run (lambda () 'ok)))))
+      (should (eq 'aux-child (gethash 'origin agent-fleet-display--aux-frames))))
     (should (= 1 agent-fleet-dashboard-test--displayed))
     (should-not agent-fleet-dashboard-test--deleted)
     (should (eq 'aux-child agent-fleet-dashboard-test--current-frame))
@@ -1136,15 +1137,15 @@ No new child is created and nothing is deleted."
   "A reused child receives the current full-parent size parameters.
 This also repairs a live half-size auxiliary frame created before the
 full-size presentation policy was loaded."
-  (let ((agent-fleet-dashboard--aux-frames (make-hash-table :test 'eq))
+  (let ((agent-fleet-display--aux-frames (make-hash-table :test 'eq))
         (agent-fleet-dashboard-test--current-frame 'origin)
         modified)
-    (puthash 'origin 'aux-child agent-fleet-dashboard--aux-frames)
+    (puthash 'origin 'aux-child agent-fleet-display--aux-frames)
     (agent-fleet-dashboard-test--with-aux-frames
       (cl-letf (((symbol-function 'modify-frame-parameters)
                  (lambda (frame parameters)
                    (setq modified (cons frame parameters)))))
-        (should (eq 'ok (agent-fleet-dashboard--aux-run (lambda () 'ok))))))
+        (should (eq 'ok (agent-fleet-display--aux-run (lambda () 'ok))))))
     (should (eq 'aux-child (car modified)))
     (should (= 1.0 (alist-get 'width (cdr modified))))
     (should (= 1.0 (alist-get 'height (cdr modified))))))
@@ -1161,22 +1162,24 @@ dashboard child-frame resolves to its native parent."
                     'origin)))
             ((symbol-function 'frame-live-p)
              (lambda (frame) (memq frame '(origin aux-child)))))
-    (should (eq 'origin (agent-fleet-dashboard--aux-origin-frame))))
+    (should (eq 'origin (agent-fleet-display--aux-origin-frame))))
   (cl-letf (((symbol-function 'selected-frame) (lambda () 'dashboard-child))
             ((symbol-function 'frame-parameter)
              (lambda (_frame parameter)
                (and (eq parameter 'agent-fleet-dashboard-display)
                     'child-frame)))
             ((symbol-function 'frame-parent)
-             (lambda (frame) (and (eq frame 'dashboard-child) 'parent))))
-    (should (eq 'parent (agent-fleet-dashboard--aux-origin-frame)))))
+             (lambda (frame) (and (eq frame 'dashboard-child) 'parent)))
+            ((symbol-function 'frame-live-p)
+             (lambda (frame) (memq frame '(parent dashboard-child)))))
+    (should (eq 'parent (agent-fleet-display--aux-origin-frame)))))
 
 (ert-deftest agent-fleet-dashboard-aux-forget-removes-from-reuse-table ()
   "Deleting an aux child forgets its reuse entry; others stay untouched.
 A frame without the auxiliary marker, or mapped to a different origin
 entry, leaves the table alone."
-  (let ((agent-fleet-dashboard--aux-frames (make-hash-table :test 'eq)))
-    (puthash 'origin 'aux-child agent-fleet-dashboard--aux-frames)
+  (let ((agent-fleet-display--aux-frames (make-hash-table :test 'eq)))
+    (puthash 'origin 'aux-child agent-fleet-display--aux-frames)
     (cl-letf (((symbol-function 'frame-parameter)
                (lambda (frame parameter)
                  (cond
@@ -1187,24 +1190,24 @@ entry, leaves the table alone."
                         (eq parameter 'agent-fleet-auxiliary-origin-frame))
                    'origin)
                   (t nil)))))
-      (agent-fleet-dashboard--aux-forget 'aux-child)
-      (should-not (gethash 'origin agent-fleet-dashboard--aux-frames))
+      (agent-fleet-display--aux-forget 'aux-child)
+      (should-not (gethash 'origin agent-fleet-display--aux-frames))
       ;; A non-auxiliary frame is never forgotten.
-      (puthash 'origin 'aux-child agent-fleet-dashboard--aux-frames)
-      (agent-fleet-dashboard--aux-forget 'ordinary)
-      (should (eq 'aux-child (gethash 'origin agent-fleet-dashboard--aux-frames)))
+      (puthash 'origin 'aux-child agent-fleet-display--aux-frames)
+      (agent-fleet-display--aux-forget 'ordinary)
+      (should (eq 'aux-child (gethash 'origin agent-fleet-display--aux-frames)))
       ;; A frame not matching the mapped child is never forgotten.
-      (puthash 'origin 'other-child agent-fleet-dashboard--aux-frames)
-      (agent-fleet-dashboard--aux-forget 'aux-child)
+      (puthash 'origin 'other-child agent-fleet-display--aux-frames)
+      (agent-fleet-display--aux-forget 'aux-child)
       (should (eq 'other-child
-                  (gethash 'origin agent-fleet-dashboard--aux-frames))))))
+                  (gethash 'origin agent-fleet-display--aux-frames))))))
 
 
 (ert-deftest agent-fleet-dashboard-quit-window-advice-is-installed ()
   "`quit-restore-window' is advised so auxiliary child frames close on q.
-Installed by `agent-fleet-dashboard--setup-frame-hooks'; the advice is
+Installed by `agent-fleet-display--setup-frame-hooks'; the advice is
 idempotent (a single member on the symbol)."
-  (should (advice-member-p #'agent-fleet-dashboard--aux-quit-restore-window
+  (should (advice-member-p #'agent-fleet-display--aux-quit-restore-window
                             'quit-restore-window)))
 
 (ert-deftest agent-fleet-dashboard-quit-window-closes-aux-child ()
@@ -1213,11 +1216,11 @@ idempotent (a single member on the symbol)."
 child, forgets the reuse entry, and refocuses the origin.  The bury
 variant leaves the view buffer alive; the kill variant kills it."
   (dolist (mode '(bury kill))
-    (let ((agent-fleet-dashboard--aux-frames (make-hash-table :test 'eq))
+    (let ((agent-fleet-display--aux-frames (make-hash-table :test 'eq))
           (agent-fleet-dashboard-test--current-frame 'aux-child)
           (agent-fleet-dashboard-test--deleted nil)
           (view-buf (get-buffer-create " *aux-quit-view*")))
-      (puthash 'origin 'aux-child agent-fleet-dashboard--aux-frames)
+      (puthash 'origin 'aux-child agent-fleet-display--aux-frames)
       (cl-letf (((symbol-function 'selected-frame) (lambda () 'aux-child))
                 ((symbol-function 'window-live-p) (lambda (&optional _) t))
                 ((symbol-function 'window-frame) (lambda (&rest _) 'aux-child))
@@ -1243,7 +1246,7 @@ variant leaves the view buffer alive; the kill variant kills it."
         (quit-restore-window nil mode))
       (should (eq 'aux-child agent-fleet-dashboard-test--deleted))
       (should (eq 'origin agent-fleet-dashboard-test--current-frame))
-      (should-not (gethash 'origin agent-fleet-dashboard--aux-frames))
+      (should-not (gethash 'origin agent-fleet-display--aux-frames))
       (if (eq mode 'kill)
           (should-not (buffer-live-p view-buf))
         (should (buffer-live-p view-buf))

@@ -64,6 +64,11 @@
 ;; load time).  The module is loaded before any start runs, via
 ;; `agent-fleet--load-feature-modules' at the end of this file.
 (declare-function agent-fleet-attach "agent-fleet-attach" (target &optional takeover))
+;; The auxiliary child-frame presentation API lives in the display
+;; module, loaded before this file's feature modules; declared here so
+;; byte-compilation does not warn, and required at runtime by
+;; `-in-child-frame' view commands.
+(declare-function agent-fleet-display--aux-run "agent-fleet-display" (thunk))
 ;; `agent-fleet-parallel' is another one-way feature module (loaded by
 ;; `agent-fleet--load-feature-modules' below).  The candidate builder surfaces a
 ;; parallel task's title, so it calls these; `declare-function' keeps the
@@ -1202,6 +1207,26 @@ count."
   (let ((pair (agent-fleet--show-output-op agent lines source)))
     (pop-to-buffer (car pair))
     (cdr pair)))
+
+;;;###autoload
+(defun agent-fleet-show-output-in-child-frame (agent &optional lines source)
+  "Read AGENT's recent output and show it in an auxiliary child frame.
+Opens `*Agent Output: <name>*' from `agent.read' inside a native child
+frame that floats over the terminal's parent frame, leaving its window
+geometry untouched.  With a prefix arg, prompt for the line count.
+Signal a `user-error' when child frames are unsupported; there is no
+silent buffer fallback (use `agent-fleet-show-output-in-buffer' for that)."
+  (interactive
+   (list (agent-fleet--read-agent-name "Show output for agent")
+         (and current-prefix-arg
+              (read-number "Lines: " agent-fleet-default-read-lines))))
+  (require 'agent-fleet-display nil t)
+  (agent-fleet-display--aux-run
+   (lambda ()
+     (let ((pair (agent-fleet--show-output-op agent lines source)))
+       (when (cdr pair)
+         (set-window-buffer nil (car pair)))
+       (cdr pair)))))
 
 ;;;###autoload
 (define-obsolete-function-alias 'agent-fleet-show-output

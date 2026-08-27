@@ -56,10 +56,10 @@
 (require 'herdr-model)
 (require 'agent-fleet)
 
-;; The auxiliary child-frame presentation API lives in the dashboard
-;; module, which loads this feature; declared here so byte-compilation
+;; The auxiliary child-frame presentation API lives in the display
+;; module, which loads before this feature; declared here so byte-compilation
 ;; does not warn, and required at runtime by the `-in-child-frame' entry.
-(declare-function agent-fleet-dashboard--aux-run "agent-fleet-dashboard" (thunk))
+(declare-function agent-fleet-display--aux-run "agent-fleet-display" (thunk))
 
 
 ;;; --- Fetch helper ---------------------------------------------------
@@ -305,8 +305,8 @@ that).  Returns the worktree struct, or nil and messages when no worktree
 is open for the workspace."
   (interactive
    (list (agent-fleet--read-agent-name "Worktree status for agent")))
-  (require 'agent-fleet-dashboard nil t)
-  (agent-fleet-dashboard--aux-run
+  (require 'agent-fleet-display nil t)
+  (agent-fleet-display--aux-run
    (lambda ()
      (let ((wt (agent-fleet-worktree--status-op target)))
        (when wt
