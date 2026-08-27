@@ -69,6 +69,8 @@
 ;; byte-compilation does not warn, and required at runtime by
 ;; `-in-child-frame' view commands.
 (declare-function agent-fleet-display--aux-run "agent-fleet-display" (thunk))
+(declare-function agent-fleet-display--make-outcome "agent-fleet-display" (opened &optional value buffer))
+(declare-function agent-fleet-display--outcome-value "agent-fleet-display" (outcome))
 ;; `agent-fleet-parallel' is another one-way feature module (loaded by
 ;; `agent-fleet--load-feature-modules' below).  The candidate builder surfaces a
 ;; parallel task's title, so it calls these; `declare-function' keeps the
@@ -1221,12 +1223,14 @@ silent buffer fallback (use `agent-fleet-show-output-in-buffer' for that)."
          (and current-prefix-arg
               (read-number "Lines: " agent-fleet-default-read-lines))))
   (require 'agent-fleet-display nil t)
-  (agent-fleet-display--aux-run
-   (lambda ()
-     (let ((pair (agent-fleet--show-output-op agent lines source)))
-       (when (cdr pair)
-         (set-window-buffer nil (car pair)))
-       (cdr pair)))))
+  (agent-fleet-display--outcome-value
+   (agent-fleet-display--aux-run
+    (lambda ()
+      (let ((pair (agent-fleet--show-output-op agent lines source)))
+        (when (cdr pair)
+          (set-window-buffer nil (car pair)))
+        (agent-fleet-display--make-outcome
+         (if (cdr pair) t) (cdr pair) (car pair)))))))
 
 ;;;###autoload
 (define-obsolete-function-alias 'agent-fleet-show-output

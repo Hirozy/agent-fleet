@@ -60,6 +60,8 @@
 ;; module, which loads before this feature; declared here so byte-compilation
 ;; does not warn, and required at runtime by the `-in-child-frame' entry.
 (declare-function agent-fleet-display--aux-run "agent-fleet-display" (thunk))
+(declare-function agent-fleet-display--make-outcome "agent-fleet-display" (opened &optional value buffer))
+(declare-function agent-fleet-display--outcome-value "agent-fleet-display" (outcome))
 
 
 ;;; --- Fetch helper ---------------------------------------------------
@@ -306,12 +308,13 @@ is open for the workspace."
   (interactive
    (list (agent-fleet--read-agent-name "Worktree status for agent")))
   (require 'agent-fleet-display nil t)
-  (agent-fleet-display--aux-run
-   (lambda ()
-     (let ((wt (agent-fleet-worktree--status-op target)))
-       (when wt
-         (set-window-buffer nil (get-buffer agent-fleet-worktree-buffer-name)))
-       wt))))
+  (agent-fleet-display--outcome-value
+   (agent-fleet-display--aux-run
+    (lambda ()
+      (let ((wt (agent-fleet-worktree--status-op target)))
+        (when wt
+          (set-window-buffer nil (get-buffer agent-fleet-worktree-buffer-name)))
+        (agent-fleet-display--make-outcome (if wt t) wt))))))
 
 ;;;###autoload
 (define-obsolete-function-alias 'agent-fleet-worktree-status

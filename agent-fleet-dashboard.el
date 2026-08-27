@@ -348,25 +348,27 @@ store the frame from which they were opened."
   "Run THUNK from the dashboard's origin frame.
 
 When called from a dashboard whose backend auto-closes (the native
-child-frame backend), close that container after THUNK returns a
-non-nil result, which indicates that the requested external interface
-was opened.  If THUNK errors or returns nil, keep the container and
-restore its focus.  DISPLAY-ACTION, when non-nil, temporarily becomes
-`display-buffer-overriding-action'; attach uses this to replace the
-parent's current window.  Ordinary and standalone dashboards keep
-their existing lifecycle behavior."
+child-frame backend), close that container after THUNK returns an
+outcome whose `:opened' is non-nil, indicating the external interface
+was established.  If THUNK errors or the outcome is not opened, keep
+the container and restore its focus.  A non-outcome return value is
+treated as opened when non-nil (backward compat).  DISPLAY-ACTION,
+when non-nil, temporarily becomes `display-buffer-overriding-action';
+attach uses this to replace the parent's current window.  Ordinary and
+standalone dashboards keep their existing lifecycle behavior."
   (let* ((dashboard-frame (selected-frame))
          (auto-close-p (agent-fleet-dashboard--auto-close-p
                         dashboard-frame)))
     (agent-fleet-dashboard--select-origin-frame)
     (condition-case err
-        (let ((result
+        (let* ((result
                (if display-action
                    (let ((display-buffer-overriding-action display-action))
                      (funcall thunk))
-                 (funcall thunk))))
+                 (funcall thunk)))
+              (opened (agent-fleet-display--outcome-opened-p result)))
           (cond
-           ((and auto-close-p result (frame-live-p dashboard-frame))
+           ((and auto-close-p opened (frame-live-p dashboard-frame))
             (agent-fleet-dashboard--close-container dashboard-frame))
            ((and auto-close-p (frame-live-p dashboard-frame))
             (select-frame-set-input-focus dashboard-frame)))
