@@ -528,7 +528,7 @@ Delegates to `agent-fleet-magit-status' (Magit optional)."
 (defun agent-fleet-dashboard-attach ()
   "Attach live to the agent at point's terminal.
 Spawns `herdr agent attach' inside the chosen Emacs terminal backend
-(eat/ghostel/vterm) and pops the buffer so the agent's real PTY/TUI can be
+(Ghostel) and pops the buffer so the agent's real PTY/TUI can be
 driven without leaving Emacs.  Unlike `o' (a read-only read-snapshot),
 this is a live interactive session: the buffer is transient (not persisted
 or mirrored); killing the process detaches and the agent is

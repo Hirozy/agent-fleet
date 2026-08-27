@@ -480,10 +480,10 @@ prompt each, and track their aggregate status — all client-side:
 There is **no `agent.attach` socket method** (§43): attach is a client-side
 PTY bridge, not socket I/O.  It spawns the `herdr agent attach <pane-id>`
 CLI helper — which bridges a single live pane as an interactive PTY client
-(§44 path A) — inside an Emacs terminal backend:
+(§44 path A) — inside the optional Ghostel terminal backend:
 
 ```
-Emacs terminal backend (eat / ghostel / vterm)
+Emacs Ghostel terminal backend
   ↓  PTY
 herdr agent attach <pane-id>            ← CLI subprocess, not an RPC
   ↓  socket
@@ -492,21 +492,20 @@ Herdr server → one live agent pane
 
 - **No socket involvement.**  The pane-id is resolved client-side
   (`agent-fleet--resolve-pane-id`, §8.1) from the cache; the attach CLI is a
-  subprocess started by the backend (`eat-exec` / `ghostel-exec` / `vterm`
-  with `vterm-shell`).  The existing subscription/event bus is untouched.
-- **Terminal backends are optional (§45).**  `agent-fleet-attach-backend`
-  (default `auto`) picks the first ready backend in preference order:
-  ghostel (highest fidelity, libghostty-vt, §45.1) > eat (pure Elisp) >
-  vterm > `external` (§44 path C: a `user-error` prints the command for the
-  user to run in their own terminal).  The core control plane works with
-  none of them installed.
+  subprocess started with `ghostel-exec`.  The existing subscription/event
+  bus is untouched.
+- **The terminal backend is optional (§45).**
+  `agent-fleet-attach-backend` (default `auto`) uses Ghostel when its dynamic
+  module is ready. Otherwise path C applies: a `user-error` prints the command
+  for the user to run in their own terminal. Eat and vterm are not current
+  attach backends, and the core control plane works without Ghostel installed.
 - **The §45.1 stale-module guard.**  ghostel's lisp can `require`
   successfully while its dynamic module fails to load (an older/broken
   on-disk module, or a missing libghostty-vt dependency).  `auto` checks
   `featurep 'ghostel-module` (the feature `module-load` sets only on a
   successful load), not just the `require`, so a ghostel whose module did
-  not take falls through to eat rather than calling a `ghostel-exec` that
-  would fail.
+  not take falls back to the external command hint rather than calling a
+  `ghostel-exec` that would fail.
 - **Security (§46/§23, unchanged).**  Attach is user-initiated interactive
   viewing — the terminal buffer is **transient**, not persisted or
   continuously mirrored (the same boundary as `agent-fleet-show-output`'s
