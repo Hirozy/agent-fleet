@@ -61,20 +61,18 @@
 ;; attaches the new agent's terminal, so this base layer calls the module
 ;; function; `declare-function' informs the byte-compiler without pulling
 ;; the module into the require graph (which would re-enter this file at
-;; load time).  The module is loaded before any start runs, via
-;; `agent-fleet--load-feature-modules' at the end of this file.
+;; load time).  The module is loaded on demand via autoload or explicit
+;; `require'; the core control plane works without it.
 (declare-function agent-fleet-attach "agent-fleet-attach" (target &optional takeover))
 ;; The auxiliary child-frame presentation API lives in the display
-;; module, loaded before this file's feature modules; declared here so
-;; byte-compilation does not warn, and required at runtime by
-;; `-in-child-frame' view commands.
+;; module, declared here so byte-compilation does not warn, and required
+;; at runtime by `-in-child-frame' view commands.
 (declare-function agent-fleet-display--aux-run "agent-fleet-display" (thunk))
 (declare-function agent-fleet-display--make-outcome "agent-fleet-display" (opened &optional value buffer))
 (declare-function agent-fleet-display--outcome-value "agent-fleet-display" (outcome))
-;; `agent-fleet-parallel' is another one-way feature module (loaded by
-;; `agent-fleet--load-feature-modules' below).  The candidate builder surfaces a
-;; parallel task's title, so it calls these; `declare-function' keeps the
-;; module out of the require graph exactly as for `agent-fleet-attach' above.
+;; `agent-fleet-parallel' is another one-way feature module.  The
+;; candidate builder surfaces a parallel task's title, so it calls
+;; these; `declare-function' keeps the module out of the require graph.
 (declare-function agent-fleet-task-for-agent "agent-fleet-parallel" (pane-id))
 (declare-function agent-fleet-task-title "agent-fleet-parallel" (task))
 
@@ -1390,32 +1388,13 @@ agent manifests.  See the environment checks above."
 
 (provide 'agent-fleet)
 
-;; Loading the package: requiring `agent-fleet' (the package's main file)
-;; also brings in the dashboard and every feature module, so a bare
-;; `(use-package agent-fleet)' or `(require 'agent-fleet)' makes ALL
-;; commands available -- `agent-fleet-attach', `agent-fleet-parallel',
-;; `agent-fleet-worktree-*', `agent-fleet-magit-*', `agent-fleet-start-for-
-;; project', and the `agent-fleet' dashboard.  Without this, requiring only
-;; the base control plane leaves the feature modules unloaded and their
-;; commands void.  This require sits
-;; AFTER `provide' so the one-way require chain (each feature module
-;; requires `agent-fleet') does not re-enter this file -- `agent-fleet' is
-;; already on `features' when the dashboard requires it.  Optional deps
-;; (magit/eat/ghostel/vterm) are still guarded inside each module
-;; (`declare-function' + `--available-p'); nothing here hard-requires them.
-(defun agent-fleet--load-feature-modules ()
-  "Load the dashboard and feature modules, leaving no false feature on error.
-`agent-fleet' must be provided first to break the intentional one-way load
-cycle: the dashboard's feature modules require the already-defined control
-plane.  If a required dependency or module then fails, remove that early
-feature marker before re-signalling.  A later `(require \='agent-fleet)' can
-therefore retry the load instead of silently accepting a half-loaded package."
-  (condition-case err
-      (require 'agent-fleet-dashboard)
-    (error
-     (setq features (delq 'agent-fleet features))
-     (signal (car err) (cdr err)))))
-
-(agent-fleet--load-feature-modules)
+;; Loading: requiring `agent-fleet' loads the core control plane only.
+;; Feature modules (dashboard, attach, worktree, magit, parallel) are
+;; autoloaded on demand -- `M-x agent-fleet' loads the dashboard,
+;; `M-x agent-fleet-attach' loads the attach layer, and so on.  In a
+;; source checkout, run `make autoloads' to generate the autoloads file
+;; from the `;;;###autoload' cookies; a package install generates them
+;; automatically.  Optional dependencies (magit/eat/ghostel/vterm/consult)
+;; are guarded inside each module and never block core loading.
 
 ;;; agent-fleet.el ends here
