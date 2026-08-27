@@ -100,9 +100,10 @@ Herdr server and agent PTYs
 
 There are two deliberately different ways to inspect an agent:
 
-- `agent-fleet-read` and `agent-fleet-show-output` request a read snapshot.
-  Their buffers are derived views and must not be treated as a live terminal
-  mirror.
+- `agent-fleet-read` and the output view commands
+  (`agent-fleet-show-output-in-buffer` / `-in-child-frame`) request a read
+  snapshot. Their buffers are derived views and must not be treated as a live
+  terminal mirror.
 - `agent-fleet-attach` starts the Herdr CLI attach bridge inside an optional
   Emacs terminal backend. This is a live user-controlled PTY session. Killing
   its buffer or process detaches the client but does not close the Herdr pane.
