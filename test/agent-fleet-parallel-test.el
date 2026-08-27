@@ -271,6 +271,52 @@ full state machine over three agents."
         (should (eq task (agent-fleet-task-wait task nil :timeout-ms 100)))
         (should-not (agent-fleet-task-finished-at task))))))
 
+(ert-deftest agent-fleet-task-pane-move-migrates-member-identity ()
+  "A moved task agent keeps its task membership and cleanup workspace."
+  (let* ((session (herdr-model--empty-session))
+         (task (make-agent-fleet-task
+                :id "task-move" :title "move" :prompt "review"
+                :agents '("w1:p1") :workspaces '(("w1:p1" . "w1"))
+                :started-at 1.0))
+         (agent-fleet--tasks (list task))
+         (agent-fleet--agent-tasks (make-hash-table :test 'equal))
+         (agent-fleet-task-changed-hook nil)
+         (herdr-event-hook nil)
+         (herdr-event-pane-hook '(agent-fleet-parallel--on-pane-event))
+         changed removed)
+    (herdr-model-set-cache session)
+    (herdr-model-upsert-agent-info
+     '(:pane_id "w1:p1" :workspace_id "w1" :tab_id "w1:t1"
+       :agent "codex" :agent_status "working")
+     session)
+    (puthash "w1:p1" "task-move" agent-fleet--agent-tasks)
+    (add-hook 'agent-fleet-task-changed-hook
+              (lambda (seen) (push seen changed)))
+    (unwind-protect
+        (progn
+          (herdr-events-dispatch
+           "pane_moved"
+           '(:previous_pane_id "w1:p1"
+             :pane (:pane_id "w2:p2" :workspace_id "w2" :tab_id "w2:t1"
+                    :agent "codex" :agent_status "working")))
+          (should-not (herdr-model-find-agent session "w1:p1"))
+          (should (herdr-model-find-agent session "w2:p2"))
+          (should (equal '("w2:p2") (agent-fleet-task-agents task)))
+          (should (equal '(("w2:p2" . "w1"))
+                         (agent-fleet-task-workspaces task)))
+          (should-not (gethash "w1:p1" agent-fleet--agent-tasks))
+          (should (eq task (agent-fleet-task-for-agent "w2:p2")))
+          (should (eq 'running (agent-fleet-task-state task)))
+          (should (equal (list task) changed))
+          ;; Cleanup must use the original worktree workspace (w1), not the
+          ;; agent's current post-move workspace (w2).
+          (cl-letf (((symbol-function 'agent-fleet-worktree-remove)
+                     (lambda (workspace-id &optional _force)
+                       (push workspace-id removed))))
+            (should (= 1 (agent-fleet-task-cleanup task t)))
+            (should (equal '("w1") removed))))
+      (herdr-model-clear-cache))))
+
 
 ;;; --- Task wait ------------------------------------------------
 

@@ -298,7 +298,10 @@ key is silent."
      '(:pane_id "w1:p1" :workspace_id "w1" :tab_id "w1:t1"
        :terminal_id "t1" :cwd "/d" :focused t :revision 3
        :agent "claude" :agent_status "idle" :name "architect"
-       :state_change_seq 9 :interactive_ready t :launch_pending :false)
+       :display_agent "Claude" :title "Review"
+       :state_change_seq 9 :interactive_ready t :launch_pending :false
+       :state_labels ("planning" "working")
+       :tokens (:input 7 :output 3))
      session)
     (herdr-model-apply-event
      session "pane_updated"
@@ -307,21 +310,32 @@ key is silent."
               :agent "claude" :agent_status "working")))
     (let ((agent (herdr-model-find-agent session "w1:p1")))
       (should (equal "architect" (herdr-agent-name agent)))
+      (should (equal "Claude" (herdr-agent-display-agent agent)))
+      (should (equal "Review" (herdr-agent-title agent)))
       (should (= 9 (herdr-agent-state-change-seq agent)))
       (should (herdr-agent-interactive-ready agent))
+      (should (equal '("planning" "working")
+                     (herdr-agent-state-labels agent)))
+      (should (equal '(:input 7 :output 3) (herdr-agent-tokens agent)))
       (should (equal "/new" (herdr-agent-cwd agent))))
     ;; A cross-workspace move changes pane-id but the live alias must survive.
-    (herdr-model-apply-event
-     session "pane_moved"
-     '(:previous_pane_id "w1:p1"
-       :pane (:pane_id "w2:p2" :workspace_id "w2" :tab_id "w2:t1"
-              :terminal_id "t1" :cwd "/new" :focused t :revision 5
-              :agent "claude" :agent_status "working")))
+    (let ((descriptor
+           (herdr-model-apply-event
+            session "pane_moved"
+            '(:previous_pane_id "w1:p1"
+              :pane (:pane_id "w2:p2" :workspace_id "w2" :tab_id "w2:t1"
+                     :terminal_id "t1" :cwd "/new" :focused t :revision 5
+                     :agent "claude" :agent_status "working")))))
+      (should (equal "w1:p1" (plist-get descriptor :previous-pane-id))))
     (should-not (herdr-model-find-agent session "w1:p1"))
     (should (gethash "w1:p1" (herdr-session-gone-panes session)))
-    (should (equal "architect"
-                   (herdr-agent-name
-                    (herdr-model-find-agent session "w2:p2"))))
+    (let ((agent (herdr-model-find-agent session "w2:p2")))
+      (should (equal "architect" (herdr-agent-name agent)))
+      (should (equal "Claude" (herdr-agent-display-agent agent)))
+      (should (equal "Review" (herdr-agent-title agent)))
+      (should (equal '("planning" "working")
+                     (herdr-agent-state-labels agent)))
+      (should (equal '(:input 7 :output 3) (herdr-agent-tokens agent))))
     (should (plist-get
              (herdr-model-apply-event
               session "pane_updated"

@@ -9,6 +9,7 @@ control and viewing interface, while Herdr manages the agents' real PTYs.
 - The active branch is `main`.
 - The committed native child-frame dashboard implementation is in commit
   `95bcc32`.
+- The committed event-safe `agent.list` reconciliation is in commit `f085c5a`.
 - The minimum supported Emacs version is **29.1**.
 - Core behavior must remain event-driven; do not poll Herdr state with timers.
 
@@ -20,8 +21,8 @@ control and viewing interface, while Herdr manages the agents' real PTYs.
 - `agent-fleet-dashboard.el`: the `*Agent Fleet*` table, row actions, filters,
   notifications, and dashboard display backends.
 - `agent-fleet-attach.el`: live PTY attachment through
-  `herdr agent attach <pane-id>`, supporting Ghostel, Eat, vterm, and an
-  external fallback.
+  `herdr agent attach <pane-id>`, supporting Ghostel and an external command
+  fallback.
 - `agent-fleet-worktree.el`: worktree listing, opening, status, and cleanup.
 - `agent-fleet-magit.el`: optional Magit status and diff integration.
 - `agent-fleet-project.el`: `project.el` project detection and agent/worktree
@@ -73,6 +74,11 @@ Herdr server and agent PTYs
 5. The dashboard and other views render the cache. A user-requested refresh may
    explicitly fetch a fresh server snapshot, but no background polling timer
    should be introduced.
+6. A synchronous authoritative cache rebuild must be atomic with respect to the
+   subscription stream. Use `herdr-call-with-deferred-events` around the request
+   and cache replacement: events received while the request pumps process output
+   are copied into a queue, then replayed in arrival order after the snapshot is
+   installed. The queue must also flush when the protected operation signals.
 
 ### Layering rules
 
@@ -191,12 +197,9 @@ struct. It resolves the stable pane id and starts:
 herdr agent attach <pane-id>
 ```
 
-Backend selection order is:
-
-1. Ghostel, when its dynamic module is actually loaded;
-2. Eat;
-3. vterm;
-4. an external command hint.
+Backend selection uses Ghostel when its dynamic module is actually loaded. If
+Ghostel is unavailable, attach reports the external `herdr agent attach`
+command for the user to run. Eat and vterm are not current attach backends.
 
 Attach buffers are named `*agent:NAME*`. They are temporary interactive views;
 terminal output must not be persisted or continuously mirrored. A live attach
@@ -233,8 +236,8 @@ size.
 - Ghostel's Lisp package may load while its dynamic module is unavailable. The
   readiness check must test actual module capability, not only whether
   `require` succeeded.
-- Eat, Ghostel, vterm, and Magit must not become hard dependencies of the core
-  control plane.
+- Ghostel and Magit must not become hard dependencies of the core control
+  plane.
 - Non-graphical frames, missing optional dependencies, and unavailable GUI APIs
   must provide a usable fallback or a clear error message.
 - Do not add global key bindings. Users opt in through
@@ -261,6 +264,11 @@ include:
   position, close timing, and the current window after attach;
 - `git diff --check`;
 - batch loading or byte compilation when loadable Lisp is modified.
+
+Changes involving authoritative list/snapshot reconciliation should include an
+interleaving test where a pushed event arrives before the older response is
+installed, plus coverage that queued events preserve order and still replay
+when the protected operation signals.
 
 Use mocks or stubs for the Herdr socket, optional terminal backends, and Magit
 in ordinary ERT tests so they do not require external services. Report the

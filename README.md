@@ -83,7 +83,12 @@ command prompts; defaults are covered in [Configuration](#configuration).
 name, kind, state, and task. The buffer updates from Herdr events; it does not
 periodically poll the server. Opening also reconciles the list from the server,
 like the `g` action, so the dashboard opens on fresh state rather than a
-possibly-stale cache.
+possibly-stale cache. That reconciliation is atomic with respect to the live
+subscription: events received while `agent.list` is in flight are queued, the
+server snapshot is installed first, and the queued events are then replayed in
+arrival order. A newer status or lifecycle event therefore cannot be replaced
+by an older list response, and received events are still replayed if the refresh
+fails.
 
 | Key | Action |
 |---|---|
@@ -375,7 +380,10 @@ The `herdr` library is available for direct protocol access
 users should prefer the `agent-fleet-*` commands, which resolve targets, keep
 the local model synchronized, and expose lifecycle hooks. The protocol uses one
 short-lived socket per request and one long-lived event subscription; Herdr
-remains the source of truth and reconnecting rebuilds the local snapshot. See
+remains the source of truth and reconnecting rebuilds the local snapshot.
+Authoritative cache rebuilds use the same event-deferral boundary described in
+the dashboard section, so synchronous request pumping cannot discard a pushed
+event that arrived during the rebuild. See
 [`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the wire protocol and event shapes.
 
 ## Architecture
