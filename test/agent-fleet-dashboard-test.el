@@ -1001,6 +1001,21 @@ state."
 (defvar agent-fleet-dashboard-test--displayed 0)
 (defvar agent-fleet-dashboard-test--deleted nil)
 
+(ert-deftest agent-fleet-dashboard-aux-frame-fills-parent ()
+  "Auxiliary views use the full parent instead of dashboard proportions.
+Magit needs a full-size presentation surface; the compact 0.48 by 0.55
+dimensions belong only to the dashboard child frame."
+  (should (= 1.0
+             (alist-get 'width agent-fleet-dashboard--aux-frame-parameters)))
+  (should (= 1.0
+             (alist-get 'height agent-fleet-dashboard--aux-frame-parameters)))
+  (should (= 0.48
+             (alist-get 'width
+                        agent-fleet-dashboard--child-frame-parameters)))
+  (should (= 0.55
+             (alist-get 'height
+                        agent-fleet-dashboard--child-frame-parameters))))
+
 (defmacro agent-fleet-dashboard-test--with-aux-frames (&rest body)
   "Run BODY with the frame APIs stubbed for auxiliary child-frame tests.
 `selected-frame' answers `agent-fleet-dashboard-test--current-frame',
@@ -1117,6 +1132,23 @@ No new child is created and nothing is deleted."
     (when (get-buffer " *agent-fleet-aux*")
       (kill-buffer (get-buffer " *agent-fleet-aux*")))))
 
+(ert-deftest agent-fleet-dashboard-aux-run-resizes-reused-child ()
+  "A reused child receives the current full-parent size parameters.
+This also repairs a live half-size auxiliary frame created before the
+full-size presentation policy was loaded."
+  (let ((agent-fleet-dashboard--aux-frames (make-hash-table :test 'eq))
+        (agent-fleet-dashboard-test--current-frame 'origin)
+        modified)
+    (puthash 'origin 'aux-child agent-fleet-dashboard--aux-frames)
+    (agent-fleet-dashboard-test--with-aux-frames
+      (cl-letf (((symbol-function 'modify-frame-parameters)
+                 (lambda (frame parameters)
+                   (setq modified (cons frame parameters)))))
+        (should (eq 'ok (agent-fleet-dashboard--aux-run (lambda () 'ok))))))
+    (should (eq 'aux-child (car modified)))
+    (should (= 1.0 (alist-get 'width (cdr modified))))
+    (should (= 1.0 (alist-get 'height (cdr modified))))))
+
 (ert-deftest agent-fleet-dashboard-aux-origin-frame-prevents-nesting ()
   "An auxiliary child never nests under another child frame.
 An aux child opened from an aux child reuses its recorded origin; a
@@ -1166,6 +1198,65 @@ entry, leaves the table alone."
       (agent-fleet-dashboard--aux-forget 'aux-child)
       (should (eq 'other-child
                   (gethash 'origin agent-fleet-dashboard--aux-frames))))))
+
+
+(ert-deftest agent-fleet-dashboard-quit-window-advice-is-installed ()
+  "`quit-restore-window' is advised so auxiliary child frames close on q.
+Installed by `agent-fleet-dashboard--setup-frame-hooks'; the advice is
+idempotent (a single member on the symbol)."
+  (should (advice-member-p #'agent-fleet-dashboard--aux-quit-restore-window
+                            'quit-restore-window)))
+
+(ert-deftest agent-fleet-dashboard-quit-window-closes-aux-child ()
+  "Quitting a view window closes the auxiliary child, not switch buffers.
+`quit-restore-window' on a window inside an auxiliary child deletes the
+child, forgets the reuse entry, and refocuses the origin.  The bury
+variant leaves the view buffer alive; the kill variant kills it."
+  (dolist (mode '(bury kill))
+    (let ((agent-fleet-dashboard--aux-frames (make-hash-table :test 'eq))
+          (agent-fleet-dashboard-test--current-frame 'aux-child)
+          (agent-fleet-dashboard-test--deleted nil)
+          (view-buf (get-buffer-create " *aux-quit-view*")))
+      (puthash 'origin 'aux-child agent-fleet-dashboard--aux-frames)
+      (cl-letf (((symbol-function 'selected-frame) (lambda () 'aux-child))
+                ((symbol-function 'window-live-p) (lambda (&optional _) t))
+                ((symbol-function 'window-frame) (lambda (&rest _) 'aux-child))
+                ((symbol-function 'window-buffer) (lambda (&rest _) view-buf))
+                ((symbol-function 'frame-parameter)
+                 (lambda (frame parameter)
+                   (cond
+                    ((and (eq frame 'aux-child)
+                          (eq parameter 'agent-fleet-auxiliary-frame))
+                     t)
+                    ((and (eq frame 'aux-child)
+                          (eq parameter 'agent-fleet-auxiliary-origin-frame))
+                     'origin)
+                    (t nil))))
+                ((symbol-function 'frame-live-p)
+                 (lambda (frame) (memq frame '(origin aux-child))))
+                ((symbol-function 'delete-frame)
+                 (lambda (frame &optional _)
+                   (setq agent-fleet-dashboard-test--deleted frame)))
+                ((symbol-function 'select-frame-set-input-focus)
+                 (lambda (frame)
+                   (setq agent-fleet-dashboard-test--current-frame frame))))
+        (quit-restore-window nil mode))
+      (should (eq 'aux-child agent-fleet-dashboard-test--deleted))
+      (should (eq 'origin agent-fleet-dashboard-test--current-frame))
+      (should-not (gethash 'origin agent-fleet-dashboard--aux-frames))
+      (if (eq mode 'kill)
+          (should-not (buffer-live-p view-buf))
+        (should (buffer-live-p view-buf))
+        (kill-buffer view-buf)))))
+
+(ert-deftest agent-fleet-dashboard-quit-window-passes-through-ordinary-frames ()
+  "Quitting a window on an ordinary frame keeps the default behavior."
+  (let ((switched nil))
+    (cl-letf (((symbol-function 'frame-parameter) (lambda (&rest _) nil))
+              ((symbol-function 'switch-to-prev-buffer)
+               (lambda (&rest _) (setq switched t) t)))
+      (quit-restore-window nil 'bury))
+    (should switched)))
 
 
 (provide 'agent-fleet-dashboard-test)

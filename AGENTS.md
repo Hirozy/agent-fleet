@@ -222,10 +222,13 @@ computed once regardless of presentation. The requirements this satisfies:
 - genuine parent-frame resizes still propagate to the PTY immediately;
 - the auxiliary child frame is owned by `agent-fleet-dashboard.el` (one child
   per origin, reused across opens, never nested under another child frame);
-  the base layer stays free of frame lifecycle;
-- closing an auxiliary child (via `agent-fleet-dashboard-aux-quit` or the
-  lifecycle rules on nil/error results) deletes it, forgets the reuse entry,
-  and refocuses the origin — no nested or orphaned frames.
+  it fills the parent frame rather than inheriting the dashboard's compact
+  dimensions, and the base layer stays free of frame lifecycle;
+- closing an auxiliary child (via `q` inside the view, which is intercepted
+  with `quit-restore-window` advice scoped to auxiliary frames, via
+  `agent-fleet-dashboard-aux-quit`, or the lifecycle rules on nil/error
+  results) deletes it, forgets the reuse entry, and refocuses the origin —
+  no nested or orphaned frames.
 
 The child-frame presentation contract is stricter than the dashboard's: an
 explicit `-in-child-frame` command signals a `user-error` on an unsupported
