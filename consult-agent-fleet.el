@@ -34,9 +34,10 @@
 ;;
 ;; The mode installs `:around' advice on `agent-fleet--read-agent-name'
 ;; -- the shared reader that the interactive forms of
-;; `agent-fleet-attach', `agent-fleet-show-output', `agent-fleet-switch',
-;; `agent-fleet-kill', `agent-fleet-interrupt', and the other selection
-;; commands all call -- so every entry point that goes through the
+;; `agent-fleet-attach', `agent-fleet-show-output-in-buffer',
+;; `agent-fleet-switch', `agent-fleet-kill', `agent-fleet-interrupt',
+;; and the other selection commands all call -- so every entry point
+;; that goes through the
 ;; reader (keys, `M-x', dashboard bindings, and programmatic calls)
 ;; picks the agent with `consult--read' instead of `completing-read'.
 ;; Disabling the mode removes the advice, so the original listing runs
@@ -109,8 +110,9 @@ PROMPT is passed through."
   "Use consult to select agents in every agent-fleet selection command.
 When on, this installs `:around' advice on
 `agent-fleet--read-agent-name' -- the shared reader that the
-interactive forms of `agent-fleet-attach', `agent-fleet-show-output',
-`agent-fleet-switch', `agent-fleet-kill', `agent-fleet-interrupt', and
+interactive forms of `agent-fleet-attach',
+`agent-fleet-show-output-in-buffer', `agent-fleet-switch',
+`agent-fleet-kill', `agent-fleet-interrupt', and
 the other selection commands all call.  Because the advice sits on the
 reader, every entry point that goes through it is covered: keys you
 have bound to those commands, `M-x', dashboard bindings, and

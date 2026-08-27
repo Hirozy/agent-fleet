@@ -362,7 +362,7 @@ Notes:
 - **Output is a read-snapshot.** `agent.read` returns a `PaneReadResult`
   (`{pane_id, workspace_id, tab_id, source, format, text, revision,
   truncated}`); it is never mirrored or persisted (§23/§46 — pane output may
-  contain secrets). `agent-fleet-show-output` opens a fresh snapshot in a
+  contain secrets). `agent-fleet-show-output-in-buffer` opens a fresh snapshot in a
   read-only buffer.
 - **`strip_ansi` is a JSON boolean**, not a string. The Emacs client encodes
   `t`→`true` and `nil`/`:false`→`false` (via `(json-false :false)`).
@@ -508,7 +508,7 @@ Herdr server → one live agent pane
   `ghostel-exec` that would fail.
 - **Security (§46/§23, unchanged).**  Attach is user-initiated interactive
   viewing — the terminal buffer is **transient**, not persisted or
-  continuously mirrored (the same boundary as `agent-fleet-show-output`'s
+  continuously mirrored (the same boundary as the output view's
   read-snapshot).  Killing the process detaches and the agent is preserved
   (detach does **not** close the pane — §79).  No result extraction (§40):
   the buffer is a live terminal, never a structured answer.

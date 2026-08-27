@@ -836,15 +836,16 @@ this uses `pane_created' to establish the agent with its pane fields."
         (should (herdr-agent-p got))
         (should (equal "arch" (herdr-agent-name got)))))))
 
-(ert-deftest agent-fleet-show-output-buffer ()
-  "show-output opens a read-only buffer with the agent's text."
+(ert-deftest agent-fleet-show-output-in-buffer-view ()
+  "`agent-fleet-show-output-in-buffer' opens a read-only buffer with the
+agent's text."
   (with-agent-fleet-mock path server
     (let ((agent (agent-fleet-start 'claude :name "arch")))
       (agent-fleet-test--pump)
       (let ((buf-name "*Agent Output: arch*"))
         (unwind-protect
             (progn
-              (agent-fleet-show-output agent 5)
+              (agent-fleet-show-output-in-buffer agent 5)
               (should (get-buffer buf-name))
               (with-current-buffer buf-name
                 (should (string-match-p "line 1" (buffer-string)))
