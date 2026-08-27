@@ -265,10 +265,12 @@ only the presentation differs.
 The child-frame variants exist so a view can be opened from an attached
 terminal without disturbing it: the terminal's window keeps its size, and the
 PTY the agent is writing to is never resized. Repeated opens reuse a single
-auxiliary child frame per parent instead of stacking new ones, and
-`M-x agent-fleet-dashboard-aux-quit` closes it and returns focus to the
-parent. Magit may split windows inside the child frame, never the terminal's
-frame.
+auxiliary child frame per parent instead of stacking new ones, and pressing
+`q` inside the view (or `M-x agent-fleet-dashboard-aux-quit`) closes it and
+returns focus to the parent. Magit may split windows inside the child frame,
+never the terminal's frame. Auxiliary child frames fill their parent frame so
+full-screen interfaces such as Magit are not constrained to the dashboard's
+compact dimensions.
 
 The `-in-child-frame` commands are explicit about their runtime requirements:
 they need Emacs 29.1 or newer, a graphical frame, and
