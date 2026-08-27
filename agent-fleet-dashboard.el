@@ -848,8 +848,8 @@ explicitly so the dashboard is reliably centered within its parent."
 ;; reused per origin, and never used as the dashboard display backend.
 
 (defvar agent-fleet-dashboard--aux-frame-parameters
-  '((width . 0.48)
-    (height . 0.55)
+  '((width . 1.0)
+    (height . 1.0)
     (left . 0.5)
     (top . 0.5)
     (keep-ratio . t)
@@ -865,6 +865,8 @@ explicitly so the dashboard is reliably centered within its parent."
   "Frame parameters for an auxiliary child frame.
 A separate literal from `agent-fleet-dashboard--child-frame-parameters'
 so that future dashboard changes do not alter auxiliary interfaces.
+Unlike the compact dashboard, auxiliary interfaces fill their parent so
+full-screen interfaces such as Magit do not open in a half-size surface.
 `parent-frame' and the origin marker are merged on top at display time.")
 
 (defvar agent-fleet-dashboard--aux-frames (make-hash-table :test 'eq)
@@ -940,6 +942,29 @@ display lands in it.  Signal a `user-error' when Emacs cannot create it."
         (when (eq mapped frame)
           (remhash origin agent-fleet-dashboard--aux-frames))))))
 
+(defun agent-fleet-dashboard--aux-quit-restore-window
+    (orig &optional window bury-or-kill)
+  "Around advice on `quit-restore-window' for auxiliary child frames.
+Quitting a window whose frame is an auxiliary child closes that child —
+delete it, forget the reuse entry, refocus its origin — instead of the
+default behavior.  The default would not match the frame-deletion branch
+of `quit-restore-window' (the recorded buffer is the placeholder the
+child was created with, not the view buffer later swapped in) and would
+switch the window to an unrelated buffer, leaving the child behind.
+BURY-OR-KILL is still applied to the window's buffer afterwards.
+Windows on any other frame pass through unchanged."
+  (let* ((win (if (window-live-p window) window (selected-window)))
+         (frame (window-frame win)))
+    (if (frame-parameter frame 'agent-fleet-auxiliary-frame)
+        (let ((buffer (window-buffer win)))
+          (agent-fleet-dashboard--aux-close frame)
+          (when (buffer-live-p buffer)
+            (cond ((eq bury-or-kill 'kill)
+                   (kill-buffer buffer))
+                  ((memq bury-or-kill '(bury burying))
+                   (bury-buffer-internal buffer)))))
+      (funcall orig window bury-or-kill))))
+
 (defun agent-fleet-dashboard--aux-run (thunk)
   "Run THUNK in an auxiliary child frame and enforce its lifecycle.
 Resolve the current origin to a non-child parent frame, ensure one
@@ -963,6 +988,13 @@ Signal a `user-error' when child frames are unsupported; an explicit
       (let* ((existing (agent-fleet-dashboard--aux-frame-for-origin origin))
              (created-p (null existing))
              (child (or existing (agent-fleet-dashboard--aux-create origin))))
+        ;; Reapply presentation parameters when reusing a frame.  Besides
+        ;; keeping live frames aligned with customization/reloads, this grows
+        ;; auxiliary frames created by older versions that inherited the
+        ;; dashboard's compact dimensions.
+        (modify-frame-parameters child
+                                 agent-fleet-dashboard--aux-frame-parameters)
+        (agent-fleet-dashboard--center-child-frame child origin)
         (select-frame-set-input-focus child)
         (condition-case err
             (let ((result (funcall thunk)))
@@ -1023,12 +1055,16 @@ the normal representation."
                    #'agent-fleet-dashboard--forget-centered-child)
   (remove-function (default-value 'delete-frame-functions)
                    #'agent-fleet-dashboard--aux-forget)
+  (advice-remove 'quit-restore-window
+                 #'agent-fleet-dashboard--aux-quit-restore-window)
   (add-hook 'window-size-change-functions
             #'agent-fleet-dashboard--recenter-on-parent-resize)
   (add-hook 'delete-frame-functions
             #'agent-fleet-dashboard--forget-centered-child)
   (add-hook 'delete-frame-functions
-            #'agent-fleet-dashboard--aux-forget))
+            #'agent-fleet-dashboard--aux-forget)
+  (advice-add 'quit-restore-window :around
+              #'agent-fleet-dashboard--aux-quit-restore-window))
 
 (agent-fleet-dashboard--setup-frame-hooks)
 
