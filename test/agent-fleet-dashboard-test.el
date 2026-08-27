@@ -465,6 +465,32 @@ would not catch an accidental `add-function' wrapper around a nil hook."
     (should (eq current-frame 'child))
     (should-not deleted)))
 
+(ert-deftest agent-fleet-dashboard-visitor-no-close-on-not-opened-value ()
+  "A non-nil domain value with `:opened' nil does not close the dashboard.
+The visitor checks `:opened', not truthiness: a command that returns a
+non-nil value but failed to open a view must keep the dashboard child."
+  (let ((current-frame 'child)
+        deleted)
+    (cl-letf (((symbol-function 'selected-frame) (lambda () current-frame))
+              ((symbol-function 'frame-parameter)
+               (lambda (frame parameter)
+                 (and (eq frame 'child)
+                      (eq parameter 'agent-fleet-dashboard-display)
+                      'child-frame)))
+              ((symbol-function 'frame-parent)
+               (lambda (frame) (and (eq frame 'child) 'parent)))
+              ((symbol-function 'frame-live-p)
+               (lambda (frame) (memq frame '(child parent))))
+              ((symbol-function 'select-frame-set-input-focus)
+               (lambda (frame) (setq current-frame frame)))
+              ((symbol-function 'delete-frame)
+               (lambda (frame &optional _force) (setq deleted frame))))
+      (agent-fleet-dashboard--visit-external-interface
+       (lambda ()
+         (agent-fleet-display--make-outcome nil 'non-nil-value))))
+    (should (eq current-frame 'child))
+    (should-not deleted)))
+
 (ert-deftest agent-fleet-dashboard-inline-actions-stay-in-child-frame ()
   "Prompt/control/edit actions do not invoke external-interface navigation."
   (let (external calls)
@@ -1130,6 +1156,25 @@ No new child is created and nothing is deleted."
     (should (= 1 agent-fleet-dashboard-test--displayed))
     (should-not agent-fleet-dashboard-test--deleted)
     (should (eq 'aux-child agent-fleet-dashboard-test--current-frame))
+    (when (get-buffer " *agent-fleet-aux*")
+      (kill-buffer (get-buffer " *agent-fleet-aux*")))))
+
+(ert-deftest agent-fleet-dashboard-aux-run-keeps-child-on-opened-nil-value ()
+  "A nil domain value with `:opened' t keeps the child.
+This is the Magit case: `magit-status' returns nil but the view opened.
+Without the explicit outcome, the old truthiness check would close the
+newly created child."
+  (let ((agent-fleet-display--aux-frames (make-hash-table :test 'eq))
+        (agent-fleet-dashboard-test--current-frame 'origin)
+        (agent-fleet-dashboard-test--displayed 0)
+        (agent-fleet-dashboard-test--deleted nil))
+    (agent-fleet-dashboard-test--with-aux-frames
+      (let ((outcome (agent-fleet-display--aux-run
+                      (lambda ()
+                        (agent-fleet-display--make-outcome t nil)))))
+        (should (agent-fleet-display--outcome-opened-p outcome))))
+    (should (eq 'aux-child agent-fleet-dashboard-test--current-frame))
+    (should-not agent-fleet-dashboard-test--deleted)
     (when (get-buffer " *agent-fleet-aux*")
       (kill-buffer (get-buffer " *agent-fleet-aux*")))))
 
