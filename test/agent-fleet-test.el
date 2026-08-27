@@ -1079,15 +1079,38 @@ teeth test: push the faithful dotted kind and assert the hook fires."
     (agent-fleet--configure-auto-connect)
     (should (memq #'agent-fleet--schedule-auto-connect after-init-hook))))
 
-(ert-deftest agent-fleet-feature-load-failure-can-be-retried ()
-  "A failed downstream require removes the early main feature marker."
-  (let ((test-features (cons 'agent-fleet
-                             (delq 'agent-fleet (copy-sequence features)))))
-    (cl-letf (((symbol-value 'features) test-features)
-              ((symbol-function 'require)
-               (lambda (&rest _) (error "dashboard load failed"))))
-      (should-error (agent-fleet--load-feature-modules) :type 'error)
-      (should-not (featurep 'agent-fleet)))))
+(ert-deftest agent-fleet-core-does-not-load-features ()
+  "Requiring `agent-fleet' loads only the core control plane.
+Feature modules (dashboard, attach, magit, worktree, parallel) are NOT
+loaded by a bare `require'; they autoload on demand.  This is verified
+in a fresh Emacs subprocess so the already-loaded test environment does
+not mask the result."
+  (skip-unless (executable-find "emacs"))
+  (let* ((dir (or (file-name-directory (locate-library "agent-fleet"))
+                  default-directory))
+         (script (make-temp-file "af-features-" nil ".el"
+                    (concat "(require 'agent-fleet)\n"
+                            "(princ \"START\")\n"
+                            "(princ (format \"%S\"\n"
+                            "  (mapcar #'symbol-name\n"
+                            "    (seq-filter (lambda (f)\n"
+                            "      (string-prefix-p \"agent-fleet\" (symbol-name f)))\n"
+                            "    features))))\n"))))
+    (unwind-protect
+        (let* ((cmd (format "emacs --batch -L %s -l %s 2>&1"
+                            (shell-quote-argument dir)
+                            (shell-quote-argument script)))
+               (output (shell-command-to-string cmd))
+               (start (string-match "START" output))
+               (feats (when start
+                        (condition-case nil
+                            (read (substring output (+ start 5)))
+                          (error nil)))))
+          (should (member "agent-fleet" feats))
+          (should-not (member "agent-fleet-dashboard" feats))
+          (should-not (member "agent-fleet-attach" feats))
+          (should-not (member "agent-fleet-magit" feats)))
+      (delete-file script))))
 
 (ert-deftest agent-fleet-start-validates-required-fields-before-provisioning ()
   "Bad kind/args/timeout values fail before any resource-creating RPC."
