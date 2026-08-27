@@ -345,6 +345,15 @@ reaches Emacs rather than the PTY; `C-c C-a h` (or `?`) lists the same actions
 for discoverability. The commands are also available as `M-x
 agent-fleet-attach-*` and signal a clear error outside an attach buffer.
 
+The single-key bindings live in `agent-fleet-attach-command-map`, which
+`agent-fleet-attach-mode-map` binds to `C-c C-a`. To rebind the prefix,
+rebind the command map in the mode map, e.g.:
+
+```elisp
+(keymap-set agent-fleet-attach-mode-map "C-c C-f"
+            #'agent-fleet-attach-command-map)
+```
+
 ### Evil and evil-escape
 
 Attach buffers inhibit `evil-escape` locally by default. Some terminal modes
