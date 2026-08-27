@@ -796,6 +796,8 @@ remhash unconditionally) or a later event carrying `:agent' nil."
                       (herdr-agent-display-agent new)
                       (herdr-agent-display-agent old)
                       (herdr-agent-title new) (herdr-agent-title old)
+                      (herdr-agent-agent-status new)
+                      (herdr-agent-agent-status old)
                       (herdr-agent-state-change-seq new)
                       (herdr-agent-state-change-seq old)
                       (herdr-agent-interactive-ready new)
