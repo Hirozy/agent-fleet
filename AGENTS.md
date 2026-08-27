@@ -207,22 +207,31 @@ buffer for the same pane must be reused instead of creating a second attach
 session. Killing the buffer or terminal process only detaches; it must not
 close the agent pane.
 
-## Terminal-size stability: next implementation target
+## Terminal-size stability
 
-The current baseline handles child-frame dashboard and attach lifecycle, but it
-does not yet fully solve frequent terminal resize/redraw when diff, tree, or
-other auxiliary interfaces are opened after attach. Any future implementation
-must satisfy the following:
+Addressed by the auxiliary child-frame presentation layer. Every auxiliary
+view (output, worktree status, Magit status, working-tree diff) has two
+explicit presentation commands: an `-in-buffer` variant for an ordinary
+window, and an `-in-child-frame` variant that opens the view inside a native
+child frame floating over the terminal's parent frame. The view's data is
+computed once regardless of presentation. The requirements this satisfies:
 
-- keep the terminal as the only full-size window in the origin parent frame;
-- do not create splits, side windows, or any other layout that changes the
-  terminal PTY rows or columns;
-- propagate genuine parent-frame resizes to the PTY immediately; do not debounce
-  or suppress them;
-- preferably display diff, tree, Magit, and output interfaces in a separate
-  native child frame so the parent terminal window geometry remains unchanged;
-- when navigating away from an auxiliary child frame, close it according to
-  the dashboard lifecycle rules and do not leave nested or orphaned frames;
+- the terminal stays the only full-size window in the origin parent frame;
+- no splits, side windows, or other layout changes touch the terminal PTY's
+  rows or columns; Magit may split only inside the auxiliary child frame;
+- genuine parent-frame resizes still propagate to the PTY immediately;
+- the auxiliary child frame is owned by `agent-fleet-dashboard.el` (one child
+  per origin, reused across opens, never nested under another child frame);
+  the base layer stays free of frame lifecycle;
+- closing an auxiliary child (via `agent-fleet-dashboard-aux-quit` or the
+  lifecycle rules on nil/error results) deletes it, forgets the reuse entry,
+  and refocuses the origin — no nested or orphaned frames.
+
+The child-frame presentation contract is stricter than the dashboard's: an
+explicit `-in-child-frame` command signals a `user-error` on an unsupported
+runtime (Emacs older than 29.1, non-graphical frame, missing
+`display-buffer-in-child-frame`) instead of silently falling back to a buffer.
+Users who want the buffer presentation use the `-in-buffer` variant.
 
 If a third-party interface cannot work inside an auxiliary child frame, record
 the concrete limitation first, then design an explicit parent window-

@@ -158,6 +158,8 @@ applicable.
 | `M-x agent-fleet-prompt-and-wait` | Prompt and wait atomically for done/blocked |
 | `M-x agent-fleet-read` | Read a terminal snapshot |
 | `M-x agent-fleet-show-output` | Open a recent output snapshot |
+| `M-x agent-fleet-show-output-in-buffer` | Open output in an ordinary buffer |
+| `M-x agent-fleet-show-output-in-child-frame` | Open output in a child frame |
 | `M-x agent-fleet-wait` | Wait for a specific state |
 | `M-x agent-fleet-send-keys` | Send terminal keys |
 | `M-x agent-fleet-interrupt` | Send `Ctrl-C` |
@@ -212,6 +214,8 @@ Standalone worktree commands:
 - `M-x agent-fleet-worktree-list`
 - `M-x agent-fleet-worktree-open`
 - `M-x agent-fleet-worktree-status`
+- `M-x agent-fleet-worktree-status-in-buffer`
+- `M-x agent-fleet-worktree-status-in-child-frame`
 - `M-x agent-fleet-worktree-remove`
 - `M-x agent-fleet-worktree-cleanup`
 
@@ -240,10 +244,37 @@ With Magit installed, the dashboard can open the selected agent's checkout:
 
 - Press `m` for Magit status.
 - Press `d` for the working-tree diff.
-- Run `M-x agent-fleet-magit-status` or `M-x agent-fleet-magit-diff` directly.
+- Run `M-x agent-fleet-magit-status` or `M-x agent-fleet-magit-diff` directly,
+  or their explicit presentation variants `M-x agent-fleet-magit-status-in-buffer`,
+  `M-x agent-fleet-magit-status-in-child-frame`,
+  `M-x agent-fleet-magit-diff-in-buffer`, and
+  `M-x agent-fleet-magit-diff-in-child-frame`.
 
 The agent's actual checkout is used, including an isolated Herdr worktree. If
 Magit is unavailable, the commands report how to enable the integration.
+
+## Auxiliary views: buffer or child frame
+
+Every auxiliary view — recent output, worktree status, Magit status, and the
+working-tree diff — has two explicit presentation commands: an `-in-buffer`
+variant that displays in an ordinary Emacs window, and an `-in-child-frame`
+variant that opens the view inside a native child frame floating over the
+current frame's non-child parent. The view itself is computed once either way;
+only the presentation differs.
+
+The child-frame variants exist so a view can be opened from an attached
+terminal without disturbing it: the terminal's window keeps its size, and the
+PTY the agent is writing to is never resized. Repeated opens reuse a single
+auxiliary child frame per parent instead of stacking new ones, and
+`M-x agent-fleet-dashboard-aux-quit` closes it and returns focus to the
+parent. Magit may split windows inside the child frame, never the terminal's
+frame.
+
+The `-in-child-frame` commands are explicit about their runtime requirements:
+they need Emacs 29.1 or newer, a graphical frame, and
+`display-buffer-in-child-frame`. When any requirement is missing they signal a
+clear error instead of silently falling back to an ordinary buffer — use the
+`-in-buffer` variant when that is the presentation you want.
 
 ## Attach to a live terminal
 
@@ -278,16 +309,25 @@ do not need to return to the dashboard or pick from a completion listing. A
 
 | Key | Action |
 |---|---|
-| `C-c C-a o` | Inspect recent output |
-| `C-c C-a d` | Open the working-tree diff (Magit) |
-| `C-c C-a m` | Open Magit status |
-| `C-c C-a w` | Show worktree status |
+| `C-c C-a o` | Inspect recent output (child frame) |
+| `C-c C-a d` | Open the working-tree diff (Magit, child frame) |
+| `C-c C-a m` | Open Magit status (child frame) |
+| `C-c C-a w` | Show worktree status (child frame) |
+| `C-c C-a O` | Inspect recent output (ordinary buffer) |
+| `C-c C-a D` | Open the working-tree diff (Magit, ordinary buffer) |
+| `C-c C-a M` | Open Magit status (ordinary buffer) |
+| `C-c C-a W` | Show worktree status (ordinary buffer) |
 | `C-c C-a s` | Send a prompt |
 | `C-c C-a k` | Send keys |
 | `C-c C-a i` | Send `Ctrl-C` |
 | `C-c C-a x` | Kill the agent |
 | `C-c C-a r` | Rename the agent |
 | `C-c C-a h` | Open the transient action menu |
+
+Lowercase view keys open an auxiliary child frame that floats over the
+terminal's parent frame, so the attached terminal's window geometry — and the
+PTY size the agent sees — never changes when a view opens or closes. Uppercase
+keys take the ordinary buffer path instead, replacing window contents as usual.
 
 `C-c` passes through to Emacs in the terminal's char mode, so the prefix
 reaches Emacs rather than the PTY; `C-c C-a h` (or `?`) lists the same actions
