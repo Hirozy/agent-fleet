@@ -127,6 +127,32 @@ it is an optional dependency"))
       (let ((default-directory root))
         (funcall open-fn root)))))
 
+(defun agent-fleet-magit--view-outcome (target label open-fn)
+  "Run OPEN-FN for TARGET and return an explicit presentation outcome.
+LABEL names the action in the no-root message.  OPEN-FN receives the resolved
+checkout root.  A normal return from OPEN-FN marks the view opened even when
+its domain VALUE is nil; an unresolved root produces `:opened' nil.  Preserve
+the exact domain value in `:value' so public commands keep their API while
+dashboard and child-frame lifecycles consume only `:opened'."
+  (require 'agent-fleet-display nil t)
+  (let (opened value)
+    (setq value
+          (agent-fleet-magit--with-root
+           target label
+           (lambda (root)
+             (prog1 (funcall open-fn root)
+               (setq opened t)))))
+    (agent-fleet-display--make-outcome opened value)))
+
+(defun agent-fleet-magit--status-outcome (target)
+  "Open Magit status for TARGET and return its presentation outcome."
+  (agent-fleet-magit--view-outcome target "Magit status" #'magit-status))
+
+(defun agent-fleet-magit--diff-outcome (target)
+  "Open the working-tree diff for TARGET and return its presentation outcome."
+  (agent-fleet-magit--view-outcome
+   target "Diff" (lambda (_root) (magit-diff-working-tree))))
+
 
 ;;; --- Commands (dashboard `m' / `d') ---------------------------------
 
@@ -139,9 +165,8 @@ main repo root.  Cherry-pick, merge, and worktree deletion are then
 Magit's own keys inside the status buffer (use Magit public API, do not
 reinvent).  `user-error's if Magit is not installed."
   (interactive (list (agent-fleet--read-agent-name "Magit status for agent")))
-  (agent-fleet-magit--with-root
-   target "Magit status"
-   (lambda (root) (magit-status root) t)))
+  (agent-fleet-display--outcome-value
+   (agent-fleet-magit--status-outcome target)))
 
 ;;;###autoload
 (defun agent-fleet-magit-status-in-child-frame (target)
@@ -157,11 +182,7 @@ buffer fallback (use `agent-fleet-magit-status-in-buffer' for that).
   (require 'agent-fleet-display nil t)
   (agent-fleet-display--outcome-value
    (agent-fleet-display--aux-run
-    (lambda ()
-      (let ((opened (agent-fleet-magit--with-root
-                    target "Magit status"
-                    (lambda (root) (magit-status root) t))))
-        (agent-fleet-display--make-outcome (if opened t)))))))
+    (lambda () (agent-fleet-magit--status-outcome target)))))
 
 ;;;###autoload
 (defun agent-fleet-magit-diff-in-buffer (target)
@@ -171,9 +192,8 @@ uncommitted changes the agent is making right now (HEAD vs working tree).
 The branch-vs-base review diff is reachable by opening Magit status (`m')
 and pressing `d' there.  `user-error's if Magit is not installed."
   (interactive (list (agent-fleet--read-agent-name "Diff for agent")))
-  (agent-fleet-magit--with-root
-   target "Diff"
-   (lambda (_root) (magit-diff-working-tree) t)))
+  (agent-fleet-display--outcome-value
+   (agent-fleet-magit--diff-outcome target)))
 
 ;;;###autoload
 (defun agent-fleet-magit-diff-in-child-frame (target)
@@ -189,11 +209,7 @@ not installed."
   (require 'agent-fleet-display nil t)
   (agent-fleet-display--outcome-value
    (agent-fleet-display--aux-run
-    (lambda ()
-      (let ((opened (agent-fleet-magit--with-root
-                    target "Diff"
-                    (lambda (_root) (magit-diff-working-tree) t))))
-        (agent-fleet-display--make-outcome (if opened t)))))))
+    (lambda () (agent-fleet-magit--diff-outcome target)))))
 
 ;;;###autoload
 (define-obsolete-function-alias 'agent-fleet-magit-status

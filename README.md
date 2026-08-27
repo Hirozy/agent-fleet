@@ -36,8 +36,16 @@ are detected when their commands are used.
 
 ## Installation
 
-Put the repository on `load-path`, require the package, and optionally bind its
-prefix map:
+For a source checkout, generate the autoload definitions once (and again after
+updating the checkout):
+
+```sh
+make autoloads
+```
+
+Package managers generate the same file during installation. Then put the
+repository on `load-path`, require the package, and optionally bind its prefix
+map:
 
 ```elisp
 (add-to-list 'load-path "/path/to/agent-fleet")

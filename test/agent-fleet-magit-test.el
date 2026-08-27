@@ -17,6 +17,7 @@
 (require 'herdr)
 (require 'herdr-model)
 (require 'agent-fleet)
+(require 'agent-fleet-display)
 (require 'agent-fleet-magit)
 (require 'agent-fleet-worktree)
 (require 'herdr-mock-server)
@@ -156,8 +157,11 @@ lambda, so this runs without Magit installed."
           (cl-letf (((symbol-function 'agent-fleet-magit--available-p)
                      (lambda () t))
                     ((symbol-function 'magit-status)
-                     (lambda (dir) (push dir captured))))
-            (agent-fleet-magit-status-in-buffer agent))
+                     (lambda (dir)
+                       (push dir captured)
+                       'status-domain-value)))
+            (should (eq 'status-domain-value
+                        (agent-fleet-magit-status-in-buffer agent))))
           (should (= 1 (length captured)))
           (should (file-equal-p root (car captured))))
       (when (file-exists-p repo) (delete-directory repo t)))))
@@ -173,10 +177,46 @@ lambda, so this runs without Magit installed."
           (cl-letf (((symbol-function 'agent-fleet-magit--available-p)
                      (lambda () t))
                     ((symbol-function 'magit-diff-working-tree)
-                     (lambda (&rest _) (push default-directory captured))))
-            (agent-fleet-magit-diff-in-buffer agent))
+                     (lambda (&rest _)
+                       (push default-directory captured)
+                       'diff-domain-value)))
+            (should (eq 'diff-domain-value
+                        (agent-fleet-magit-diff-in-buffer agent))))
           (should (= 1 (length captured)))
           (should (file-equal-p root (car captured))))
+      (when (file-exists-p repo) (delete-directory repo t)))))
+
+(ert-deftest agent-fleet-magit-child-frame-preserves-domain-values ()
+  "Child-frame status and diff return the exact values produced by Magit."
+  (let ((repo (agent-fleet-magit-test--make-git-repo)))
+    (unwind-protect
+        (let ((agent (make-herdr-agent :id "x" :cwd repo)))
+          (cl-letf (((symbol-function 'agent-fleet-magit--available-p)
+                     (lambda () t))
+                    ((symbol-function 'magit-status)
+                     (lambda (_root) 'status-domain-value))
+                    ((symbol-function 'magit-diff-working-tree)
+                     (lambda (&rest _) 'diff-domain-value))
+                    ((symbol-function 'agent-fleet-display--aux-run)
+                     (lambda (thunk) (funcall thunk))))
+            (should (eq 'status-domain-value
+                        (agent-fleet-magit-status-in-child-frame agent)))
+            (should (eq 'diff-domain-value
+                        (agent-fleet-magit-diff-in-child-frame agent)))))
+      (when (file-exists-p repo) (delete-directory repo t)))))
+
+(ert-deftest agent-fleet-magit-nil-domain-value-still-marks-view-opened ()
+  "A normal nil Magit return is preserved but is not presentation failure."
+  (let ((repo (agent-fleet-magit-test--make-git-repo)))
+    (unwind-protect
+        (let ((agent (make-herdr-agent :id "x" :cwd repo)))
+          (cl-letf (((symbol-function 'agent-fleet-magit--available-p)
+                     (lambda () t))
+                    ((symbol-function 'magit-status)
+                     (lambda (_root) nil)))
+            (let ((outcome (agent-fleet-magit--status-outcome agent)))
+              (should (agent-fleet-display--outcome-opened-p outcome))
+              (should-not (agent-fleet-display--outcome-value outcome)))))
       (when (file-exists-p repo) (delete-directory repo t)))))
 
 (ert-deftest agent-fleet-magit-status-in-buffer-no-root-messages ()
