@@ -58,6 +58,8 @@
 ;; module, which loads before this feature; declared here so byte-compilation
 ;; does not warn, and required at runtime by the `-in-child-frame' entries.
 (declare-function agent-fleet-display--aux-run "agent-fleet-display" (thunk))
+(declare-function agent-fleet-display--make-outcome "agent-fleet-display" (opened &optional value buffer))
+(declare-function agent-fleet-display--outcome-value "agent-fleet-display" (outcome))
 
 
 ;;; --- Availability guard --------------------------------------------
@@ -139,7 +141,7 @@ reinvent).  `user-error's if Magit is not installed."
   (interactive (list (agent-fleet--read-agent-name "Magit status for agent")))
   (agent-fleet-magit--with-root
    target "Magit status"
-   (lambda (root) (magit-status root))))
+   (lambda (root) (magit-status root) t)))
 
 ;;;###autoload
 (defun agent-fleet-magit-status-in-child-frame (target)
@@ -153,11 +155,13 @@ buffer fallback (use `agent-fleet-magit-status-in-buffer' for that).
 `user-error's if Magit is not installed."
   (interactive (list (agent-fleet--read-agent-name "Magit status for agent")))
   (require 'agent-fleet-display nil t)
-  (agent-fleet-display--aux-run
-   (lambda ()
-     (agent-fleet-magit--with-root
-      target "Magit status"
-      (lambda (root) (magit-status root))))))
+  (agent-fleet-display--outcome-value
+   (agent-fleet-display--aux-run
+    (lambda ()
+      (let ((opened (agent-fleet-magit--with-root
+                    target "Magit status"
+                    (lambda (root) (magit-status root) t))))
+        (agent-fleet-display--make-outcome (if opened t)))))))
 
 ;;;###autoload
 (defun agent-fleet-magit-diff-in-buffer (target)
@@ -169,7 +173,7 @@ and pressing `d' there.  `user-error's if Magit is not installed."
   (interactive (list (agent-fleet--read-agent-name "Diff for agent")))
   (agent-fleet-magit--with-root
    target "Diff"
-   (lambda (_root) (magit-diff-working-tree))))
+   (lambda (_root) (magit-diff-working-tree) t)))
 
 ;;;###autoload
 (defun agent-fleet-magit-diff-in-child-frame (target)
@@ -183,11 +187,13 @@ unsupported; there is no silent buffer fallback (use
 not installed."
   (interactive (list (agent-fleet--read-agent-name "Diff for agent")))
   (require 'agent-fleet-display nil t)
-  (agent-fleet-display--aux-run
-   (lambda ()
-     (agent-fleet-magit--with-root
-      target "Diff"
-      (lambda (_root) (magit-diff-working-tree))))))
+  (agent-fleet-display--outcome-value
+   (agent-fleet-display--aux-run
+    (lambda ()
+      (let ((opened (agent-fleet-magit--with-root
+                    target "Diff"
+                    (lambda (_root) (magit-diff-working-tree) t))))
+        (agent-fleet-display--make-outcome (if opened t)))))))
 
 ;;;###autoload
 (define-obsolete-function-alias 'agent-fleet-magit-status

@@ -269,22 +269,58 @@ Windows on any other frame pass through unchanged."
                    (bury-buffer-internal buffer)))))
       (funcall orig window bury-or-kill))))
 
+;;; --- View outcomes --------------------------------------------------
+
+;; A view outcome is the internal protocol between a presentation thunk
+;; and the aux runner / dashboard visitor.  It decouples lifecycle
+;; decisions (keep or close the child frame) from the domain return
+;; value, which may be nil even on success (e.g. `magit-status').
+
+(defun agent-fleet-display--make-outcome (opened &optional value buffer)
+  "Return a view outcome plist.
+OPENED is non-nil when the view was established.  VALUE is the original
+domain return value (may be nil).  BUFFER is the optional destination
+buffer, for callers that want to inspect it."
+  (list :opened (if opened t) :value value :buffer buffer))
+
+(defun agent-fleet-display--outcome-opened-p (outcome)
+  "Return non-nil if OUTCOME marks the view as opened.
+A non-outcome value (a plain return from a thunk that has not been
+migrated) is treated as opened when non-nil, for backward compatibility."
+  (if (and (consp outcome) (eq (car outcome) :opened))
+      (plist-get outcome :opened)
+    outcome))
+
+(defun agent-fleet-display--outcome-value (outcome)
+  "Return OUTCOME's domain value, or nil."
+  (if (and (consp outcome) (eq (car outcome) :opened))
+      (plist-get outcome :value)
+    outcome))
+
+(defun agent-fleet-display--outcome-buffer (outcome)
+  "Return OUTCOME's destination buffer, or nil."
+  (if (and (consp outcome) (eq (car outcome) :opened))
+      (plist-get outcome :buffer)
+    nil))
+
 (defun agent-fleet-display--aux-run (thunk)
   "Run THUNK in an auxiliary child frame and enforce its lifecycle.
 Resolve the current origin to a non-child parent frame, ensure one
 auxiliary child for it (creating and selecting it when absent), run
 THUNK with that child selected, and apply the close contract:
 
-- when THUNK returns non-nil, keep the child selected and return its value;
-- when THUNK returns nil and the child was newly created this call, delete
+- when the outcome's `:opened' is non-nil, keep the child and
+  return the outcome;
+- when `:opened' is nil and the child was newly created this call, delete
   it and refocus the origin (an empty new child must not linger);
-- when THUNK returns nil but the child was reused, keep it and refocus it
+- when `:opened' is nil but the child was reused, keep it and refocus it
   so the prior view stays coherent;
 - when THUNK errors, delete a newly created child (or refocus a reused
   one) and re-signal the error.
 
-Signal a `user-error' when child frames are unsupported; an explicit
-`-in-child-frame' command never falls back to an ordinary buffer."
+A non-outcome return value is treated as opened when non-nil (backward
+compat).  Signal a `user-error' when child frames are unsupported; an
+explicit `-in-child-frame' command never falls back to an ordinary buffer."
   (let* ((origin (agent-fleet-display--aux-origin-frame))
          (reason (agent-fleet-display--child-frame-unavailable-reason origin)))
     (if reason
@@ -301,11 +337,12 @@ Signal a `user-error' when child frames are unsupported; an explicit
         (agent-fleet-display--center-child-frame child origin)
         (select-frame-set-input-focus child)
         (condition-case err
-            (let ((result (funcall thunk)))
+            (let* ((result (funcall thunk))
+                   (opened (agent-fleet-display--outcome-opened-p result)))
               (cond
-               ((and (not result) created-p)
+               ((and (not opened) created-p)
                 (agent-fleet-display--aux-close child))
-               ((not result)
+               ((not opened)
                 (select-frame-set-input-focus child))
                (t
                 (select-frame-set-input-focus child)))
