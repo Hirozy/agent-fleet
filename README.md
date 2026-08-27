@@ -156,8 +156,6 @@ applicable.
 | `M-x agent-fleet-start` | Start an agent (prompts for kind and name) |
 | `M-x agent-fleet-prompt` | Send a prompt |
 | `M-x agent-fleet-prompt-and-wait` | Prompt and wait atomically for done/blocked |
-| `M-x agent-fleet-read` | Read a terminal snapshot |
-| `M-x agent-fleet-show-output` | Open a recent output snapshot |
 | `M-x agent-fleet-show-output-in-buffer` | Open output in an ordinary buffer |
 | `M-x agent-fleet-show-output-in-child-frame` | Open output in a child frame |
 | `M-x agent-fleet-wait` | Wait for a specific state |
@@ -213,7 +211,6 @@ Standalone worktree commands:
 
 - `M-x agent-fleet-worktree-list`
 - `M-x agent-fleet-worktree-open`
-- `M-x agent-fleet-worktree-status`
 - `M-x agent-fleet-worktree-status-in-buffer`
 - `M-x agent-fleet-worktree-status-in-child-frame`
 - `M-x agent-fleet-worktree-remove`
@@ -234,9 +231,9 @@ The interactive command prompts for each agent's kind and prompt. Use the
 dashboard `T` key to focus on one task; the task title and its aggregate state
 then show in the mode line. Task state is derived from its members — `done`
 only when all agents are done, `blocked` when one is blocked — and no agent is
-killed when another finishes. Use `M-x agent-fleet-read` to inspect individual
-results, and `M-x agent-fleet-task-cleanup` to remove the task's worktrees
-after preserving any wanted changes.
+killed when another finishes. Use `M-x agent-fleet-show-output-in-buffer` to
+inspect individual results, and `M-x agent-fleet-task-cleanup` to remove the
+task's worktrees after preserving any wanted changes.
 
 ## Review changes with Magit
 
@@ -244,11 +241,10 @@ With Magit installed, the dashboard can open the selected agent's checkout:
 
 - Press `m` for Magit status.
 - Press `d` for the working-tree diff.
-- Run `M-x agent-fleet-magit-status` or `M-x agent-fleet-magit-diff` directly,
-  or their explicit presentation variants `M-x agent-fleet-magit-status-in-buffer`,
+- Run `M-x agent-fleet-magit-status-in-buffer`,
   `M-x agent-fleet-magit-status-in-child-frame`,
-  `M-x agent-fleet-magit-diff-in-buffer`, and
-  `M-x agent-fleet-magit-diff-in-child-frame`.
+  `M-x agent-fleet-magit-diff-in-buffer`, or
+  `M-x agent-fleet-magit-diff-in-child-frame` directly.
 
 The agent's actual checkout is used, including an isolated Herdr worktree. If
 Magit is unavailable, the commands report how to enable the integration.
@@ -277,6 +273,11 @@ they need Emacs 29.1 or newer, a graphical frame, and
 `display-buffer-in-child-frame`. When any requirement is missing they signal a
 clear error instead of silently falling back to an ordinary buffer — use the
 `-in-buffer` variant when that is the presentation you want.
+
+The unsuffixed view names (`M-x agent-fleet-show-output`,
+`M-x agent-fleet-worktree-status`, `M-x agent-fleet-magit-status`, and
+`M-x agent-fleet-magit-diff`) are obsolete aliases of their `-in-buffer`
+variants and will be removed in a future release.
 
 ## Attach to a live terminal
 

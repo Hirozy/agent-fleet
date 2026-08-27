@@ -50,7 +50,7 @@
 ;;
 ;; Security: attach is user-initiated interactive
 ;; viewing — the terminal buffer is transient, NOT persisted or continuously
-;; mirrored (same boundary as `agent-fleet-show-output''s read-snapshot).
+;; mirrored (same boundary as the output view's read-snapshot).
 ;;
 ;; This feature module requires the provided `agent-fleet' control feature;
 ;; the package entry point loads it through `agent-fleet-dashboard' after

@@ -151,7 +151,7 @@ the worktree from the cache eagerly (the event also removes it)."
         (let ((p (agent-fleet-test--last-request server "worktree.remove")))
           (should (eq t (plist-get p :force))))))))
 
-(ert-deftest agent-fleet-worktree-status-finds-worktree ()
+(ert-deftest agent-fleet-worktree-status-in-buffer-finds-worktree ()
   "`worktree-status' resolves the agent's workspace worktree, displays it
 read-only, and returns the struct.  Metadata only (no pane output)."
   (with-agent-fleet-mock path server
@@ -163,7 +163,7 @@ read-only, and returns the struct.  Metadata only (no pane output)."
              (wt nil))
         (unwind-protect
             (progn
-              (setq wt (agent-fleet-worktree-status agent))
+              (setq wt (agent-fleet-worktree-status-in-buffer agent))
               (should (herdr-worktree-p wt))
               (should (equal ws-id (herdr-worktree-open-workspace-id wt)))
               (should (get-buffer buf-name))
@@ -178,13 +178,13 @@ read-only, and returns the struct.  Metadata only (no pane output)."
           (when (get-buffer buf-name)
             (kill-buffer buf-name)))))))
 
-(ert-deftest agent-fleet-worktree-status-no-worktree-messages ()
+(ert-deftest agent-fleet-worktree-status-in-buffer-no-worktree-messages ()
   "`worktree-status' for an agent with no worktree returns nil and messages,
 rather than erroring."
   (with-agent-fleet-mock path server
     (let ((agent (agent-fleet-start 'claude :name "plain"))) ; no :worktree
       (agent-fleet-test--pump)
-      (should-not (agent-fleet-worktree-status agent)))))
+      (should-not (agent-fleet-worktree-status-in-buffer agent)))))
 
 (provide 'agent-fleet-worktree-test)
 ;;; agent-fleet-worktree-test.el ends here

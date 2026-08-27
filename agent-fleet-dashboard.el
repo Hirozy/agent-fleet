@@ -466,7 +466,7 @@ own refresh, but reprinting is harmless and gives instant feedback."
   (interactive)
   (let ((pane-id (agent-fleet-dashboard--agent-at-point)))
     (agent-fleet-dashboard--visit-external-interface
-     (lambda () (agent-fleet-show-output pane-id)))))
+     (lambda () (agent-fleet-show-output-in-buffer pane-id)))))
 
 (defun agent-fleet-dashboard-prompt ()
   "Prompt the agent at point."
@@ -503,27 +503,27 @@ own refresh, but reprinting is harmless and gives instant feedback."
 (defun agent-fleet-dashboard-worktree ()
   "Show the worktree status for the agent at point.
 Displays the worktree path/branch/repo/metadata read-only (no
-pane output).  Delegates to `agent-fleet-worktree-status'."
+pane output).  Delegates to `agent-fleet-worktree-status-in-buffer'."
   (interactive)
   (let ((pane-id (agent-fleet-dashboard--agent-at-point)))
     (agent-fleet-dashboard--visit-external-interface
-     (lambda () (agent-fleet-worktree-status pane-id)))))
+     (lambda () (agent-fleet-worktree-status-in-buffer pane-id)))))
 
 (defun agent-fleet-dashboard-diff ()
   "Show the working-tree diff for the agent at point.
-Delegates to `agent-fleet-magit-diff' (Magit optional)."
+Delegates to `agent-fleet-magit-diff-in-buffer' (Magit optional)."
   (interactive)
   (let ((pane-id (agent-fleet-dashboard--agent-at-point)))
     (agent-fleet-dashboard--visit-external-interface
-     (lambda () (agent-fleet-magit-diff pane-id)))))
+     (lambda () (agent-fleet-magit-diff-in-buffer pane-id)))))
 
 (defun agent-fleet-dashboard-magit ()
   "Open Magit status for the agent at point.
-Delegates to `agent-fleet-magit-status' (Magit optional)."
+Delegates to `agent-fleet-magit-status-in-buffer' (Magit optional)."
   (interactive)
   (let ((pane-id (agent-fleet-dashboard--agent-at-point)))
     (agent-fleet-dashboard--visit-external-interface
-     (lambda () (agent-fleet-magit-status pane-id)))))
+     (lambda () (agent-fleet-magit-status-in-buffer pane-id)))))
 
 (defun agent-fleet-dashboard-attach ()
   "Attach live to the agent at point's terminal.
@@ -1325,7 +1325,7 @@ The package binds NO global keys."
   "a" #'agent-fleet
   "s" #'agent-fleet-start
   "p" #'agent-fleet-prompt
-  "o" #'agent-fleet-show-output
+  "o" #'agent-fleet-show-output-in-buffer
   "i" #'agent-fleet-interrupt)
 
 

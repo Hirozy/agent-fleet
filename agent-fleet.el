@@ -136,7 +136,7 @@ detection."
   :group 'agent-fleet)
 
 (defcustom agent-fleet-default-read-lines 120
-  "Default line count for `agent-fleet-read' and `agent-fleet-show-output'."
+  "Default line count for `agent-fleet-read' and the output view commands."
   :type 'integer
   :group 'agent-fleet)
 
@@ -164,7 +164,7 @@ A list of status symbols.  `done' = finished; `blocked' = needs input."
   :group 'agent-fleet)
 
 (defcustom agent-fleet-output-buffer-prefix "*Agent Output: "
-  "Prefix for `agent-fleet-show-output' buffer names.
+  "Prefix for the output view buffer names.
 The buffer is named PREFIX<name>*."
   :type 'string
   :group 'agent-fleet)
@@ -808,19 +808,17 @@ outcome."
 Returns a PaneReadResult plist: (:pane_id :workspace_id :tab_id :source
 :format :text :revision :truncated), unwrapped from the `pane_read'
 envelope.  Defaults to `recent_unwrapped' output, which ignores soft wrapping
-and is best for logs.  Interactively, display the snapshot in the
-read-only output buffer rather than discarding the returned plist."
-  (interactive (list (agent-fleet--read-agent-name "Read output for agent")))
-  (if (called-interactively-p 'interactive)
-      (agent-fleet-show-output agent lines source)
-    (agent-fleet--ensure-connected)
-    (agent-fleet--unwrap-read
-     (herdr-request "agent.read"
-                    `(("target" . ,(agent-fleet--resolve-target agent))
-                      ("source" . ,(if (symbolp source) (symbol-name source) source))
-                      ("lines" . ,lines)
-                      ("format" . ,(if (symbolp format) (symbol-name format) format))
-                      ("strip_ansi" . ,(if strip-ansi t :false)))))))
+and is best for logs.  This is a Lisp data API, not a command: to view an
+agent's output interactively, use `agent-fleet-show-output-in-buffer' or
+`agent-fleet-show-output-in-child-frame'."
+  (agent-fleet--ensure-connected)
+  (agent-fleet--unwrap-read
+   (herdr-request "agent.read"
+                  `(("target" . ,(agent-fleet--resolve-target agent))
+                    ("source" . ,(if (symbolp source) (symbol-name source) source))
+                    ("lines" . ,lines)
+                    ("format" . ,(if (symbolp format) (symbol-name format) format))
+                    ("strip_ansi" . ,(if strip-ansi t :false))))))
 
 ;;;###autoload
 (cl-defun agent-fleet-wait (agent &optional until &key
@@ -1206,17 +1204,8 @@ count."
     (cdr pair)))
 
 ;;;###autoload
-(defun agent-fleet-show-output (agent &optional lines source)
-  "Read AGENT's recent output and display it in a read-only buffer.
-Delegates to `agent-fleet-show-output-in-buffer'.  Opens
-`*Agent Output: <name>*' with the text from `agent.read' -- a
-read-snapshot view, NOT a continuously mirrored terminal.  With a prefix
-arg, prompt for the line count."
-  (interactive
-   (list (agent-fleet--read-agent-name "Show output for agent")
-         (and current-prefix-arg
-              (read-number "Lines: " agent-fleet-default-read-lines))))
-  (agent-fleet-show-output-in-buffer agent lines source))
+(define-obsolete-function-alias 'agent-fleet-show-output
+  'agent-fleet-show-output-in-buffer "0.7.0")
 
 
 ;;; --- Hook bus ----------------------------------------

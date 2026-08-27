@@ -314,18 +314,8 @@ is open for the workspace."
        wt))))
 
 ;;;###autoload
-(defun agent-fleet-worktree-status (target)
-  "Show the worktree for TARGET's workspace (the dashboard `w' action).
-Delegates to `agent-fleet-worktree-status-in-buffer'.  TARGET is an agent
-name, pane id, symbol, or `herdr-agent' struct.  Displays the worktree
-path/branch/repo/metadata read-only (no pane output is persisted).
-Refreshes worktree state from `worktree.list' on each call
-(user-initiated, never a timer), so the status reflects the live worktree
-set and repo source.  Returns the worktree struct, or nil and messages
-when no worktree is open for the workspace."
-  (interactive
-   (list (agent-fleet--read-agent-name "Worktree status for agent")))
-  (agent-fleet-worktree-status-in-buffer target))
+(define-obsolete-function-alias 'agent-fleet-worktree-status
+  'agent-fleet-worktree-status-in-buffer "0.7.0")
 
 
 ;;; --- Cleanup (delete finished worktrees) -----------------------
