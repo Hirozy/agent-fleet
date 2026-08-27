@@ -42,11 +42,17 @@
 ;;     event-driven; no polling timers.
 ;;     Herdr events are bridged into agent-fleet-*-hook variables.
 ;;
-;; Requiring this package entry point also loads the dashboard and feature
-;; modules at the end of the file.  Optional runtime integrations
+;; Requiring this package entry point loads only the core control plane.  The
+;; generated autoload file makes dashboard and feature commands available
+;; without loading their modules.  Optional runtime integrations
 ;; (Magit/Eat/Ghostel/vterm) remain lazily probed by their own modules.
 
 ;;; Code:
+
+;; Package installation generates and loads this file automatically.  A source
+;; checkout creates it with `make autoloads'; loading it here keeps the README's
+;; `(require 'agent-fleet)' setup sufficient while leaving feature modules lazy.
+(require 'agent-fleet-autoloads nil t)
 
 (require 'cl-lib)
 (require 'subr-x)
