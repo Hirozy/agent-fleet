@@ -1,5 +1,6 @@
 *.elc
 *~
+*.md
 \#*\#
 .\#*
 *.#*
@@ -7,5 +8,16 @@
 /test/fixtures/*.elc
 /coverage/
 /.projectile-cache.eld
-/PLAN.md
 /agent-fleet-autoloads.el
+/test-emacs.sh
+
+# OS
+.DS_Store
+
+# Package build
+/dist/
+*.tar.gz
+
+# Emacs dev
+/.cask/
+/.elpa/
