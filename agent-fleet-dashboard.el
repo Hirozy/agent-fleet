@@ -248,19 +248,19 @@ Returns (PANE-ID . [Project Agent Kind State Task])."
 
 (defvar-local agent-fleet-dashboard--project-filter nil
   "When non-nil, a canonical project root string to narrow the dashboard to.
-Set by `agent-fleet-dashboard-toggle-project-filter' (the `P' key).  Only
+Set by `agent-fleet-dashboard--toggle-project-filter' (the `P' key).  Only
 agents whose project root equals this are shown; nil means show all.")
 
 (defvar-local agent-fleet-dashboard--task-filter nil
   "When non-nil, a task id to narrow the dashboard.
-Set by `agent-fleet-dashboard-toggle-task-filter' (the `T' key).  Only
+Set by `agent-fleet-dashboard--toggle-task-filter' (the `T' key).  Only
 agents whose task id equals this are shown; nil means show all.  This is
 the aggregate-status view: filter to one task, see its agents' states.")
 
 (defvar-local agent-fleet-dashboard--task-banner nil
   "Mode-line segment string for the active task filter.
 nil when no task filter is active; otherwise `Parallel task: {title} —
-{state}', refreshed live from `agent-fleet-dashboard-refresh' so the
+{state}', refreshed live from `agent-fleet-dashboard--refresh' so the
 aggregate state tracks each status event (event-driven, no polling).
 Shown in the mode line rather than the header line so the tabulated-list
 column headers (set by `tabulated-list-init-header') are preserved.")
@@ -302,7 +302,7 @@ narrow to agents in that task.  Returns nil when not connected (nil-safe)."
   "Populate `tabulated-list-entries' from the cache (no server fetch)."
   (setq tabulated-list-entries (agent-fleet-dashboard--entries)))
 
-(defun agent-fleet-dashboard-refresh (&optional from-server)
+(defun agent-fleet-dashboard--refresh (&optional from-server)
   "Rebuild the *Agent Fleet* buffer from the cache.
 With non-nil FROM-SERVER (the `g' action), first refresh the cache from
 `agent.list' so the buffer reflects agents Herdr has not notified about.
@@ -380,7 +380,7 @@ standalone dashboards keep their existing lifecycle behavior."
 
 ;;; --- Project filter -----------------------------------
 
-(defun agent-fleet-dashboard-toggle-project-filter (&optional arg)
+(defun agent-fleet-dashboard--toggle-project-filter (&optional arg)
   "Narrow the dashboard to the project of the agent at point, or clear it.
 With no active filter and no prefix ARG, set the filter to the canonical
 project root of the agent at point.  With an active filter, or a prefix ARG,
@@ -389,7 +389,7 @@ clear it.  Refreshes after either change."
   (if (or arg agent-fleet-dashboard--project-filter)
       (progn
         (setq agent-fleet-dashboard--project-filter nil)
-        (agent-fleet-dashboard-refresh)
+        (agent-fleet-dashboard--refresh)
         (message "agent-fleet: project filter cleared"))
     (let* ((pane-id (tabulated-list-get-id))
            (agent (and pane-id (agent-fleet--find-agent pane-id)))
@@ -397,14 +397,14 @@ clear it.  Refreshes after either change."
       (if root
           (progn
             (setq agent-fleet-dashboard--project-filter root)
-            (agent-fleet-dashboard-refresh)
+            (agent-fleet-dashboard--refresh)
             (message "agent-fleet: filtered to %s"
                      (file-name-nondirectory (directory-file-name root))))
         (user-error "No project for agent at point")))))
 
 ;;; --- Task filter --------------------------------------
 
-(defun agent-fleet-dashboard-toggle-task-filter (&optional arg)
+(defun agent-fleet-dashboard--toggle-task-filter (&optional arg)
   "Narrow the dashboard to one parallel task's agents, or clear it.
 With no active filter and no prefix ARG, prompt for a task and narrow the
 list to its agents — the aggregate-status view (one task's agents with
@@ -415,7 +415,7 @@ then show in the mode line via `agent-fleet-dashboard--task-banner'."
   (if (or arg agent-fleet-dashboard--task-filter)
       (progn
         (setq agent-fleet-dashboard--task-filter nil)
-        (agent-fleet-dashboard-refresh)
+        (agent-fleet-dashboard--refresh)
         (message "agent-fleet: task filter cleared"))
     (let* ((choices (mapcar (lambda (task)
                               (cons (format "%s (%s)"
@@ -428,14 +428,14 @@ then show in the mode line via `agent-fleet-dashboard--task-banner'."
         (let* ((sel (completing-read "Filter to task: " choices nil t))
                (task-id (cdr (assoc sel choices))))
           (setq agent-fleet-dashboard--task-filter task-id)
-          (agent-fleet-dashboard-refresh)
+          (agent-fleet-dashboard--refresh)
           (message "agent-fleet: filtered to %s" sel))))))
 
 (defun agent-fleet-dashboard--update-task-banner ()
   "Set the task-filter mode-line segment from the live aggregate state.
 When `agent-fleet-dashboard--task-filter' names a live task, set the banner
 to `Parallel task: {title} — {state}'; otherwise clear it (nil).  Called
-from `agent-fleet-dashboard-refresh', so the aggregate state stays live
+from `agent-fleet-dashboard--refresh', so the aggregate state stays live
 with each status event — event-driven, no timer polling.  The state
 is computed fresh each time by `agent-fleet-task-state'."
   (setq agent-fleet-dashboard--task-banner
@@ -454,17 +454,17 @@ local reprint reflects them immediately.  Kill's exited-hook handles its
 own refresh, but reprinting is harmless and gives instant feedback."
   (if-let* ((buffer (get-buffer agent-fleet-dashboard-buffer-name)))
       (with-current-buffer buffer
-        (agent-fleet-dashboard-refresh))
-    (agent-fleet-dashboard-refresh)))
+        (agent-fleet-dashboard--refresh))
+    (agent-fleet-dashboard--refresh)))
 
-(defun agent-fleet-dashboard-inspect ()
+(defun agent-fleet-dashboard--inspect ()
   "Show the agent at point's output as a read snapshot."
   (interactive)
   (let ((pane-id (agent-fleet-dashboard--agent-at-point)))
     (agent-fleet-dashboard--visit-external-interface
      (lambda () (agent-fleet-show-output-in-buffer pane-id)))))
 
-(defun agent-fleet-dashboard-prompt ()
+(defun agent-fleet-dashboard--prompt ()
   "Prompt the agent at point."
   (interactive)
   (let ((pane-id (agent-fleet-dashboard--agent-at-point)))
@@ -472,12 +472,12 @@ own refresh, but reprinting is harmless and gives instant feedback."
       (unless (string-empty-p text)
         (agent-fleet-prompt pane-id text)))))
 
-(defun agent-fleet-dashboard-interrupt ()
+(defun agent-fleet-dashboard--interrupt ()
   "Send Ctrl-C to the agent at point."
   (interactive)
   (agent-fleet-interrupt (agent-fleet-dashboard--agent-at-point)))
 
-(defun agent-fleet-dashboard-kill ()
+(defun agent-fleet-dashboard--kill ()
   "Kill the agent at point by closing its pane."
   (interactive)
   (let ((pane-id (agent-fleet-dashboard--agent-at-point)))
@@ -485,7 +485,7 @@ own refresh, but reprinting is harmless and gives instant feedback."
       (agent-fleet-kill pane-id)
       (agent-fleet-dashboard--after-row-change))))
 
-(defun agent-fleet-dashboard-rename ()
+(defun agent-fleet-dashboard--rename ()
   "Rename the agent at point."
   (interactive)
   (let* ((pane-id (agent-fleet-dashboard--agent-at-point))
@@ -496,7 +496,7 @@ own refresh, but reprinting is harmless and gives instant feedback."
         (agent-fleet-rename pane-id name)
         (agent-fleet-dashboard--after-row-change)))))
 
-(defun agent-fleet-dashboard-worktree ()
+(defun agent-fleet-dashboard--worktree ()
   "Show the worktree status for the agent at point.
 Displays the worktree path/branch/repo/metadata read-only (no
 pane output).  Delegates to `agent-fleet-worktree-status-in-buffer'."
@@ -505,7 +505,7 @@ pane output).  Delegates to `agent-fleet-worktree-status-in-buffer'."
     (agent-fleet-dashboard--visit-external-interface
      (lambda () (agent-fleet-worktree-status-in-buffer pane-id)))))
 
-(defun agent-fleet-dashboard-diff ()
+(defun agent-fleet-dashboard--diff ()
   "Show the working-tree diff for the agent at point.
 Uses the same operation as `agent-fleet-magit-diff-in-buffer' while retaining
 its explicit presentation outcome for child-dashboard lifecycle decisions."
@@ -515,7 +515,7 @@ its explicit presentation outcome for child-dashboard lifecycle decisions."
      (agent-fleet-dashboard--visit-external-interface
       (lambda () (agent-fleet-magit--diff-outcome pane-id))))))
 
-(defun agent-fleet-dashboard-magit ()
+(defun agent-fleet-dashboard--magit ()
   "Open Magit status for the agent at point.
 Uses the same operation as `agent-fleet-magit-status-in-buffer' while retaining
 its explicit presentation outcome for child-dashboard lifecycle decisions."
@@ -525,7 +525,7 @@ its explicit presentation outcome for child-dashboard lifecycle decisions."
      (agent-fleet-dashboard--visit-external-interface
       (lambda () (agent-fleet-magit--status-outcome pane-id))))))
 
-(defun agent-fleet-dashboard-attach ()
+(defun agent-fleet-dashboard--attach ()
   "Attach live to the agent at point's terminal.
 Spawns `herdr agent attach' inside the chosen Emacs terminal backend
 (Ghostel) and pops the buffer so the agent's real PTY/TUI can be
@@ -546,7 +546,7 @@ attach buffer and delete the child after attach succeeds.  Delegates to
     (agent-fleet-dashboard--visit-external-interface
      (lambda () (agent-fleet-attach pane-id takeover)))))
 
-(defun agent-fleet-dashboard-new ()
+(defun agent-fleet-dashboard--new ()
   "Start a new agent from the dashboard.
 Delegates to `agent-fleet-start' (interactive: prompts for kind and
 name, picks a workspace when none is focused, and auto-attaches the
@@ -563,40 +563,40 @@ Unlike the row actions, this does not act on the agent at point."
 (transient-define-prefix agent-fleet-dashboard-help ()
   "Show and dispatch commands for the agent-fleet dashboard."
   [["Session"
-    ("N" "New agent" agent-fleet-dashboard-new)
-    ("a" "Attach terminal" agent-fleet-dashboard-attach)
-    ("q" "Close dashboard" agent-fleet-dashboard-quit)]
+    ("N" "New agent" agent-fleet-dashboard--new)
+    ("a" "Attach terminal" agent-fleet-dashboard--attach)
+    ("q" "Close dashboard" agent-fleet-dashboard--quit)]
    ["Agent"
-    ("o"   "Inspect output" agent-fleet-dashboard-inspect)
-    ("s"   "Prompt" agent-fleet-dashboard-prompt)
-    ("i"   "Interrupt" agent-fleet-dashboard-interrupt)
-    ("x"   "Kill" agent-fleet-dashboard-kill)
-    ("r"   "Rename" agent-fleet-dashboard-rename)]
+    ("o"   "Inspect output" agent-fleet-dashboard--inspect)
+    ("s"   "Prompt" agent-fleet-dashboard--prompt)
+    ("i"   "Interrupt" agent-fleet-dashboard--interrupt)
+    ("x"   "Kill" agent-fleet-dashboard--kill)
+    ("r"   "Rename" agent-fleet-dashboard--rename)]
    ["View / Filter"
-    ("g" "Refresh from server" agent-fleet-dashboard-refresh)
-    ("P" "Toggle project filter" agent-fleet-dashboard-toggle-project-filter)
-    ("T" "Toggle task filter" agent-fleet-dashboard-toggle-task-filter)]
+    ("g" "Refresh from server" agent-fleet-dashboard--refresh)
+    ("P" "Toggle project filter" agent-fleet-dashboard--toggle-project-filter)
+    ("T" "Toggle task filter" agent-fleet-dashboard--toggle-task-filter)]
    ["Worktree / Git"
-    ("w" "Worktree status" agent-fleet-dashboard-worktree)
-    ("d" "Working-tree diff" agent-fleet-dashboard-diff)
-    ("m" "Magit status" agent-fleet-dashboard-magit)]])
+    ("w" "Worktree status" agent-fleet-dashboard--worktree)
+    ("d" "Working-tree diff" agent-fleet-dashboard--diff)
+    ("m" "Magit status" agent-fleet-dashboard--magit)]])
 
 (defconst agent-fleet-dashboard--bindings
-  '(("o"   . agent-fleet-dashboard-inspect)
-    ("s"   . agent-fleet-dashboard-prompt)
-    ("i"   . agent-fleet-dashboard-interrupt)
-    ("x"   . agent-fleet-dashboard-kill)
-    ("r"   . agent-fleet-dashboard-rename)
-    ("g"   . agent-fleet-dashboard-refresh)
-    ("P"   . agent-fleet-dashboard-toggle-project-filter)
-    ("T"   . agent-fleet-dashboard-toggle-task-filter)
-    ("w"   . agent-fleet-dashboard-worktree)
-    ("d"   . agent-fleet-dashboard-diff)
-    ("m"   . agent-fleet-dashboard-magit)
-    ("a"   . agent-fleet-dashboard-attach)
-    ("N"   . agent-fleet-dashboard-new)
+  '(("o"   . agent-fleet-dashboard--inspect)
+    ("s"   . agent-fleet-dashboard--prompt)
+    ("i"   . agent-fleet-dashboard--interrupt)
+    ("x"   . agent-fleet-dashboard--kill)
+    ("r"   . agent-fleet-dashboard--rename)
+    ("g"   . agent-fleet-dashboard--refresh)
+    ("P"   . agent-fleet-dashboard--toggle-project-filter)
+    ("T"   . agent-fleet-dashboard--toggle-task-filter)
+    ("w"   . agent-fleet-dashboard--worktree)
+    ("d"   . agent-fleet-dashboard--diff)
+    ("m"   . agent-fleet-dashboard--magit)
+    ("a"   . agent-fleet-dashboard--attach)
+    ("N"   . agent-fleet-dashboard--new)
     ("h"   . agent-fleet-dashboard-help)
-    ("q"   . agent-fleet-dashboard-quit))
+    ("q"   . agent-fleet-dashboard--quit))
   "Documented action key bindings for `agent-fleet-mode'.")
 
 (defconst agent-fleet-dashboard--retired-bindings
@@ -700,7 +700,7 @@ and is caught upstream, leaving the prior cache intact."
       ;; dashboard.  Calling the major mode again would erase them.
       (unless (derived-mode-p 'agent-fleet-mode)
         (agent-fleet-mode))
-      (agent-fleet-dashboard-refresh t))
+      (agent-fleet-dashboard--refresh t))
     buffer))
 
 (defun agent-fleet-dashboard--display-in-buffer (buffer)
@@ -929,7 +929,7 @@ back to an ordinary buffer when any requirement is not met."
   (interactive)
   (agent-fleet-dashboard--open 'frame))
 
-(defun agent-fleet-dashboard-quit ()
+(defun agent-fleet-dashboard--quit ()
   "Close the dashboard's current display container.
 
 Delete an agent-fleet child or standalone frame.  In an ordinary window,
@@ -956,7 +956,7 @@ needed.  Never uses a timer."
   (when-let* ((buf (get-buffer agent-fleet-dashboard-buffer-name)))
     (with-current-buffer buf
       (when (derived-mode-p 'agent-fleet-mode)
-        (agent-fleet-dashboard-refresh)))))
+        (agent-fleet-dashboard--refresh)))))
 
 
 ;;; --- Notifications ------------------------------------
