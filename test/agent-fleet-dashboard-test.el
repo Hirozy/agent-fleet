@@ -1070,6 +1070,7 @@ its origin recorded, as `--aux-create' would stamp on a real frame."
                 (cl-incf agent-fleet-dashboard-test--displayed)
                 'aux-window))
              ((symbol-function 'window-frame) (lambda (_) 'aux-child))
+             ((symbol-function 'window-list) (lambda (&rest _) nil))
              ((symbol-function 'modify-frame-parameters) (lambda (&rest _)))
              ((symbol-function 'select-frame-set-input-focus)
               (lambda (frame)
@@ -1194,6 +1195,43 @@ full-size presentation policy was loaded."
     (should (eq 'aux-child (car modified)))
     (should (= 1.0 (alist-get 'width (cdr modified))))
     (should (= 1.0 (alist-get 'height (cdr modified))))))
+
+(ert-deftest agent-fleet-dashboard-aux-run-cleans-placeholder-after-split ()
+  "Windows still showing the placeholder are deleted after the thunk opens.
+Magit's `magit-status' splits the child's window instead of replacing
+the placeholder; without cleanup the placeholder stays as an empty pane."
+  (let ((agent-fleet-display--aux-frames (make-hash-table :test 'eq))
+        (agent-fleet-dashboard-test--current-frame 'origin)
+        (agent-fleet-dashboard-test--displayed 0)
+        (agent-fleet-dashboard-test--deleted nil)
+        (deleted-windows nil))
+    ;; The cl-letf* stubs run INSIDE the macro body so they override the
+    ;; macro's own window-list stub.
+    (agent-fleet-dashboard-test--with-aux-frames
+      (cl-letf* (((symbol-function 'window-list)
+                  (lambda (&optional frame &rest _)
+                    (when (eq frame 'aux-child)
+                      (list 'real-win 'placeholder-win))))
+                 ((symbol-function 'window-buffer)
+                  (lambda (win)
+                    (cond ((eq win 'placeholder-win)
+                           (get-buffer-create agent-fleet-display--aux-buffer-name))
+                          (t (get-buffer-create " *magit*")))))
+                 ((symbol-function 'delete-window)
+                  (lambda (win) (push win deleted-windows))))
+        (should (agent-fleet-display--outcome-opened-p
+                 (agent-fleet-display--aux-run
+                  (lambda ()
+                    (agent-fleet-display--make-outcome t)))))))
+    ;; The placeholder window should be deleted; the real window kept.
+    (should (memq 'placeholder-win deleted-windows))
+    (should-not (memq 'real-win deleted-windows))
+    (when (get-buffer agent-fleet-display--aux-buffer-name)
+      (kill-buffer (get-buffer agent-fleet-display--aux-buffer-name)))
+    (when (get-buffer " *magit*")
+      (kill-buffer (get-buffer " *magit*")))
+    (when (get-buffer " *agent-fleet-aux*")
+      (kill-buffer (get-buffer " *agent-fleet-aux*")))))
 
 (ert-deftest agent-fleet-dashboard-aux-origin-frame-prevents-nesting ()
   "An auxiliary child never nests under another child frame.

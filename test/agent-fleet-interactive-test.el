@@ -852,6 +852,7 @@ stubbed so the lifecycle runs in batch."
                        (push (caar action) display-actions))
                      'aux-window))
                   ((symbol-function 'window-frame) (lambda (&rest _) 'aux-child))
+                  ((symbol-function 'window-list) (lambda (&rest _) nil))
                   ((symbol-function 'modify-frame-parameters) #'ignore)
                   ((symbol-function 'select-frame-set-input-focus)
                    (lambda (frame) (setq current-frame frame)))
