@@ -343,6 +343,28 @@ key is silent."
                        :tab_id "w1:t1" :agent "claude")))
              :replayp))))
 
+(ert-deftest herdr-model-pane-update-without-status-preserves-cached-status ()
+  "A `pane_updated' without `:agent_status' must not wipe the cached status.
+Pane events for cwd/title/focus changes often omit `:agent_status'; the
+preservation block in `--maybe-upsert-agent-from-pane' copies it from
+the old agent so the dashboard shows the live status without a server
+refresh."
+  (let ((session (herdr-model-parse-snapshot (herdr-model-test--snapshot))))
+    (herdr-model-upsert-agent-info
+     '(:pane_id "w1:p1" :workspace_id "w1" :tab_id "w1:t1"
+       :terminal_id "t1" :cwd "/d" :focused t :revision 3
+       :agent "claude" :agent_status "working" :name "arch"
+       :state_change_seq 5)
+     session)
+    ;; A pane_updated with no :agent_status must not erase the status.
+    (herdr-model-apply-event
+     session "pane_updated"
+     '(:pane (:pane_id "w1:p1" :workspace_id "w1"
+              :tab_id "w1:t1" :agent "claude" :cwd "/new" :revision 4)))
+    (let ((agent (herdr-model-find-agent session "w1:p1")))
+      (should (equal "working" (herdr-agent-agent-status agent)))
+      (should (equal "/new" (herdr-agent-cwd agent))))))
+
 (ert-deftest herdr-model-pane-created-replay-guard-skips-cached ()
   "A replayed `pane_created' for an already-cached pane adds no pane.
 The EventHub ring buffer is drained on every subscribe, so a
