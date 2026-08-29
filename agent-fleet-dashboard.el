@@ -634,6 +634,9 @@ versions of that map."
       (define-key agent-fleet-mode-map (kbd key) nil))
     (dolist (binding keys)
       (define-key agent-fleet-mode-map (kbd (car binding)) (cdr binding)))
+    ;; ESC closes the dashboard, like `q'.  Bound outside --bindings so it
+    ;; is not mirrored into Evil states (Evil intercepts ESC itself).
+    (define-key agent-fleet-mode-map (kbd "<escape>") #'agent-fleet-dashboard--quit)
     ;; Evil's state maps take precedence over an ordinary major-mode map.  The
     ;; dashboard inherits motion state from `special-mode' in common setups, so
     ;; mirror its commands into the two non-insert states when Evil is present.
