@@ -821,7 +821,7 @@ are stubbed so the lifecycle runs in batch."
                  (lambda (target text) (push (list 'prompt target text) calls)))
                 ((symbol-function 'set-window-buffer) #'ignore)
                 ((symbol-function 'agent-fleet-display--aux-run)
-                 (lambda (thunk) (funcall thunk)))
+                 (lambda (thunk &optional _parameters) (funcall thunk)))
                 ((symbol-function 'agent-fleet-display--aux-close)
                  (lambda (_frame) (push 'closed aux-closed))))
         ;; Opening the compose frame creates the buffer with the pane id.
