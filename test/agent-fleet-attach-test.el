@@ -489,14 +489,13 @@ buffer's pane id — no selection prompt."
       (kill-buffer buf))))
 
 (ert-deftest agent-fleet-attach-mode-map-binds-prefix ()
-  "The attach minor-mode map binds `C-c C-a' to `agent-fleet-attach-command-map',
-which holds the single-key bindings: lowercase view keys (`o'/`d'/`m'/`w')
-open an auxiliary child frame, uppercase (`O'/`D'/`M'/`W') open an ordinary
-buffer, and the control keys (`s'/`k'/`i'/`x'/`r') plus `h'/`?' reach the
-transient menu.  The prefix ghostel passes through to Emacs in char mode
-(its own `C-c C-c'/`C-c C-z' are left untouched)."
-  (should (eq agent-fleet-attach-command-map
-              (lookup-key agent-fleet-attach-mode-map (kbd "C-c C-a"))))
+  "`agent-fleet-attach-command-map' holds the single-key bindings:
+lowercase view keys (`o'/`d'/`m'/`w') open an auxiliary child frame,
+uppercase (`O'/`D'/`M'/`W') open an ordinary buffer, and the control
+keys (`s'/`k'/`i'/`x'/`r') plus `h'/`?' reach the transient menu.
+The mode map is empty by default; the user binds the command map to
+a prefix key."
+  (should (keymapp agent-fleet-attach-mode-map))
   (let ((map agent-fleet-attach-command-map))
     (should (eq #'agent-fleet-attach-inspect-in-child-frame
                 (lookup-key map (kbd "o"))))

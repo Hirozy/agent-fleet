@@ -368,9 +368,7 @@ hooks fire."
   (tabulated-list-print t))
 
 (defun agent-fleet-dashboard--position-on-highlight ()
-  "Move point to the highlighted agent's row, if one is set.
-Called after `tabulated-list-print' so the cursor lands on the agent
-that was being driven when the dashboard was opened from an attach buffer."
+  "Move point to the highlighted agent's row and refresh `hl-line'."
   (when agent-fleet-dashboard--highlighted-agent
     (goto-char (point-min))
     (let ((id agent-fleet-dashboard--highlighted-agent)
@@ -380,8 +378,6 @@ that was being driven when the dashboard was opened from an attach buffer."
         (if (equal (tabulated-list-get-id) id)
             (setq found t)
           (forward-line 1))))
-    ;; Force hl-line overlay to update immediately rather than waiting
-    ;; for post-command-hook (which runs after the command returns).
     (when (bound-and-true-p hl-line-mode)
       (hl-line-highlight))))
 
@@ -693,19 +689,13 @@ here prevents obsolete commands from surviving that in-place upgrade.")
   "Keymap for `agent-fleet-mode'.")
 
 (defun agent-fleet-dashboard--install-key-bindings ()
-  "Install dashboard bindings in the active mode map and optional Evil maps.
-This function intentionally runs outside the map's `defvar' initializer so
-reloading agent-fleet updates an already-created `agent-fleet-mode-map'.
-It also removes `agent-fleet-dashboard--retired-bindings' left by older
-versions of that map."
+  "Install dashboard bindings in the active mode map and optional Evil maps."
   (let ((keys (append agent-fleet-dashboard--bindings
                       agent-fleet-dashboard--navigation-keys)))
     (dolist (key agent-fleet-dashboard--retired-bindings)
       (define-key agent-fleet-mode-map (kbd key) nil))
     (dolist (binding keys)
       (define-key agent-fleet-mode-map (kbd (car binding)) (cdr binding)))
-    ;; ESC closes the dashboard, like `q'.  Bound outside --bindings so it
-    ;; is not mirrored into Evil states (Evil intercepts ESC itself).
     (define-key agent-fleet-mode-map (kbd "<escape>") #'agent-fleet-dashboard--quit)
     ;; Evil's state maps take precedence over an ordinary major-mode map.  The
     ;; dashboard inherits motion state from `special-mode' in common setups, so

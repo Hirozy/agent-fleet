@@ -221,10 +221,7 @@ its own origin.  This prevents a child of a child."
     (and (frame-live-p child) child)))
 
 (defun agent-fleet-display--refocus-frame (frame)
-  "Select and raise FRAME, deferring on platforms where child-frame
-deletion causes asynchronous focus changes (notably macOS).
-Call this after deleting any child/standalone frame to ensure the
-parent Emacs window is visibly activated."
+  "Select and raise FRAME after a child-frame deletion."
   (when (frame-live-p frame)
     (select-frame-set-input-focus frame)
     (run-with-idle-timer 0 nil
