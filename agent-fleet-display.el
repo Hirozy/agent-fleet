@@ -221,9 +221,19 @@ its own origin.  This prevents a child of a child."
     (and (frame-live-p child) child)))
 
 (defun agent-fleet-display--aux-focus-origin (origin)
-  "Return input focus to ORIGIN when it is a live frame."
+  "Return input focus to ORIGIN when it is a live frame.
+On macOS, deleting a child frame can cause the OS to give focus to
+another application; the immediate `select-frame-set-input-focus' call
+may be overridden by the asynchronous window-manager focus event.
+Defer a second focus + raise to when Emacs is idle, after the
+frame-deletion events have settled."
   (when (frame-live-p origin)
-    (select-frame-set-input-focus origin)))
+    (select-frame-set-input-focus origin)
+    (run-with-idle-timer 0 nil
+                          (lambda ()
+                            (when (frame-live-p origin)
+                              (raise-frame origin)
+                              (select-frame-set-input-focus origin))))))
 
 (defun agent-fleet-display--aux-create (origin)
   "Create, register and return the auxiliary child frame for ORIGIN.
