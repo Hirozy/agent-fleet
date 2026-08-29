@@ -961,24 +961,28 @@ SRC is the buffer the command was called from (captured before the
 dashboard buffer was switched to).  When SRC is an attach buffer, set
 `--highlighted-agent' to the driven agent and `--focus-project' to
 its project.  When SRC is a project buffer, set `--focus-project' to
-the canonical project root.  Called in the dashboard buffer."
+the canonical project root.  Called in the dashboard buffer; values are
+read from SRC but set in the dashboard buffer (the current buffer)."
   (let (pane-id)
+    ;; Read from the calling buffer.
     (with-current-buffer src
-      ;; Attach buffer: highlight the driven agent and focus its project.
       (when (and (boundp 'agent-fleet-attach-pane-id)
-                 (setq pane-id agent-fleet-attach-pane-id))
-        (setq-local agent-fleet-dashboard--highlighted-agent pane-id)))
+                 agent-fleet-attach-pane-id)
+        (setq pane-id agent-fleet-attach-pane-id)))
+    ;; Set in the dashboard buffer (current context).
     (when pane-id
+      (setq-local agent-fleet-dashboard--highlighted-agent pane-id)
       (when-let* ((agent (agent-fleet--find-agent pane-id))
-                  (project (agent-fleet-project-for-agent agent)))
-        (setq-local agent-fleet-dashboard--focus-project project)))
+                  (proj (agent-fleet-project-for-agent agent)))
+        (setq-local agent-fleet-dashboard--focus-project proj)))
     ;; Not from an attach buffer: try the project at point.
     (unless agent-fleet-dashboard--focus-project
-      (with-current-buffer src
-        (when (project-current)
-          (let ((root (agent-fleet-project-root-for-cwd default-directory)))
-            (when root
-              (setq-local agent-fleet-dashboard--focus-project root))))))))
+      (let (root)
+        (with-current-buffer src
+          (when (project-current)
+            (setq root (agent-fleet-project-root-for-cwd default-directory))))
+        (when root
+          (setq-local agent-fleet-dashboard--focus-project root))))))
 
 (defun agent-fleet-dashboard--open (display)
   "Connect, prepare and open the dashboard using DISPLAY backend."
