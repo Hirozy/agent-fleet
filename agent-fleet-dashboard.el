@@ -364,8 +364,7 @@ hooks fire."
     (agent-fleet-list t))
   (agent-fleet-dashboard--set-entries)
   (agent-fleet-dashboard--update-task-banner)
-  (tabulated-list-print t)
-  (agent-fleet-dashboard--position-on-highlight))
+  (tabulated-list-print t))
 
 (defun agent-fleet-dashboard--position-on-highlight ()
   "Move point to the highlighted agent's row, if one is set.
@@ -994,6 +993,10 @@ read from SRC but set in the dashboard buffer (the current buffer)."
       (agent-fleet-dashboard--detect-context src)
       (agent-fleet-dashboard--refresh))
     (agent-fleet-dashboard--display buffer display)
+    ;; Position point on the highlighted agent after the buffer is displayed,
+    ;; so the window's point and hl-line overlay reflect the highlight.
+    (with-current-buffer buffer
+      (agent-fleet-dashboard--position-on-highlight))
     buffer))
 
 ;;;###autoload
