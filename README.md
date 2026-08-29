@@ -352,6 +352,7 @@ With the prefix above, these keys act on the current agent directly:
 | `C-c C-a M` | Open Magit status (ordinary buffer) |
 | `C-c C-a W` | Show worktree status (ordinary buffer) |
 | `C-c C-a s` | Send a prompt |
+| `C-c C-a S` | Compose a prompt in a child frame |
 | `C-c C-a k` | Send keys |
 | `C-c C-a i` | Send `Ctrl-C` |
 | `C-c C-a x` | Kill the agent |
@@ -367,6 +368,26 @@ keys take the ordinary buffer path instead, replacing window contents as usual.
 reaches Emacs rather than the PTY; `h` (or `?`) lists the same actions
 for discoverability. The commands are also available as `M-x
 agent-fleet-attach-*` and signal a clear error outside an attach buffer.
+
+### Composing prompts with C-g
+
+Inside an attach buffer, `C-g` is bound to
+`agent-fleet-attach-prompt-in-child-frame`. This intercepts the key
+**before** it reaches the PTY: instead of letting the CLI tool
+(Claude Code, Codex) launch `$EDITOR`, an auxiliary child frame opens
+with a text buffer for composing a multi-line prompt.
+
+| Key | Action |
+|---|---|
+| `C-g` | Open the compose child frame |
+| `C-c C-c` | Send the text via `agent.prompt` and close the frame |
+| `C-c C-k` | Close the frame without sending |
+
+The submitted text goes through `agent-fleet-prompt`, the same
+`agent.prompt` RPC the minibuffer variant (`C-c C-a s`) uses. To send a
+literal `C-g` to the terminal (e.g. to interrupt a running command), use
+`C-q C-g` (`ghostel-send-next-key`), or switch to char mode where all
+keys pass through to the PTY.
 
 ### Evil and evil-escape
 
