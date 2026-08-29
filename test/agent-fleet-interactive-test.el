@@ -838,11 +838,11 @@ the lifecycle runs in batch."
             (should (equal agent-fleet-attach--compose-pane-id "w1:p1"))
             (should (string-match-p "arch" (or header-line-format "")))
             (insert "fix the bug"))
-          ;; Submit pastes the text and presses Enter.
+          ;; Submit pastes the text; the user presses Enter themselves.
           (with-current-buffer "*agent-fleet-compose*"
             (call-interactively #'agent-fleet-attach--compose-submit))
           (should (member '(paste "fix the bug") calls))
-          (should (member '(key "return") calls))
+          (should-not (assq 'key calls))
           (should aux-closed)
           ;; Re-open, abort: no paste.
           (setq calls nil aux-closed nil)
