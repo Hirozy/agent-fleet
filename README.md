@@ -1,7 +1,7 @@
 # agent-fleet
 
-An Emacs package that turns Emacs into a multi-agent supervisor over the
-[Herdr](https://herdr.dev) terminal workspace server.
+An Emacs package for bringing Herdr-managed coding agents into Emacs as a
+multi-agent control and viewing interface.
 
 Claude Code, Codex, Pi, and other CLI agents keep running in real PTYs
 managed by Herdr. Emacs provides the control plane: start agents, send
@@ -9,9 +9,14 @@ prompts, watch their state, inspect output, isolate work in Git worktrees,
 review changes with Magit, and attach to a live terminal when direct
 interaction is needed.
 
+Agent Fleet deliberately focuses on agents. It uses Herdr workspaces, panes,
+worktrees, and events to provision and locate them, but it is not a general
+Emacs frontend for managing every Herdr Session or Workspace resource.
+
 ## Features
 
-- A live dashboard for every Herdr-managed agent, grouped by project and task.
+- A live dashboard for every Herdr-managed agent, with project and task
+  context and filters.
 - Agent lifecycle commands: start, prompt, wait, read, interrupt, rename, switch,
   and kill.
 - Automatic connection to a running Herdr server on first use.
@@ -31,8 +36,8 @@ interaction is needed.
 - Ghostel for an interactive terminal inside Emacs (optional; the core
   works without it installed).
 
-The core client uses only Emacs built-in libraries. Magit and terminal backends
-are detected when their commands are used.
+The transport and control plane load without Magit or Ghostel. Optional Magit
+and terminal integrations are detected only when their commands are used.
 
 ## Installation
 
@@ -43,27 +48,30 @@ updating the checkout):
 make autoloads
 ```
 
-Package managers generate the same file during installation. Then put the
-repository on `load-path`, require the package, and optionally bind its prefix
-map:
+Package managers generate the same file during installation. The package does
+not bind any global keys; set them up with `use-package`:
 
 ```elisp
-(add-to-list 'load-path "/path/to/agent-fleet")
-(require 'agent-fleet)
-
-(global-set-key (kbd "C-c a") agent-fleet-command-map)
+(use-package agent-fleet
+  :load-path "/path/to/agent-fleet"
+  :bind (;; Open the dashboard
+         ("s-d" . agent-fleet)
+         ;; Prefix map for agent-fleet commands
+         ("s-a" . agent-fleet-command-map))
+  :custom
+  ;; Optional: use a native child frame for the dashboard
+  (agent-fleet-dashboard-display 'buffer))
 ```
 
-The package does not bind global keys by itself. With the example prefix above,
-these commands are available:
+With the prefix above, these commands are available:
 
 | Key | Command |
 |---|---|
-| `C-c a a` | Open the dashboard |
-| `C-c a s` | Start an agent |
-| `C-c a p` | Prompt an agent |
-| `C-c a o` | Show recent output |
-| `C-c a i` | Interrupt an agent |
+| `s-d` | Open the dashboard |
+| `s-a s` | Start an agent |
+| `s-a p` | Prompt an agent |
+| `s-a o` | Show recent output |
+| `s-a i` | Interrupt an agent |
 
 ## Quick start
 
@@ -83,9 +91,9 @@ M-x agent-fleet-start
 
 The interactive command asks for an agent kind, the workspace to start
 in, and a name. A default of `<workspace-label>-<serial>` (for example
-`demo-1`) is suggested — press `RET` to accept it or type your own. The
-working directory, branch, and extra CLI arguments can be supplied through the
-command prompts; defaults are covered in [Configuration](#configuration).
+`demo-1`) is suggested — press `RET` to accept it or type your own. Project,
+worktree, and programmatic entry points can supply a working directory, branch,
+and extra CLI arguments without expanding the ordinary interactive prompt.
 
 ## Dashboard
 
@@ -102,13 +110,14 @@ fails.
 
 | Key | Action |
 |---|---|
-| `RET` or `o` | Inspect recent output |
+| `N` | Start a new agent |
+| `o` | Inspect recent output |
 | `s` | Send a prompt |
 | `i` | Send `Ctrl-C` |
 | `x` | Kill the agent |
 | `r` | Rename the agent |
 | `g` | Refresh from the server |
-| `P` | Toggle a project filter |
+| `P` | Show agents in this project / clear the project filter |
 | `T` | Toggle a parallel-task filter |
 | `w` | Show worktree status |
 | `d` | Open the working-tree diff |
@@ -206,14 +215,20 @@ neither exists, an interactive start prompts you to pick a workspace. Like
 `agent-fleet-start`, an interactive project start opens the agent as a new
 tab in that workspace and attaches the terminal afterward.
 
-Project detection defaults to the built-in `project.el`. Set
+Here, Project means the logical codebase identity derived from an agent's cwd;
+it is deliberately distinct from a Herdr Workspace. Project detection defaults
+to the built-in `project.el`. Set
 `agent-fleet-project-backend` to `'projectile` to source it from Projectile
 instead; either way, a git repository resolves to its primary checkout
 regardless of backend, so the option only affects how non-git projects are
 detected.
 
-Agents in linked worktrees are mapped back to the same canonical project, so
-the dashboard's `P` filter includes all checkouts of one repository.
+Agents in linked worktrees are mapped back to the same canonical Project, so
+the dashboard's `P` filter shows all agents in that codebase even when they run
+in different Herdr Workspaces. The Lisp API `agent-fleet-project-agents`
+returns the same cached set without issuing a server request. An agent whose
+cwd has no resolvable Project may still show its directory basename as a
+display fallback, but `P` requires an actual Project identity.
 
 Standalone worktree commands:
 
@@ -381,8 +396,18 @@ snapshot. A command issued after a failed startup connection retries on demand.
 
 The socket is discovered from `HERDR_SOCKET_PATH`, `herdr status`, or
 `~/.config/herdr/herdr.sock`; override it with `herdr-socket-path` when using a
-non-default location. Run `M-x agent-fleet-doctor` to check the socket, Herdr
-connection, agent manifests, and configured CLI executables.
+non-default location. A named Herdr Session can currently be selected by
+setting its socket explicitly, for example:
+
+```elisp
+(setq herdr-socket-path
+      (expand-file-name "~/.config/herdr/sessions/work/herdr.sock"))
+```
+
+Agent Fleet maintains one active Herdr connection and does not expose runtime
+Session switching or general Session/Workspace management. Run `M-x
+agent-fleet-doctor` to check the socket, Herdr connection, agent manifests, and
+configured CLI executables.
 
 ## Configuration
 
@@ -443,6 +468,8 @@ users should prefer the `agent-fleet-*` commands, which resolve targets, keep
 the local model synchronized, and expose lifecycle hooks. The protocol uses one
 short-lived socket per request and one long-lived event subscription; Herdr
 remains the source of truth and reconnecting rebuilds the local snapshot.
+The low-level protocol documentation covers Herdr methods that Agent Fleet does
+not surface; their presence is not a commitment to build a general Herdr UI.
 Authoritative cache rebuilds use the same event-deferral boundary described in
 the dashboard section, so synchronous request pumping cannot discard a pushed
 event that arrived during the rebuild. See
@@ -453,13 +480,14 @@ event that arrived during the rebuild. See
 ```text
 Emacs
   |
-  +-- agent-fleet-dashboard.el  live dashboard and actions
-  +-- agent-fleet-project.el    project.el mapping
-  +-- agent-fleet-worktree.el   isolated checkout management
-  +-- agent-fleet-magit.el      status and diff integration
-  +-- agent-fleet-parallel.el   multi-agent task orchestration
+  +-- agent-fleet-dashboard.el  live dashboard and contextual actions
   +-- agent-fleet-attach.el     interactive terminal attach
-  +-- agent-fleet.el            agent lifecycle and control
+  +-- agent-fleet-display.el    shared child-frame presentation lifecycle
+  +-- agent-fleet-project.el    logical project/codebase mapping
+  +-- agent-fleet-worktree.el   isolated checkout management
+  +-- agent-fleet-magit.el      optional status and diff integration
+  +-- agent-fleet-parallel.el   multi-agent task orchestration
+  +-- agent-fleet.el            agent lifecycle, target resolution, and control
   |
   +-- herdr.el                  connection and requests
       +-- herdr-events.el       subscriptions and hook dispatch
