@@ -380,15 +380,15 @@ with a text buffer for composing a multi-line prompt.
 | Key | Action |
 |---|---|
 | `C-g` | Open the compose child frame |
-| `C-c C-c` | Submit the text to the terminal (bracketed paste + Enter) |
-| `C-c C-k` | Close the frame without submitting |
+| `C-c C-c` | Paste the text into the terminal (bracketed paste) |
+| `C-c C-k` | Close the frame without pasting |
 
 The text is pasted into the agent's ghostel terminal via bracketed paste
-(so multi-line prompts stay atomic) and Enter is pressed, routing the
-prompt through the CLI tool's own input path. To send a literal `C-g` to
-the terminal (e.g. to interrupt a running command), use `C-q C-g`
-(`ghostel-send-next-key`), or switch to char mode where all keys pass
-through to the PTY.
+(so multi-line prompts stay atomic) but Enter is **not** pressed — the
+user reviews the text and presses Enter manually to submit. To send a
+literal `C-g` to the terminal (e.g. to interrupt a running command), use
+`C-q C-g` (`ghostel-send-next-key`), or switch to char mode where all
+keys pass through to the PTY.
 
 ### Evil and evil-escape
 
