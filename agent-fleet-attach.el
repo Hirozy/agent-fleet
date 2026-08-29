@@ -457,7 +457,7 @@ so no selection prompt is needed."
                        (concat "  Compose prompt: "
                                (propertize name 'face 'bold)
                                (propertize
-                                "  —  C-c C-c paste · ⏎ submit · C-c C-k abort"
+                                "  —  C-c C-c paste · C-c C-k abort"
                                 'face 'shadow))))
          (set-window-buffer nil buf))
        (agent-fleet-display--make-outcome t))
