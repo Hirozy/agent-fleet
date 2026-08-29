@@ -1049,10 +1049,12 @@ agents remain alive."
   (interactive)
   (let ((frame (selected-frame)))
     (if (agent-fleet-dashboard--container-p frame)
-        (progn
+        (let ((origin (or (frame-parameter frame 'agent-fleet-dashboard-origin-frame)
+                          (when (frame-live-p frame) (frame-parent frame)))))
           (when (eq frame agent-fleet-dashboard--standalone-frame)
             (setq agent-fleet-dashboard--standalone-frame nil))
-          (agent-fleet-dashboard--close-container frame))
+          (agent-fleet-dashboard--close-container frame)
+          (agent-fleet-display--refocus-frame origin))
       (quit-window))))
 
 
