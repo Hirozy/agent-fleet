@@ -275,6 +275,22 @@ buffer; preserved across refreshes until the dashboard is reopened.")
   "Pane id of the agent to highlight and position point on, or nil.
 Set on open from an attach buffer to the driven agent's pane id.")
 
+(defface agent-fleet-separator-face
+  '((t :inherit shadow :underline nil))
+  "Face for the dashboard separator row between project groups."
+  :group 'agent-fleet)
+
+(defun agent-fleet-dashboard--separator-row ()
+  "Return a tabulated-list entry that renders as a thin separator line.
+Fills every column with box-drawing horizontal lines so the row spans
+the full table width."
+  (let* ((widths (mapcar (lambda (col) (cadr col))
+                          (append tabulated-list-format nil)))
+         (sep (lambda (w) (propertize (make-string (max 1 w) ?─)
+                                       'face 'agent-fleet-separator-face))))
+    (list :separator
+          (vconcat (mapcar sep widths)))))
+
 (defun agent-fleet-dashboard--entries ()
   "Return all dashboard rows, sorted by status priority then agent label.
 When `agent-fleet-dashboard--project-filter' is set (the `P' key), narrow
@@ -324,10 +340,7 @@ separator line and other agents below it.  Returns nil when not connected
                                     (sort (nreverse other) sort-fn))))
           (if (and sorted-same sorted-other)
               (append sorted-same
-                      (list (list :separator
-                                  (vector (propertize (make-string 60 ?—)
-                                                      'face 'shadow)
-                                          "" "" "" "")))
+                      (list (agent-fleet-dashboard--separator-row))
                       sorted-other)
             (append sorted-same sorted-other)))))))
 
