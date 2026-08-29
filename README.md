@@ -330,8 +330,16 @@ terminal.
 ### Acting on the attached agent
 
 An attach buffer already knows which agent it is driving, so once attached you
-do not need to return to the dashboard or pick from a completion listing. A
-`C-c C-a` prefix acts on the current agent directly:
+do not need to return to the dashboard or pick from a completion listing. The
+single-key bindings live in `agent-fleet-attach-command-map`; the package does
+not bind a prefix key by default, so set one yourself:
+
+```elisp
+(keymap-set agent-fleet-attach-mode-map "C-c C-a"
+            #'agent-fleet-attach-command-map)
+```
+
+With the prefix above, these keys act on the current agent directly:
 
 | Key | Action |
 |---|---|
@@ -356,18 +364,9 @@ PTY size the agent sees — never changes when a view opens or closes. Uppercase
 keys take the ordinary buffer path instead, replacing window contents as usual.
 
 `C-c` passes through to Emacs in the terminal's char mode, so the prefix
-reaches Emacs rather than the PTY; `C-c C-a h` (or `?`) lists the same actions
+reaches Emacs rather than the PTY; `h` (or `?`) lists the same actions
 for discoverability. The commands are also available as `M-x
 agent-fleet-attach-*` and signal a clear error outside an attach buffer.
-
-The single-key bindings live in `agent-fleet-attach-command-map`, which
-`agent-fleet-attach-mode-map` binds to `C-c C-a`. To rebind the prefix,
-rebind the command map in the mode map, e.g.:
-
-```elisp
-(keymap-set agent-fleet-attach-mode-map "C-c C-f"
-            #'agent-fleet-attach-command-map)
-```
 
 ### Evil and evil-escape
 
