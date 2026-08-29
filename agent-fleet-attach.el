@@ -89,6 +89,14 @@
                   "agent-fleet-worktree" (target))
 (declare-function agent-fleet-worktree-status-in-child-frame
                   "agent-fleet-worktree" (target))
+;; Auxiliary child-frame lifecycle (agent-fleet-display).  Loaded lazily so
+;; the command-map leaves can byte-compile without a top-level require.
+(declare-function agent-fleet-display--aux-run "agent-fleet-display" (thunk))
+(declare-function agent-fleet-display--aux-close "agent-fleet-display" (child))
+(declare-function agent-fleet-display--make-outcome "agent-fleet-display" (opened &optional value buffer))
+;; text-mode-map is loaded on demand by (text-mode); declared here so the
+;; compose keymap byte-compiles without a top-level require.
+(defvar text-mode-map)
 ;; Optional evil-escape dependency.  Its global pre-command hook consults
 ;; this variable dynamically, so a buffer-local value can safely protect an
 ;; attach terminal without loading evil-escape or changing the user's global
@@ -97,6 +105,11 @@
 
 (defvar-local agent-fleet-attach-pane-id nil
   "Pane id owned by the current attach terminal buffer.")
+
+(defvar-local agent-fleet-attach--compose-pane-id nil
+  "Pane id the compose buffer should send its text to.
+Set buffer-locally on the compose buffer so the submit key can
+route the prompt to the right agent.")
 
 
 ;;; --- Customizable backend + buffer naming ---------------------------
@@ -401,6 +414,61 @@ Acts on the pane id owned by this buffer, so no selection prompt is needed."
     (unless (string-empty-p text)
       (agent-fleet-prompt pane-id text))))
 
+(defun agent-fleet-attach-prompt-in-child-frame ()
+  "Open a child frame to compose a prompt for this buffer's agent.
+In the ghostel terminal, C-g normally reaches the CLI tool which
+launches $EDITOR.  When this command is bound to C-g (the default
+in `agent-fleet-attach-mode-map'), it intercepts the key before it
+reaches the PTY: instead of an external editor, an auxiliary child
+frame with a text buffer opens for composing a multi-line prompt.
+C-c C-c sends the text via `agent-fleet-prompt' and closes the frame;
+C-c C-k closes without sending.  Acts on the pane id owned by this
+buffer, so no selection prompt is needed."
+  (interactive)
+  (require 'agent-fleet-display nil t)
+  ;; ghostel sets inhibit-quit t in terminal buffers, so C-g sets
+  ;; quit-flag instead of running keyboard-quit.  Clear it so our
+  ;; command runs uninterrupted.
+  (setq quit-flag nil)
+  (let ((pane-id (agent-fleet-attach--current-pane-id)))
+    (agent-fleet-display--aux-run
+     (lambda ()
+       (let ((buf (get-buffer-create "*agent-fleet-compose*")))
+         (with-current-buffer buf
+           (erase-buffer)
+           (text-mode)
+           (use-local-map (agent-fleet-attach--compose-map))
+           (setq-local agent-fleet-attach--compose-pane-id pane-id))
+         (set-window-buffer nil buf))
+       (agent-fleet-display--make-outcome t)))))
+
+(defun agent-fleet-attach--compose-map ()
+  "Return a keymap for the compose buffer.
+Layered on top of `text-mode-map' so all standard editing keys work;
+adds C-c C-c (submit) and C-c C-k (abort)."
+  (make-composed-keymap
+   (define-keymap
+     "C-c C-c" #'agent-fleet-attach--compose-submit
+     "C-c C-k" #'agent-fleet-attach--compose-abort)
+   text-mode-map))
+
+(defun agent-fleet-attach--compose-submit ()
+  "Send the composed text to the agent and close the child frame.
+Delegates to `agent-fleet-prompt' so the text reaches the agent via
+`agent.prompt', the same RPC the minibuffer variant uses."
+  (interactive)
+  (let ((text (buffer-substring-no-properties (point-min) (point-max)))
+        (pane-id agent-fleet-attach--compose-pane-id)
+        (frame (selected-frame)))
+    (agent-fleet-display--aux-close frame)
+    (when (and pane-id (not (string-empty-p (string-trim text))))
+      (agent-fleet-prompt pane-id text))))
+
+(defun agent-fleet-attach--compose-abort ()
+  "Close the compose child frame without sending."
+  (interactive)
+  (agent-fleet-display--aux-close (selected-frame)))
+
 (defun agent-fleet-attach-send-keys ()
   "Send key notation to the agent this buffer drives.
 Reads a key string (such as \"ctrl+c\", \"enter\", or \"esc\") and delegates
@@ -516,6 +584,7 @@ over the terminal parent, leaving its window geometry untouched; the
 child frame, uppercase the buffer."
   [["Agent"
     ("s" "Prompt"            agent-fleet-attach-prompt)
+    ("S" "Prompt (compose)"  agent-fleet-attach-prompt-in-child-frame)
     ("k" "Send keys"         agent-fleet-attach-send-keys)
     ("i" "Interrupt"         agent-fleet-attach-interrupt)
     ("x" "Kill"              agent-fleet-attach-kill)
@@ -543,6 +612,7 @@ over the terminal parent, leaving its window geometry untouched; uppercase
   "o" #'agent-fleet-attach-inspect-in-child-frame
   "O" #'agent-fleet-attach-inspect-in-buffer
   "s" #'agent-fleet-attach-prompt
+  "S" #'agent-fleet-attach-prompt-in-child-frame
   "k" #'agent-fleet-attach-send-keys
   "i" #'agent-fleet-attach-interrupt
   "x" #'agent-fleet-attach-kill
@@ -559,7 +629,12 @@ over the terminal parent, leaving its window geometry untouched; uppercase
 ;;;###autoload
 (defvar-keymap agent-fleet-attach-mode-map
   :doc "Keymap for `agent-fleet-attach-mode', active in attach buffers.
-Bind `agent-fleet-attach-command-map' to a prefix key of your choice.")
+Bind `agent-fleet-attach-command-map' to a prefix key of your choice.
+C-g is bound to `agent-fleet-attach-prompt-in-child-frame' so it
+intercepts the key before the CLI tool can launch $EDITOR — the
+prompt is composed in an auxiliary child frame instead.  To send a
+literal C-g to the terminal, use \\[ghostel-send-next-key] (C-q)."
+  "C-g" #'agent-fleet-attach-prompt-in-child-frame)
 
 (define-minor-mode agent-fleet-attach-mode
   "Buffer-local minor mode for attach terminal buffers.
