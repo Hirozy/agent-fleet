@@ -265,14 +265,28 @@ aggregate state tracks each status event (event-driven, no polling).
 Shown in the mode line rather than the header line so the tabulated-list
 column headers (set by `tabulated-list-init-header') are preserved.")
 
+(defvar-local agent-fleet-dashboard--focus-project nil
+  "Canonical project root to group at the top of the dashboard, or nil.
+When non-nil, agents in this project appear above a separator line and
+other agents below it.  Set on open from an attach buffer or project
+buffer; preserved across refreshes until the dashboard is reopened.")
+
+(defvar-local agent-fleet-dashboard--highlighted-agent nil
+  "Pane id of the agent to highlight and position point on, or nil.
+Set on open from an attach buffer to the driven agent's pane id.")
+
 (defun agent-fleet-dashboard--entries ()
   "Return all dashboard rows, sorted by status priority then agent label.
 When `agent-fleet-dashboard--project-filter' is set (the `P' key), narrow
 to agents in that project; when `--task-filter' is set (the `T' key),
-narrow to agents in that task.  Returns nil when not connected (nil-safe)."
+narrow to agents in that task.  When `--focus-project' is set (open from
+an attach or project buffer), agents in that project are grouped above a
+separator line and other agents below it.  Returns nil when not connected
+\(nil-safe)."
   (let* ((agents (herdr-agents))
          (pfilter agent-fleet-dashboard--project-filter)
          (tfilter agent-fleet-dashboard--task-filter)
+         (fproj agent-fleet-dashboard--focus-project)
          (visible (cl-remove-if-not
                    (lambda (a)
                      (let ((pid (herdr-agent-id a)))
@@ -282,10 +296,8 @@ narrow to agents in that task.  Returns nil when not connected (nil-safe)."
                             (or (null tfilter)
                                 (when-let* ((task (agent-fleet-task-for-agent pid)))
                                   (equal (agent-fleet-task-id task) tfilter))))))
-                   agents)))
-    (mapcar #'agent-fleet-dashboard--entry
-            (sort (copy-sequence visible)
-                  (lambda (a b)
+                   agents))
+         (sort-fn (lambda (a b)
                     (let ((pa (agent-fleet-dashboard--status-priority
                                (agent-fleet-status a)))
                           (pb (agent-fleet-dashboard--status-priority
@@ -293,7 +305,31 @@ narrow to agents in that task.  Returns nil when not connected (nil-safe)."
                       (or (< pa pb)
                           (and (= pa pb)
                                (string< (or (herdr-agent-display-name a) "")
-                                        (or (herdr-agent-display-name b) ""))))))))))
+                                        (or (herdr-agent-display-name b) ""))))))))
+    (if (null fproj)
+        ;; No focus project: flat sort, current behavior.
+        (mapcar #'agent-fleet-dashboard--entry
+                (sort (copy-sequence visible) sort-fn))
+      ;; Focus project: partition into same-project and others, each sorted,
+      ;; with a separator entry between them.
+      (let (same other)
+        (dolist (a visible)
+          (if (let ((r (agent-fleet-project-for-agent a)))
+                (and r (string= r fproj)))
+              (push a same)
+            (push a other)))
+        (let ((sorted-same (mapcar #'agent-fleet-dashboard--entry
+                                   (sort (nreverse same) sort-fn)))
+              (sorted-other (mapcar #'agent-fleet-dashboard--entry
+                                    (sort (nreverse other) sort-fn))))
+          (if (and sorted-same sorted-other)
+              (append sorted-same
+                      (list (list :separator
+                                  (vector (propertize (make-string 60 ?—)
+                                                      'face 'shadow)
+                                          "" "" "" "")))
+                      sorted-other)
+            (append sorted-same sorted-other)))))))
 
 
 ;;; --- Refresh --------------------------------------------------------
@@ -315,15 +351,32 @@ hooks fire."
     (agent-fleet-list t))
   (agent-fleet-dashboard--set-entries)
   (agent-fleet-dashboard--update-task-banner)
-  (tabulated-list-print t))
+  (tabulated-list-print t)
+  (agent-fleet-dashboard--position-on-highlight))
+
+(defun agent-fleet-dashboard--position-on-highlight ()
+  "Move point to the highlighted agent's row, if one is set.
+Called after `tabulated-list-print' so the cursor lands on the agent
+that was being driven when the dashboard was opened from an attach buffer."
+  (when agent-fleet-dashboard--highlighted-agent
+    (goto-char (point-min))
+    (let ((id agent-fleet-dashboard--highlighted-agent)
+          (found nil))
+      (while (and (not found)
+                  (not (eobp)))
+        (if (equal (tabulated-list-get-id) id)
+            (setq found t)
+          (forward-line 1))))))
 
 
 ;;; --- Row actions --------------------------------------
 
 (defun agent-fleet-dashboard--agent-at-point ()
   "Return the pane id of the agent at point, or signal an error."
-  (or (tabulated-list-get-id)
-      (user-error "No agent on this line")))
+  (let ((id (tabulated-list-get-id)))
+    (if (eq id :separator)
+        (user-error "No agent on this line")
+      (or id (user-error "No agent on this line")))))
 
 (defun agent-fleet-dashboard--origin-frame (&optional frame)
   "Return FRAME's live non-dashboard origin frame, or nil.
@@ -889,10 +942,39 @@ happen inside each backend's own display function)."
     (user-error "Unknown agent-fleet dashboard display backend: %S"
                 display)))
 
+(defun agent-fleet-dashboard--detect-context (src)
+  "Detect project and agent context from SRC.
+SRC is the buffer the command was called from (captured before the
+dashboard buffer was switched to).  When SRC is an attach buffer, set
+`--highlighted-agent' to the driven agent and `--focus-project' to
+its project.  When SRC is a project buffer, set `--focus-project' to
+the canonical project root.  Called in the dashboard buffer."
+  (let (pane-id)
+    (with-current-buffer src
+      ;; Attach buffer: highlight the driven agent and focus its project.
+      (when (and (boundp 'agent-fleet-attach-pane-id)
+                 (setq pane-id agent-fleet-attach-pane-id))
+        (setq-local agent-fleet-dashboard--highlighted-agent pane-id)))
+    (when pane-id
+      (when-let* ((agent (agent-fleet--find-agent pane-id))
+                  (project (agent-fleet-project-for-agent agent)))
+        (setq-local agent-fleet-dashboard--focus-project project)))
+    ;; Not from an attach buffer: try the project at point.
+    (unless agent-fleet-dashboard--focus-project
+      (with-current-buffer src
+        (when (project-current)
+          (let ((root (agent-fleet-project-root-for-cwd default-directory)))
+            (when root
+              (setq-local agent-fleet-dashboard--focus-project root))))))))
+
 (defun agent-fleet-dashboard--open (display)
   "Connect, prepare and open the dashboard using DISPLAY backend."
   (agent-fleet--ensure-connected)
-  (let ((buffer (agent-fleet-dashboard--prepare-buffer)))
+  (let ((src (current-buffer))
+        (buffer (agent-fleet-dashboard--prepare-buffer)))
+    (with-current-buffer buffer
+      (agent-fleet-dashboard--detect-context src)
+      (agent-fleet-dashboard--refresh))
     (agent-fleet-dashboard--display buffer display)
     buffer))
 
