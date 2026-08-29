@@ -68,6 +68,7 @@
 
 (declare-function evil-define-key* "evil-core"
                   (state keymap key def &rest bindings))
+(declare-function hl-line-highlight "hl-line" ())
 
 
 ;;; --- Customization --------------------------------------------------
@@ -378,7 +379,11 @@ that was being driven when the dashboard was opened from an attach buffer."
                   (not (eobp)))
         (if (equal (tabulated-list-get-id) id)
             (setq found t)
-          (forward-line 1))))))
+          (forward-line 1))))
+    ;; Force hl-line overlay to update immediately rather than waiting
+    ;; for post-command-hook (which runs after the command returns).
+    (when (bound-and-true-p hl-line-mode)
+      (hl-line-highlight))))
 
 
 ;;; --- Row actions --------------------------------------
