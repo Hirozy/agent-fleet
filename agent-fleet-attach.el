@@ -559,21 +559,12 @@ over the terminal parent, leaving its window geometry untouched; uppercase
 ;;;###autoload
 (defvar-keymap agent-fleet-attach-mode-map
   :doc "Keymap for `agent-fleet-attach-mode', active in attach buffers.
-The `C-c C-a' prefix is bound to `agent-fleet-attach-command-map' so the
-full key set lives in one rebindable map.  Ghostel reserves plain keys
-for the PTY in char mode, and `C-c' is in `ghostel-keymap-exceptions' so
-it reaches Emacs.  The prefix avoids ghostel's own `C-c C-c' and `C-c C-z'."
-  "C-c C-a" agent-fleet-attach-command-map)
+Bind `agent-fleet-attach-command-map' to a prefix key of your choice.")
 
 (define-minor-mode agent-fleet-attach-mode
-  "Act on the agent this attach terminal drives, without a selection prompt.
-When on, `C-c C-a' prefix keys act on the agent whose pane id is
-`agent-fleet-attach-pane-id' -- the agent you are currently driving -- so
-inspect output, prompt, send keys, interrupt, kill, rename, diff, magit,
-and worktree status all skip the `agent-fleet--read-agent-name' listing.
-`C-c C-a h' (or `?') opens a transient menu of the same actions.  This is a
-buffer-local minor mode, enabled by `agent-fleet-attach--prepare-buffer'; it
-is never global, so it adds no keys outside attach buffers."
+  "Buffer-local minor mode for attach terminal buffers.
+Commands in `agent-fleet-attach-command-map' act on the agent whose
+pane id is `agent-fleet-attach-pane-id' (the agent you are driving)."
   :init-value nil
   :lighter " Fleet"
   :keymap agent-fleet-attach-mode-map)
