@@ -1,17 +1,41 @@
 # Agent Fleet Development Guide
 
 This document defines project-level constraints for future agents working in
-this repository. Agent Fleet is an Emacs Lisp client: Emacs provides the
-control and viewing interface, while Herdr manages the agents' real PTYs.
+this repository. Agent Fleet is an Emacs Lisp interface for bringing
+Herdr-managed agents into Emacs: Emacs provides their control and viewing
+surface, while Herdr owns the agents' real PTYs and lifecycle state. Agent
+Fleet is not intended to become a general Herdr Session/Workspace client.
 
 ## Current baseline
 
 - The active branch is `main`.
-- The committed native child-frame dashboard implementation is in commit
-  `95bcc32`.
-- The committed event-safe `agent.list` reconciliation is in commit `f085c5a`.
+- Shared child-frame presentation lifecycle lives in `agent-fleet-display.el`;
+  view commands use explicit `-in-buffer` / `-in-child-frame` variants and
+  explicit presentation outcomes.
+- Dashboard `agent.list` reconciliation is event-safe: pushed events received
+  while a synchronous list request pumps output are replayed after the older
+  authoritative response is installed.
 - The minimum supported Emacs version is **29.1**.
 - Core behavior must remain event-driven; do not poll Herdr state with timers.
+
+## Product boundary
+
+- Design features around agents: starting them, controlling them, reading or
+  attaching to them, grouping them by Project/task, and reviewing their work.
+- Herdr Session is a connection endpoint, not a resource to expose as a new
+  management UI. The scoped next target may configure the Session used for a
+  future connection, but must not add runtime Session switching, enumeration,
+  creation, stopping, or deletion.
+- Herdr Workspace is used internally for pane provisioning, worktree linkage,
+  and agent identity. Do not add generic Workspace CRUD, a Workspace browser,
+  or a Workspace-based dashboard filter without a new explicit product
+  decision.
+- The user-facing grouping for related coding agents is Project: a logical
+  codebase identity derived from agent cwd. It may include agents from several
+  Herdr Workspaces and linked Git worktrees.
+- The full RPC catalog in `docs/PROTOCOL.md` is a protocol reference, not a
+  feature roadmap. Implement an RPC only when it supports an agent-centric
+  workflow.
 
 ## Module responsibilities
 
@@ -20,6 +44,8 @@ control and viewing interface, while Herdr manages the agents' real PTYs.
   interrupt, rename, switch, kill, and output commands.
 - `agent-fleet-dashboard.el`: the `*Agent Fleet*` table, row actions, filters,
   notifications, and dashboard display backends.
+- `agent-fleet-display.el`: generic child-frame capability checks, centering,
+  auxiliary-frame reuse/cleanup, and explicit presentation outcomes.
 - `agent-fleet-attach.el`: live PTY attachment through
   `herdr agent attach <pane-id>`, supporting Ghostel and an external command
   fallback.
@@ -76,8 +102,8 @@ Herdr server and agent PTYs
    Consumers can therefore read a post-event cache from their hooks without
    polling or issuing a compensating refresh.
 5. The dashboard and other views render the cache. A user-requested refresh may
-   explicitly fetch a fresh server snapshot, but no background polling timer
-   should be introduced.
+   explicitly fetch an authoritative server list or snapshot as appropriate,
+   but no background polling timer should be introduced.
 6. A synchronous authoritative cache rebuild must be atomic with respect to the
    subscription stream. Use `herdr-call-with-deferred-events` around the request
    and cache replacement: events received while the request pumps process output
@@ -88,8 +114,10 @@ Herdr server and agent PTYs
 
 - The protocol layer owns socket framing, request IDs, timeouts, subscriptions,
   and typed error handling.
-- The model layer owns agent, workspace, task, and worktree identities plus
-  cache consistency. It must not contain display logic.
+- The model layer owns Herdr agent, workspace, tab, pane, and worktree
+  identities plus cache consistency. It must not contain display logic.
+- The parallel module owns Agent Fleet's client-side task registry; task state
+  is derived from member agents in the live model and is not Herdr model state.
 - The control plane owns user commands, target resolution, provisioning, and
   translating high-level operations into Herdr RPCs.
 - Feature modules build on the control plane and model. They should not create
@@ -129,6 +157,29 @@ project layer maps linked worktrees to their canonical project, while the
 worktree layer owns worktree RPCs and metadata. Parallel tasks create separate
 worktrees and track members as one aggregate task; task state must be derived
 from the member agent states rather than inferred from buffer contents.
+
+### Project identity and related agents
+
+Project is the dashboard's user-facing codebase grouping and is distinct from
+Herdr Workspace. `agent-fleet-project-for-agent` derives it from the agent cwd:
+
+- Git checkouts and linked worktrees normalize to their shared Git common root;
+- other projects use the configured `project.el` or Projectile backend;
+- paths are `file-truename`-canonicalized;
+- agents with no resolvable Project have no Project identity.
+
+`agent-fleet-project-agents` is the single query for agents in a Project. It
+filters the event-maintained cache and must not issue an RPC or poll. The
+dashboard `P` action presents the same grouping and may include agents from
+different Herdr Workspaces.
+
+Keep the column name `Project`; do not rename it to `Workspace`. Do not describe
+the mapping as a literal or "real" `project.el` mapping, because linked
+worktrees are deliberately collapsed to one logical codebase. The Project
+column, `P` filter, and Project-agent query must use the same identity rule.
+The current cwd-basename display fallback for agents with no Project is known
+to be inconsistent with `P`; the scoped next change should render `—` instead
+of presenting a plain directory as a Project.
 
 ### Display lifecycle
 
@@ -174,7 +225,7 @@ Dashboard row actions fall into two categories.
 
 Inline actions remain in the current dashboard:
 
-- refresh and project/task filters;
+- refresh and Project/task filters;
 - prompt, interrupt, kill, and rename;
 - transient help.
 
@@ -199,6 +250,10 @@ frame must then close. If attach fails, the child frame remains open so the
 user can recover. Closing the dashboard, detaching, or exiting the terminal
 process must never kill the Herdr agent.
 
+The dashboard's `P` action means "show agents in this Project / clear the
+Project filter". Reuse `agent-fleet-project-agents` semantics rather than
+adding a Workspace peers filter or a second Project grouping implementation.
+
 ## Current attach implementation
 
 `agent-fleet-attach` accepts an agent name, pane id, symbol, or `herdr-agent`
@@ -217,6 +272,42 @@ terminal output must not be persisted or continuously mirrored. A live attach
 buffer for the same pane must be reused instead of creating a second attach
 session. Killing the buffer or terminal process only detaches; it must not
 close the agent pane.
+
+## Next scoped implementation target
+
+The next feature work is intentionally limited to the following items.
+
+### Default Session name
+
+- Add a Herdr transport customization such as
+  `herdr-default-session-name`, default nil for compatibility.
+- A non-nil name changes socket discovery for the next connection only:
+  `default` resolves to `~/.config/herdr/herdr.sock`; another name resolves to
+  `~/.config/herdr/sessions/<name>/herdr.sock`.
+- Preserve explicit `herdr-socket-path` as the highest-precedence endpoint.
+- Validate that a Session name is a single safe path component.
+- Do not add runtime Session switching, a Session list, multi-Session caches,
+  or server lifecycle commands. Changing the option must not disrupt an
+  existing connection; reconnect continues using the socket saved on that
+  connection.
+- Automatic connection must not start Herdr. A missing/stopped named Session
+  returns a clear error with a `herdr session attach <name>` hint.
+- `agent-fleet-attach` must pin its CLI subprocess to the current connection's
+  socket (for example through subprocess-local `HERDR_SOCKET_PATH`) so control
+  RPCs and the live PTY cannot land in different Sessions. Do not mutate the
+  global Emacs process environment.
+
+### Same-Project agents
+
+- Keep `agent-fleet-project-agents` as the only set query.
+- Improve discoverability with an interactive list command only if needed;
+  it must reuse the existing agent-list renderer and include the selected
+  agent as part of the complete Project set.
+- Reword dashboard help for `P` to "show agents in this Project / clear the
+  Project filter".
+- Make the Project label strict: canonical Project basename or `—`; do not use
+  cwd basename as a false Project identity.
+- Do not introduce Workspace management or filtering as part of this work.
 
 ## Terminal-size stability
 
@@ -300,6 +391,13 @@ Changes involving authoritative list/snapshot reconciliation should include an
 interleaving test where a pushed event arrives before the older response is
 installed, plus coverage that queued events preserve order and still replay
 when the protected operation signals.
+
+Changes involving the default Session target should cover discovery
+precedence, invalid names, missing sockets, reconnect endpoint stability, and
+attach subprocess environment isolation. Changes involving same-Project
+agents should cover multiple Herdr Workspaces, linked worktrees, unrelated
+Projects, no-Project agents, and agreement between the Project column, `P`
+filter, and Project-agent query.
 
 Use mocks or stubs for the Herdr socket, optional terminal backends, and Magit
 in ordinary ERT tests so they do not require external services. Report the
