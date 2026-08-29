@@ -431,9 +431,10 @@ launches $EDITOR.  When this command is bound to C-g (the default
 in `agent-fleet-attach-mode-map'), it intercepts the key before it
 reaches the PTY: instead of an external editor, an auxiliary child
 frame with a text buffer opens for composing a multi-line prompt.
-C-c C-c submits the text to the terminal (bracketed paste + Enter)
-and closes the frame; C-c C-k closes without sending.  Acts on the
-pane id owned by this buffer, so no selection prompt is needed."
+C-c C-c pastes the text into the terminal (bracketed paste) and
+closes the frame; the user then presses Enter to submit.  C-c C-k
+closes without pasting.  Acts on the pane id owned by this buffer,
+so no selection prompt is needed."
   (interactive)
   (require 'agent-fleet-display nil t)
   ;; ghostel sets inhibit-quit t in terminal buffers, so C-g sets
@@ -456,7 +457,7 @@ pane id owned by this buffer, so no selection prompt is needed."
                        (concat "  Compose prompt: "
                                (propertize name 'face 'bold)
                                (propertize
-                                "  —  C-c C-c submit · C-c C-k abort"
+                                "  —  C-c C-c paste · ⏎ submit · C-c C-k abort"
                                 'face 'shadow))))
          (set-window-buffer nil buf))
        (agent-fleet-display--make-outcome t))
@@ -475,11 +476,10 @@ adds C-c C-c (submit) and C-c C-k (abort)."
    text-mode-map))
 
 (defun agent-fleet-attach--compose-submit ()
-  "Submit the composed text to the terminal and close the child frame.
+  "Paste the composed text into the terminal and close the child frame.
 Pastes the text into the agent's ghostel terminal via bracketed paste
-(so multi-line prompts stay atomic) and presses Enter, routing the
-prompt through the CLI tool's own input path rather than the
-`agent.prompt' RPC."
+(so multi-line prompts stay atomic) but does NOT press Enter — the
+user reviews the text and presses Enter manually to submit."
   (interactive)
   (let ((text (buffer-substring-no-properties (point-min) (point-max)))
         (pane-id agent-fleet-attach--compose-pane-id)
@@ -488,8 +488,7 @@ prompt through the CLI tool's own input path rather than the
     (when (and pane-id (not (string-empty-p (string-trim text))))
       (when-let* ((buf (agent-fleet-attach--live-buffer-for-pane pane-id)))
         (with-current-buffer buf
-          (ghostel-paste-string text)
-          (ghostel-send-key "return"))))))
+          (ghostel-paste-string text))))))
 
 (defun agent-fleet-attach--compose-abort ()
   "Close the compose child frame without sending."
