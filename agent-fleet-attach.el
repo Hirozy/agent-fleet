@@ -91,7 +91,7 @@
                   "agent-fleet-worktree" (target))
 ;; Auxiliary child-frame lifecycle (agent-fleet-display).  Loaded lazily so
 ;; the command-map leaves can byte-compile without a top-level require.
-(declare-function agent-fleet-display--aux-run "agent-fleet-display" (thunk))
+(declare-function agent-fleet-display--aux-run "agent-fleet-display" (thunk &optional parameters))
 (declare-function agent-fleet-display--aux-close "agent-fleet-display" (child))
 (declare-function agent-fleet-display--make-outcome "agent-fleet-display" (opened &optional value buffer))
 ;; text-mode-map is loaded on demand by (text-mode); declared here so the
@@ -144,6 +144,14 @@ attached terminal.  Use the terminal backend's normal ESC/Evil integration
 when an escape is needed.  Set this to nil only when the installed terminal
 and evil-escape integration is known to avoid synthetic insertion."
   :type 'boolean
+  :group 'agent-fleet)
+
+(defcustom agent-fleet-attach-compose-frame-scale 0.5
+  "Child-frame scale for the compose prompt (C-g).
+A fraction of the parent frame's width and height.  The compose frame
+defaults to half-size so it does not cover the whole terminal; other
+auxiliary views (output, diff, Magit) keep the full-fill default."
+  :type 'number
   :group 'agent-fleet)
 
 ;; `auto' probes only ghostel; when its module is not ready,
@@ -430,7 +438,8 @@ buffer, so no selection prompt is needed."
   ;; quit-flag instead of running keyboard-quit.  Clear it so our
   ;; command runs uninterrupted.
   (setq quit-flag nil)
-  (let ((pane-id (agent-fleet-attach--current-pane-id)))
+  (let ((pane-id (agent-fleet-attach--current-pane-id))
+        (scale agent-fleet-attach-compose-frame-scale))
     (agent-fleet-display--aux-run
      (lambda ()
        (let ((buf (get-buffer-create "*agent-fleet-compose*")))
@@ -440,7 +449,9 @@ buffer, so no selection prompt is needed."
            (use-local-map (agent-fleet-attach--compose-map))
            (setq-local agent-fleet-attach--compose-pane-id pane-id))
          (set-window-buffer nil buf))
-       (agent-fleet-display--make-outcome t)))))
+       (agent-fleet-display--make-outcome t))
+     (list (cons 'width scale)
+           (cons 'height scale)))))
 
 (defun agent-fleet-attach--compose-map ()
   "Return a keymap for the compose buffer.

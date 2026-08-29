@@ -337,7 +337,7 @@ migrated) is treated as opened when non-nil, for backward compatibility."
       (plist-get outcome :buffer)
     nil))
 
-(defun agent-fleet-display--aux-run (thunk)
+(defun agent-fleet-display--aux-run (thunk &optional parameters)
   "Run THUNK in an auxiliary child frame and enforce its lifecycle.
 Resolve the current origin to a non-child parent frame, ensure one
 auxiliary child for it (creating and selecting it when absent), run
@@ -352,6 +352,11 @@ THUNK with that child selected, and apply the close contract:
 - when THUNK errors, delete a newly created child (or refocus a reused
   one) and re-signal the error.
 
+PARAMETERS, when non-nil, is a frame-parameter alist merged on top of
+`agent-fleet-display--aux-frame-parameters' before the child is sized
+and centered — e.g. `((width . 0.5) (height . 0.5))' for a half-size
+frame instead of the default full-fill.
+
 A non-outcome return value is treated as opened when non-nil (backward
 compat).  Signal a `user-error' when child frames are unsupported; an
 explicit `-in-child-frame' command never falls back to an ordinary buffer."
@@ -361,13 +366,17 @@ explicit `-in-child-frame' command never falls back to an ordinary buffer."
         (user-error "agent-fleet: %s" reason)
       (let* ((existing (agent-fleet-display--aux-frame-for-origin origin))
              (created-p (null existing))
-             (child (or existing (agent-fleet-display--aux-create origin))))
+             (child (or existing (agent-fleet-display--aux-create origin)))
+             (frame-params (if parameters
+                               (agent-fleet-display--merge-frame-parameters
+                                agent-fleet-display--aux-frame-parameters
+                                parameters)
+                             agent-fleet-display--aux-frame-parameters)))
         ;; Reapply presentation parameters when reusing a frame.  Besides
         ;; keeping live frames aligned with customization/reloads, this grows
         ;; auxiliary frames created by older versions that inherited the
         ;; dashboard's compact dimensions.
-        (modify-frame-parameters child
-                                 agent-fleet-display--aux-frame-parameters)
+        (modify-frame-parameters child frame-params)
         (agent-fleet-display--center-child-frame child origin)
         (select-frame-set-input-focus child)
         (condition-case err
