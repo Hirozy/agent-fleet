@@ -824,11 +824,13 @@ are stubbed so the lifecycle runs in batch."
                  (lambda (thunk &optional _parameters) (funcall thunk)))
                 ((symbol-function 'agent-fleet-display--aux-close)
                  (lambda (_frame) (push 'closed aux-closed))))
-        ;; Opening the compose frame creates the buffer with the pane id.
+        ;; Opening the compose frame creates the buffer with the pane id
+        ;; and a header line naming the agent.
         (call-interactively #'agent-fleet-attach-prompt-in-child-frame)
         (should (get-buffer "*agent-fleet-compose*"))
         (with-current-buffer "*agent-fleet-compose*"
           (should (equal agent-fleet-attach--compose-pane-id "w1:p1"))
+          (should (string-match-p "arch" (or header-line-format "")))
           (insert "fix the bug"))
         ;; Submit sends the text and closes the frame.
         (with-current-buffer "*agent-fleet-compose*"

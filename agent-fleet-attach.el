@@ -438,8 +438,10 @@ buffer, so no selection prompt is needed."
   ;; quit-flag instead of running keyboard-quit.  Clear it so our
   ;; command runs uninterrupted.
   (setq quit-flag nil)
-  (let ((pane-id (agent-fleet-attach--current-pane-id))
-        (scale agent-fleet-attach-compose-frame-scale))
+  (let* ((pane-id (agent-fleet-attach--current-pane-id))
+         (scale agent-fleet-attach-compose-frame-scale)
+         (agent (agent-fleet--find-agent pane-id))
+         (name (or (and agent (herdr-agent-display-name agent)) pane-id)))
     (agent-fleet-display--aux-run
      (lambda ()
        (let ((buf (get-buffer-create "*agent-fleet-compose*")))
@@ -447,11 +449,18 @@ buffer, so no selection prompt is needed."
            (erase-buffer)
            (text-mode)
            (use-local-map (agent-fleet-attach--compose-map))
-           (setq-local agent-fleet-attach--compose-pane-id pane-id))
+           (setq-local agent-fleet-attach--compose-pane-id pane-id)
+           (setq-local header-line-format
+                       (concat "  Compose prompt: "
+                               (propertize name 'face 'bold)
+                               (propertize
+                                "  —  C-c C-c send · C-c C-k abort"
+                                'face 'shadow))))
          (set-window-buffer nil buf))
        (agent-fleet-display--make-outcome t))
      (list (cons 'width scale)
-           (cons 'height scale)))))
+           (cons 'height scale)
+           (cons 'name (format "agent-fleet compose: %s" name))))))
 
 (defun agent-fleet-attach--compose-map ()
   "Return a keymap for the compose buffer.
