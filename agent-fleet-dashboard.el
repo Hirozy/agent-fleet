@@ -749,7 +749,8 @@ narrows the list to one parallel task's agents and shows that task's title
   (setq mode-line-format
         (append mode-line-format '(agent-fleet-dashboard--task-banner)))
   (add-hook 'tabulated-list-revert-hook #'agent-fleet-dashboard--set-entries nil t)
-  (tabulated-list-init-header))
+  (tabulated-list-init-header)
+  (hl-line-mode 1))
 
 
 ;;; --- Entry command --------------------------------------------------
