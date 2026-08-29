@@ -807,44 +807,51 @@ buffer-local pane id; the inspect pair honors its prefix line count."
 
 
 (ert-deftest agent-fleet-interactive-attach-compose ()
-  "C-g in an attach buffer opens a compose child frame; submit sends the
-prompt via `agent.prompt' and closes; abort closes without sending.
-The compose buffer carries the pane id buffer-locally so the submit
-key routes the prompt to the right agent.  `--aux-run' and `--aux-close'
-are stubbed so the lifecycle runs in batch."
+  "C-g in an attach buffer opens a compose child frame; submit pastes the
+text into the terminal (bracketed paste) and presses Enter; abort closes
+without sending.  The compose buffer carries the pane id buffer-locally
+so the submit key routes the prompt to the right agent.  `--aux-run',
+`--aux-close', the live-buffer lookup, and ghostel input are stubbed so
+the lifecycle runs in batch."
   (let ((herdr-model--cache (agent-fleet-interactive-test--session))
         calls aux-closed)
     (with-temp-buffer
       (setq-local agent-fleet-attach-pane-id "w1:p1")
-      (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
-                ((symbol-function 'agent-fleet-prompt)
-                 (lambda (target text) (push (list 'prompt target text) calls)))
-                ((symbol-function 'set-window-buffer) #'ignore)
-                ((symbol-function 'agent-fleet-display--aux-run)
-                 (lambda (thunk &optional _parameters) (funcall thunk)))
-                ((symbol-function 'agent-fleet-display--aux-close)
-                 (lambda (_frame) (push 'closed aux-closed))))
-        ;; Opening the compose frame creates the buffer with the pane id
-        ;; and a header line naming the agent.
-        (call-interactively #'agent-fleet-attach-prompt-in-child-frame)
-        (should (get-buffer "*agent-fleet-compose*"))
-        (with-current-buffer "*agent-fleet-compose*"
-          (should (equal agent-fleet-attach--compose-pane-id "w1:p1"))
-          (should (string-match-p "arch" (or header-line-format "")))
-          (insert "fix the bug"))
-        ;; Submit sends the text and closes the frame.
-        (with-current-buffer "*agent-fleet-compose*"
-          (call-interactively #'agent-fleet-attach--compose-submit))
-        (should (member '(prompt "w1:p1" "fix the bug") calls))
-        (should aux-closed)
-        ;; Re-open, abort: no prompt is sent.
-        (setq calls nil aux-closed nil)
-        (call-interactively #'agent-fleet-attach-prompt-in-child-frame)
-        (with-current-buffer "*agent-fleet-compose*"
-          (insert "discarded")
-          (call-interactively #'agent-fleet-attach--compose-abort))
-        (should-not calls)
-        (should aux-closed)))))
+      (let ((attach-buf (current-buffer)))
+        (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+                  ((symbol-function 'set-window-buffer) #'ignore)
+                  ((symbol-function 'agent-fleet-display--aux-run)
+                   (lambda (thunk &optional _parameters) (funcall thunk)))
+                  ((symbol-function 'agent-fleet-display--aux-close)
+                   (lambda (_frame) (push 'closed aux-closed)))
+                  ((symbol-function 'agent-fleet-attach--live-buffer-for-pane)
+                   (lambda (_pane-id) attach-buf))
+                  ((symbol-function 'ghostel-paste-string)
+                   (lambda (text) (push (list 'paste text) calls)))
+                  ((symbol-function 'ghostel-send-key)
+                   (lambda (key &optional _mods) (push (list 'key key) calls))))
+          ;; Opening the compose frame creates the buffer with the pane id
+          ;; and a header line naming the agent.
+          (call-interactively #'agent-fleet-attach-prompt-in-child-frame)
+          (should (get-buffer "*agent-fleet-compose*"))
+          (with-current-buffer "*agent-fleet-compose*"
+            (should (equal agent-fleet-attach--compose-pane-id "w1:p1"))
+            (should (string-match-p "arch" (or header-line-format "")))
+            (insert "fix the bug"))
+          ;; Submit pastes the text and presses Enter.
+          (with-current-buffer "*agent-fleet-compose*"
+            (call-interactively #'agent-fleet-attach--compose-submit))
+          (should (member '(paste "fix the bug") calls))
+          (should (member '(key "return") calls))
+          (should aux-closed)
+          ;; Re-open, abort: no paste.
+          (setq calls nil aux-closed nil)
+          (call-interactively #'agent-fleet-attach-prompt-in-child-frame)
+          (with-current-buffer "*agent-fleet-compose*"
+            (insert "discarded")
+            (call-interactively #'agent-fleet-attach--compose-abort))
+          (should-not calls)
+          (should aux-closed))))))
 
 
 (ert-deftest agent-fleet-interactive-aux-child-frame ()

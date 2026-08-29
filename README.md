@@ -380,14 +380,15 @@ with a text buffer for composing a multi-line prompt.
 | Key | Action |
 |---|---|
 | `C-g` | Open the compose child frame |
-| `C-c C-c` | Send the text via `agent.prompt` and close the frame |
-| `C-c C-k` | Close the frame without sending |
+| `C-c C-c` | Submit the text to the terminal (bracketed paste + Enter) |
+| `C-c C-k` | Close the frame without submitting |
 
-The submitted text goes through `agent-fleet-prompt`, the same
-`agent.prompt` RPC the minibuffer variant (`C-c C-a s`) uses. To send a
-literal `C-g` to the terminal (e.g. to interrupt a running command), use
-`C-q C-g` (`ghostel-send-next-key`), or switch to char mode where all
-keys pass through to the PTY.
+The text is pasted into the agent's ghostel terminal via bracketed paste
+(so multi-line prompts stay atomic) and Enter is pressed, routing the
+prompt through the CLI tool's own input path. To send a literal `C-g` to
+the terminal (e.g. to interrupt a running command), use `C-q C-g`
+(`ghostel-send-next-key`), or switch to char mode where all keys pass
+through to the PTY.
 
 ### Evil and evil-escape
 

@@ -68,6 +68,8 @@
 ;; `require'.  `ghostel-exec' is what `--spawn' calls; the working-module
 ;; probe lives in `agent-fleet-attach--ghostel-ready-p'.
 (declare-function ghostel-exec "ghostel" (buffer program &optional args))
+(declare-function ghostel-paste-string "ghostel" (string))
+(declare-function ghostel-send-key "ghostel" (key-name &optional mods))
 ;; Presentation-variant commands the leaves below dispatch to.  The Magit
 ;; and Worktree variants live in their optional feature modules (loaded
 ;; lazily by the leaves); the output child-frame variant lives in the
@@ -429,9 +431,9 @@ launches $EDITOR.  When this command is bound to C-g (the default
 in `agent-fleet-attach-mode-map'), it intercepts the key before it
 reaches the PTY: instead of an external editor, an auxiliary child
 frame with a text buffer opens for composing a multi-line prompt.
-C-c C-c sends the text via `agent-fleet-prompt' and closes the frame;
-C-c C-k closes without sending.  Acts on the pane id owned by this
-buffer, so no selection prompt is needed."
+C-c C-c submits the text to the terminal (bracketed paste + Enter)
+and closes the frame; C-c C-k closes without sending.  Acts on the
+pane id owned by this buffer, so no selection prompt is needed."
   (interactive)
   (require 'agent-fleet-display nil t)
   ;; ghostel sets inhibit-quit t in terminal buffers, so C-g sets
@@ -454,7 +456,7 @@ buffer, so no selection prompt is needed."
                        (concat "  Compose prompt: "
                                (propertize name 'face 'bold)
                                (propertize
-                                "  —  C-c C-c send · C-c C-k abort"
+                                "  —  C-c C-c submit · C-c C-k abort"
                                 'face 'shadow))))
          (set-window-buffer nil buf))
        (agent-fleet-display--make-outcome t))
@@ -473,16 +475,21 @@ adds C-c C-c (submit) and C-c C-k (abort)."
    text-mode-map))
 
 (defun agent-fleet-attach--compose-submit ()
-  "Send the composed text to the agent and close the child frame.
-Delegates to `agent-fleet-prompt' so the text reaches the agent via
-`agent.prompt', the same RPC the minibuffer variant uses."
+  "Submit the composed text to the terminal and close the child frame.
+Pastes the text into the agent's ghostel terminal via bracketed paste
+(so multi-line prompts stay atomic) and presses Enter, routing the
+prompt through the CLI tool's own input path rather than the
+`agent.prompt' RPC."
   (interactive)
   (let ((text (buffer-substring-no-properties (point-min) (point-max)))
         (pane-id agent-fleet-attach--compose-pane-id)
         (frame (selected-frame)))
     (agent-fleet-display--aux-close frame)
     (when (and pane-id (not (string-empty-p (string-trim text))))
-      (agent-fleet-prompt pane-id text))))
+      (when-let* ((buf (agent-fleet-attach--live-buffer-for-pane pane-id)))
+        (with-current-buffer buf
+          (ghostel-paste-string text)
+          (ghostel-send-key "return"))))))
 
 (defun agent-fleet-attach--compose-abort ()
   "Close the compose child frame without sending."
