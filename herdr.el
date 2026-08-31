@@ -594,6 +594,14 @@ integrations; `agent-fleet-doctor' appends those."
                (format "server %s / required %s"
                        proto herdr-required-protocol-version))
               checks)))
+    (push (herdr--doctor-check
+           "Default session"
+           t
+           (if (and (stringp herdr-default-session-name)
+                    (not (string-empty-p herdr-default-session-name)))
+               herdr-default-session-name
+             "unset (legacy)"))
+          checks)
     (let ((path (or (and herdr--conn
                          (herdr--connection-socket-path herdr--conn))
                     (condition-case nil

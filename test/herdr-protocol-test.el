@@ -98,6 +98,105 @@ the server is stopped and any live herdr connection is torn down."
       (should (equal "/tmp/herdr-discovered.sock"
                      (herdr-protocol-socket-path))))))
 
+
+;;; --- Default Session discovery ----------------------------------
+
+(ert-deftest herdr-protocol-session-socket-path-default ()
+  "The special name \"default\" resolves to the legacy base socket."
+  (should (equal (expand-file-name "~/.config/herdr/herdr.sock")
+                 (herdr-protocol--session-socket-path "default"))))
+
+(ert-deftest herdr-protocol-session-socket-path-named ()
+  "A named Session resolves under the sessions/ subdirectory."
+  (let ((path (herdr-protocol--session-socket-path "work")))
+    (should (string-suffix-p "/.config/herdr/sessions/work/herdr.sock" path))
+    (should (equal path
+                   (expand-file-name
+                    "~/.config/herdr/sessions/work/herdr.sock")))))
+
+(ert-deftest herdr-protocol-session-name-rejects-invalid ()
+  "Invalid Session names signal before any connection is attempted.
+Empty, \".\", \"..\", a value with a separator or NUL, and non-strings
+are all rejected as invalid-session-name.  (nil is the legitimate legacy
+sentinel and is handled by `herdr-protocol--configured-session-socket'
+before this low-level resolver runs, so it is not in the bad set.)"
+  (dolist (bad '( "" "." ".." "a/b" "with\0nul" 42 'symbol))
+    (should-error
+     (herdr-protocol--session-socket-path bad)
+     :type 'herdr-connection-error)))
+
+(ert-deftest herdr-protocol-socket-path-nil-preserves-legacy ()
+  "A nil `herdr-default-session-name' keeps the legacy discovery chain:
+the explicit var, then the env var, then `herdr status', then the
+default socket.  Here the env var wins."
+  (let ((herdr-socket-path nil)
+        (herdr-default-session-name nil)
+        (process-environment (copy-sequence process-environment)))
+    (setenv "HERDR_SOCKET_PATH" "/tmp/legacy-env.sock")
+    (cl-letf (((symbol-function 'herdr-protocol--socket-path-from-status)
+               (lambda () "/tmp/legacy-status.sock")))
+      (should (equal "/tmp/legacy-env.sock"
+                     (herdr-protocol-socket-path))))))
+
+(ert-deftest herdr-protocol-socket-path-explicit-overrides-session ()
+  "A nonempty explicit `herdr-socket-path' has the highest precedence
+and overrides a configured `herdr-default-session-name'."
+  (let ((herdr-socket-path "/tmp/explicit.sock")
+        (herdr-default-session-name "work"))
+    ;; Even though the Session socket is missing, the explicit path is
+    ;; returned without consulting the Session branch.
+    (should (equal "/tmp/explicit.sock"
+                   (herdr-protocol-socket-path)))))
+
+(ert-deftest herdr-protocol-socket-path-session-over-env-and-status ()
+  "A configured Session takes precedence over the environment variable
+and `herdr status'.  The Session socket is treated as existing so the
+resolved path is returned."
+  (let ((herdr-socket-path nil)
+        (herdr-default-session-name "work")
+        (process-environment (copy-sequence process-environment)))
+    (setenv "HERDR_SOCKET_PATH" "/tmp/env.sock")
+    (cl-letf (((symbol-function 'herdr-protocol--socket-path-from-status)
+               (lambda () "/tmp/status.sock"))
+              ;; The resolved Session socket need not really exist; the
+              ;; existence check is stubbed so the branch succeeds.
+              ((symbol-function 'file-exists-p) (lambda (_f) t)))
+      (should (equal (expand-file-name
+                      "~/.config/herdr/sessions/work/herdr.sock")
+                     (herdr-protocol-socket-path))))))
+
+(ert-deftest herdr-protocol-socket-path-missing-session-signals ()
+  "A missing socket for a configured Session signals a structured
+`herdr-connection-error' carrying the Session name, resolved path, and
+a `herdr session attach NAME' hint.  It does NOT fall through to the
+environment or default socket."
+  (let ((herdr-socket-path nil)
+        (herdr-default-session-name "work")
+        (process-environment (copy-sequence process-environment)))
+    (setenv "HERDR_SOCKET_PATH" "/tmp/env.sock")
+    (cl-letf (((symbol-function 'herdr-protocol--socket-path-from-status)
+               (lambda () "/tmp/status.sock")))
+      (let ((err (should-error (herdr-protocol-socket-path)
+                               :type 'herdr-connection-error))
+            (resolved (expand-file-name
+                       "~/.config/herdr/sessions/work/herdr.sock")))
+        (should (equal 'session-not-running
+                       (plist-get (cdr err) :reason)))
+        (should (equal "work" (plist-get (cdr err) :session)))
+        (should (equal resolved (plist-get (cdr err) :path)))
+        (should (string-match-p "herdr session attach work"
+                                (plist-get (cdr err) :hint)))))))
+
+(ert-deftest herdr-protocol-socket-path-invalid-session-rejects-nonstring ()
+  "A non-string configured value (other than nil) is rejected as
+invalid-session-name rather than silently treated as legacy."
+  (let ((herdr-socket-path nil)
+        (herdr-default-session-name 42))
+    (let ((err (should-error (herdr-protocol-socket-path)
+                             :type 'herdr-connection-error)))
+      (should (equal 'invalid-session-name
+                     (plist-get (cdr err) :reason))))))
+
 (ert-deftest herdr-protocol-version-check-rejects-missing-and-old ()
   "A malformed pong without a protocol is not accepted as compatible.
 `herdr-required-protocol-version' is a fixed constant, not a setting."
@@ -187,6 +286,68 @@ the server is stopped and any live herdr connection is torn down."
           (should (equal "pong" (plist-get (herdr-request "ping") :type))))
       (ignore-errors (herdr-disconnect))
       (herdr-mock-stop srv))))
+
+(ert-deftest herdr-connect-reconnect-stays-pinned-when-session-changes ()
+  "Changing `herdr-default-session-name' during a live connection does
+NOT redirect reconnect: the endpoint saved on the connection is rebound
+as `herdr-socket-path' (highest precedence) during reconnect, so the
+Session setting cannot move the connection to a different socket.  Here
+`herdr-socket-path' is cleared and the setting points at a missing
+Session; if reconnect re-resolved via `herdr-protocol-socket-path' it
+would hit the missing socket and fail.  The saved endpoint keeps the
+connection on `path'."
+  (with-herdr-mock path srv
+    (let ((herdr-reconnect-delay 0.1)
+          (herdr-reconnect-max-delay 0.2)
+          (herdr-reconnect-max-attempts 5))
+      (herdr-connect)
+      (should (herdr-connected-p))
+      (should (equal path (herdr--connection-socket-path herdr--conn)))
+      (herdr-protocol-test--drain 0.5)
+      ;; Clear the explicit var and point the setting at a Session whose
+      ;; socket is missing.  A reconnect that re-resolved via
+      ;; `herdr-protocol-socket-path' would signal and leave us
+      ;; disconnected; the saved endpoint (rebound as `herdr-socket-path'
+      ;; inside `herdr--reconnect') keeps the connection on `path'.
+      (let ((herdr-socket-path nil)
+            (herdr-default-session-name "no-such-session"))
+        (let* ((proc (herdr--connection-subscription-proc herdr--conn))
+               (buffer (process-buffer proc)))
+          (delete-process proc)
+          (should-not (buffer-live-p buffer)))
+        (should-not (herdr-connected-p))
+        (let ((deadline (+ (float-time) 4.0)))
+          (while (and (not (herdr-connected-p))
+                      (< (float-time) deadline))
+            (herdr-protocol-test--drain 0.1)))
+        (should (herdr-connected-p))
+        (should (equal path (herdr--connection-socket-path herdr--conn)))))))
+
+(ert-deftest herdr-connect-after-disconnect-resolves-new-setting ()
+  "After an explicit disconnect, a fresh connect resolves the current
+configuration rather than reusing the prior endpoint.  The first
+connect uses the explicit mock socket; after disconnect, with the
+explicit path cleared and a Session name configured, a fresh connect
+resolves through the Session mechanism to the same live mock.  The
+Session path resolver is stubbed to return the mock socket so no file
+is created under ~/.config."
+  (with-herdr-mock path srv
+    (herdr-connect)
+    (should (herdr-connected-p))
+    (should (equal path (herdr--connection-socket-path herdr--conn)))
+    (herdr-disconnect)
+    (should-not (herdr-connected-p))
+    ;; Clear the explicit path and configure a Session whose resolver
+    ;; returns the still-live mock socket.  A fresh connect must resolve
+    ;; through the Session (not reuse a stale saved endpoint).
+    (let ((herdr-socket-path nil)
+          (herdr-default-session-name "work"))
+      (cl-letf (((symbol-function 'herdr-protocol--session-socket-path)
+                 (lambda (_name) path)))
+        (herdr-connect)
+        (should (herdr-connected-p))
+        (should (equal path (herdr--connection-socket-path herdr--conn)))
+        (herdr-disconnect)))))
 
 (ert-deftest herdr-protocol-server-error-becomes-condition ()
   "A server error response signals herdr-request-error with :code."
