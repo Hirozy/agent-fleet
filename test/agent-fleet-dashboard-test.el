@@ -856,21 +856,20 @@ following `pane.agent_status_changed' (dotted per-pane kind) event."
 
 (ert-deftest agent-fleet-dashboard-columns ()
   "Project/Kind/Task/State helpers fall back gracefully."
-  ;; Project: workspace label (live cache) -> cwd basename -> "—".
-  (with-agent-fleet-mock path server
-    (with-dashboard-fresh
-      (agent-fleet)
-      (agent-fleet-test--pump)
-      (should (equal "demo"                 ; workspace w1 label
+  ;; Project: project-root basename, else "—".
+  (let ((repo (make-temp-file "af-proj-repo" t)))
+    (cl-letf (((symbol-function 'agent-fleet-project-for-agent)
+               (lambda (_) repo)))
+      (should (equal (file-name-nondirectory (directory-file-name repo))
                      (agent-fleet-dashboard--project-label
-                      (herdr-find-agent "w1:p1"))))))
+                      (make-herdr-agent :cwd "/anything"))))))
   (should (equal "—"
                  (agent-fleet-dashboard--project-label
                   (make-herdr-agent :workspace-id nil :cwd nil))))
   (should (equal "—"
                  (agent-fleet-dashboard--project-label
                   (make-herdr-agent :workspace-id nil :cwd ""))))
-  (should (equal "proj"
+  (should (equal "—"
                  (agent-fleet-dashboard--project-label
                   (make-herdr-agent :workspace-id nil :cwd "/home/me/proj"))))
   ;; Kind: capitalize or "—".

@@ -186,17 +186,15 @@ current."
 
 (defun agent-fleet-project-label (agent)
   "Return a Project label for AGENT.
-Prefers the canonical project-root basename, then the cwd basename, then
-\"—\".  Keeps the fallback shape so non-repo dirs still label by
-cwd basename (e.g. \"/tmp/demo\" -> \"demo\")."
+Returns the canonical project-root basename when a project is
+resolved; \"—\" (em dash) otherwise.  A cwd without a project is NOT
+labeled by its basename — presenting an arbitrary directory as a
+Project would mislead the user into treating it as a codebase
+identity."
   (let ((root (agent-fleet-project-for-agent agent)))
-    (cond
-     ((and root (file-directory-p root))
-      (file-name-nondirectory (directory-file-name root)))
-     ((let ((cwd (herdr-agent-cwd agent)))
-        (and cwd (not (string-empty-p cwd))
-             (file-name-nondirectory (directory-file-name cwd)))))
-     (t "—"))))
+    (if (and root (file-directory-p root))
+        (file-name-nondirectory (directory-file-name root))
+      "—")))
 
 
 ;;; --- Project-scoped agent queries -----------------------------------
