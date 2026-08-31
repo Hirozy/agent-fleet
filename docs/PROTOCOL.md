@@ -376,7 +376,8 @@ Notes:
 
 `agent-fleet-project.el` (Phase 4, §69) is a **client-side** layer: it maps
 agents to Emacs `project.el` projects by **canonical cwd** (`file-truename
-(project-root …)`), not workspace label (§32: "不要仅通过 label 判断"). It
+(project-root …)`), not the workspace label (§32: "do not identify a project
+from its label alone"). It
 adds no protocol — it reuses the Phase 2 RPCs above:
 
 - `agent-fleet-start-for-project` resolves `(project-current)`, then calls

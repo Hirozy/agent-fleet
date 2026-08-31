@@ -1,404 +1,267 @@
-# Agent Fleet Development Guide
+# Agent Fleet Agent Rules
 
-This document defines project-level constraints for future agents working in
-this repository. Agent Fleet is an Emacs Lisp interface for bringing
-Herdr-managed agents into Emacs: Emacs provides their control and viewing
-surface, while Herdr owns the agents' real PTYs and lifecycle state. Agent
-Fleet is not intended to become a general Herdr Session/Workspace client.
+This file contains mandatory, long-lived rules for agents working in this
+repository. It is not a system design, implementation history, or feature
+roadmap.
 
-## Current baseline
-
-- The active branch is `main`.
-- Shared child-frame presentation lifecycle lives in `agent-fleet-display.el`;
-  view commands use explicit `-in-buffer` / `-in-child-frame` variants and
-  explicit presentation outcomes.
-- Dashboard `agent.list` reconciliation is event-safe: pushed events received
-  while a synchronous list request pumps output are replayed after the older
-  authoritative response is installed.
-- The minimum supported Emacs version is **29.1**.
-- Core behavior must remain event-driven; do not poll Herdr state with timers.
+- Read `README.md` for current user-visible behavior.
+- Read `ROADMAP.md` for non-binding product priorities.
+- Read `docs/PROTOCOL.md` for the verified Herdr wire contract.
+- Treat code and tests as the source of truth when descriptive documents lag,
+  and update affected documentation as part of a behavior change.
+- A roadmap item or protocol method is not authorization to implement it.
+  Follow the user's current request and ask before expanding the product
+  boundary.
 
 ## Product boundary
 
-- Design features around agents: starting them, controlling them, reading or
-  attaching to them, grouping them by Project/task, and reviewing their work.
-- Herdr Session is a connection endpoint, not a resource to expose as a new
-  management UI. The scoped next target may configure the Session used for a
-  future connection, but must not add runtime Session switching, enumeration,
-  creation, stopping, or deletion.
-- Herdr Workspace is used internally for pane provisioning, worktree linkage,
-  and agent identity. Do not add generic Workspace CRUD, a Workspace browser,
-  or a Workspace-based dashboard filter without a new explicit product
-  decision.
-- The user-facing grouping for related coding agents is Project: a logical
-  codebase identity derived from agent cwd. It may include agents from several
-  Herdr Workspaces and linked Git worktrees.
-- The full RPC catalog in `docs/PROTOCOL.md` is a protocol reference, not a
-  feature roadmap. Implement an RPC only when it supports an agent-centric
-  workflow.
+Agent Fleet brings Herdr-managed coding agents into Emacs. Emacs provides an
+agent-centric control, viewing, contextual interaction, and review surface;
+Herdr owns the agents' processes, real PTYs, and lifecycle state.
 
-## Module responsibilities
+- Design features around starting, controlling, inspecting, attaching to,
+  grouping, and reviewing agents.
+- Treat a Herdr Session as a connection endpoint, not a user-facing resource.
+  Do not add Session enumeration, runtime switching, creation, stopping,
+  deletion, or multi-Session state without an explicit product decision.
+- Use Herdr Workspaces internally for provisioning, pane identity, and
+  worktree linkage. Do not add generic Workspace CRUD, a Workspace browser, or
+  a Workspace dashboard filter without an explicit product decision.
+- Use Project as the user-facing codebase grouping. A Project may contain
+  agents from several Herdr Workspaces and linked Git worktrees.
+- Do not treat the full RPC catalog as a backlog. Add an RPC only when it is
+  necessary for an approved agent-centric workflow.
+- Do not build general tab, pane, layout, server, plugin, or integration
+  management UI as incidental scope.
 
-- `herdr*.el`: Unix socket protocol, events, model, and connection lifecycle.
-- `agent-fleet.el`: control-plane APIs including start, prompt, read, wait,
-  interrupt, rename, switch, kill, and output commands.
-- `agent-fleet-dashboard.el`: the `*Agent Fleet*` table, row actions, filters,
-  notifications, and dashboard display backends.
+## Supported environment
+
+- The minimum supported Emacs version is **29.1**.
+- Core behavior must work without Magit, Ghostel, Consult, Projectile, Evil, or
+  a graphical display unless the invoked feature explicitly requires one.
+- Do not add global key bindings. Users opt in through package keymaps.
+- Preserve non-graphical and missing-optional-dependency paths with a usable
+  fallback or a clear `user-error`, according to the command's documented
+  contract.
+
+## Module ownership
+
+Put a change in its owning module whenever possible:
+
+- `herdr-protocol.el`: socket discovery, framing, request IDs, timeouts, and
+  typed protocol errors.
+- `herdr-model.el`: Herdr identities, decoded model objects, and cache
+  consistency.
+- `herdr-events.el`: event decoding, model application, and lifecycle event
+  descriptors.
+- `herdr.el`: connection, subscription, reconnect, resync, and transport
+  lifecycle.
+- `agent-fleet.el`: agent control-plane APIs, provisioning, shared target
+  resolution, candidate data, hooks, and output snapshots.
 - `agent-fleet-display.el`: generic child-frame capability checks, centering,
-  auxiliary-frame reuse/cleanup, and explicit presentation outcomes.
-- `agent-fleet-attach.el`: live PTY attachment through
-  `herdr agent attach <pane-id>`, supporting Ghostel and an external command
-  fallback.
-- `agent-fleet-worktree.el`: worktree listing, opening, status, and cleanup.
-- `agent-fleet-magit.el`: optional Magit status and diff integration.
-- `agent-fleet-project.el`: `project.el` project detection and agent/worktree
-  mapping.
-- `agent-fleet-parallel.el`: parallel agents, task aggregation, and isolated
-  worktrees.
+  auxiliary-frame lifecycle, and presentation outcomes.
+- `agent-fleet-dashboard.el`: dashboard rendering, row actions, filters,
+  notifications, and dashboard-specific display containers.
+- `agent-fleet-attach.el`: live PTY attachment and attach-buffer contextual
+  commands.
+- `agent-fleet-project.el`: Project detection and agent/Project mapping.
+- `agent-fleet-worktree.el`: worktree RPCs, metadata views, and cleanup.
+- `agent-fleet-magit.el`: optional Magit status, diff, and review integration.
+- `agent-fleet-parallel.el`: Fleet-side task grouping, aggregation, and
+  isolated-worktree orchestration.
+- `consult-agent-fleet.el`: optional Consult integration using public Fleet
+  candidate and action APIs.
 - `test/`: ERT tests and the mock Herdr server.
 
-Implement a feature in its owning module whenever possible. Do not turn
-optional terminal backends, Magit, or GUI dependencies into mandatory core
-startup dependencies.
+Feature modules may depend on the control plane and model. They must not open a
+second Herdr connection, duplicate target resolution, parse raw socket
+payloads, or become a second state store. Optional integrations remain leaves
+of the dependency graph and must not become core startup dependencies.
 
-## Agent Fleet architecture
+## State and event invariants
 
-Agent Fleet is organized as an event-driven control plane over Herdr. Emacs
-does not own the agents' long-running processes or their PTYs; it sends
-commands to Herdr, maintains a local model of the returned state, and renders
-user-facing views.
+- Herdr is the sole source of truth for agent, pane, PTY, and lifecycle state.
+  Do not infer lifecycle from terminal text or maintain competing client-side
+  agent status.
+- Keep state propagation event-driven. Do not poll Herdr with background
+  timers. A user-requested refresh may issue an authoritative request.
+- Apply a pushed event to the model before running consumer hooks. Hook
+  consumers must observe the post-event cache.
+- Resolve names, symbols, structs, and pane IDs through the shared target
+  resolver and perform control operations using the stable Herdr identity.
+- Protocol response validation and raw payload decoding belong at the protocol
+  or model boundary, never in a dashboard or optional integration.
+- An authoritative snapshot or list replacement must be atomic with respect to
+  pushed events. Use `herdr-call-with-deferred-events`; install the snapshot,
+  then replay queued events in arrival order. Replay must also occur if the
+  protected operation signals.
+- Fleet-side task metadata may be stored separately, but aggregate task state
+  must be derived from the live member-agent model. Persisted task metadata
+  must never become a second source of agent lifecycle truth.
 
-```text
-Herdr server and agent PTYs
-            │ Unix socket / JSON protocol
-            ▼
-     herdr-protocol.el
-            │ decoded responses and events
-            ▼
-  herdr-model.el + herdr-events.el
-            │ cache updates and lifecycle hooks
-            ▼
-      agent-fleet.el
-            │ control commands and target resolution
-      ┌─────┴──────────────┐
-      ▼                    ▼
- agent-fleet-display.el   feature modules
- presentation lifecycle    worktree / magit / project / parallel
-      │                    │
-      └──────┬─────────────┘
-             ▼
-     dashboard / attach
-     contextual interaction
-```
+## Project, task, and worktree invariants
 
-### Data and control flow
+- Project means a logical codebase identity derived from agent cwd. It is not
+  a Herdr Workspace and is not necessarily the literal root returned by one
+  `project.el` call.
+- Canonicalize Project paths. Git linked worktrees of one repository must map
+  to the same Project identity.
+- The Project column, Project filter, completion metadata, and Project-agent
+  queries must use one identity rule. Reuse `agent-fleet-project-agents` for
+  set queries instead of implementing a second matcher.
+- An agent with no resolvable Project has no Project identity; do not present a
+  plain cwd basename as if it were a Project.
+- Worktree operations use Herdr worktree RPCs and metadata. Do not infer a
+  worktree relationship solely from buffer names or terminal output.
+- Cleanup must protect unfinished work and preserve enough identity to retry a
+  partial failure. Never equate a missing agent with successful completion.
+- One member finishing must not complete or terminate a parallel task. A task
+  is done only when all required members are authoritatively done.
 
-1. A user command resolves an agent name, pane id, symbol, or model object to a
-   stable Herdr identity.
-2. The owning control module sends an RPC through the Herdr protocol layer.
-3. Responses are decoded and validated at the protocol boundary. Do not make
-   dashboard or integration modules parse raw socket payloads.
-4. Pushed events are applied to the local model before lifecycle hooks run.
-   Consumers can therefore read a post-event cache from their hooks without
-   polling or issuing a compensating refresh.
-5. The dashboard and other views render the cache. A user-requested refresh may
-   explicitly fetch an authoritative server list or snapshot as appropriate,
-   but no background polling timer should be introduced.
-6. A synchronous authoritative cache rebuild must be atomic with respect to the
-   subscription stream. Use `herdr-call-with-deferred-events` around the request
-   and cache replacement: events received while the request pumps process output
-   are copied into a queue, then replayed in arrival order after the snapshot is
-   installed. The queue must also flush when the protected operation signals.
+## PTY, attach, and output invariants
 
-### Layering rules
+- `agent-fleet-read` and output buffers are finite read snapshots. They are not
+  live terminal mirrors.
+- `agent-fleet-attach` is a live user-controlled PTY bridge implemented by the
+  Herdr CLI inside an optional terminal backend.
+- Killing an attach buffer or attach process only detaches that client. It
+  must not close the Herdr pane or kill the agent.
+- Reuse one live attach buffer per pane. Buffer display names are labels; pane
+  IDs are the stable ownership identity.
+- Do not add continuous output mirroring, client-side screen scraping, or
+  lifecycle parsing from terminal contents.
+- Probe the actual Ghostel capabilities used by a code path. A successful
+  Lisp `require` does not prove that its dynamic module or required entry
+  points are usable.
+- A CLI subprocess that talks to Herdr must target the same resolved socket as
+  the active control connection. Scope endpoint environment changes to that
+  subprocess; do not mutate Emacs's global `process-environment`.
+- Keep attach input explicit. Do not silently submit a composed prompt, inject
+  Enter, or reinterpret terminal control keys beyond the documented command.
 
-- The protocol layer owns socket framing, request IDs, timeouts, subscriptions,
-  and typed error handling.
-- The model layer owns Herdr agent, workspace, tab, pane, and worktree
-  identities plus cache consistency. It must not contain display logic.
-- The parallel module owns Agent Fleet's client-side task registry; task state
-  is derived from member agents in the live model and is not Herdr model state.
-- The control plane owns user commands, target resolution, provisioning, and
-  translating high-level operations into Herdr RPCs.
-- Feature modules build on the control plane and model. They should not create
-  a second connection, duplicate target resolution, or bypass the model with
-  ad-hoc socket calls.
-- The display module (`agent-fleet-display.el`) owns generic frame lifecycle:
-  child-frame capability checks, frame parameter merging, parent resolution,
-  centering, auxiliary child reuse/close, and the `quit-restore-window` advice.
-  It depends only on Emacs primitives, not on Magit, worktree, attach, the
-  dashboard buffer, or any Herdr RPC. Feature modules call its `--aux-run`
-  API; the dashboard calls its capability and centering helpers.
-- GUI and optional integrations are leaves of the dependency graph. Their
-  absence must not prevent the core control plane from loading.
-- The dashboard is a view and interaction layer. It may invoke control
-  commands, but it must not become a second state store or protocol client.
+## Display invariants
 
-### PTY and output boundaries
+- Keep generic frame lifecycle in `agent-fleet-display.el`. Feature modules
+  call its presentation API and must not grow independent frame registries or
+  global quit handling.
+- Keep domain/view computation separate from presentation. Explicit
+  `-in-buffer` and `-in-child-frame` commands should share one operation.
+- Use explicit presentation outcomes. A nil domain return can still represent
+  a successfully opened view; do not infer display success from arbitrary
+  third-party return values.
+- An explicit child-frame command must check the Emacs version, graphical
+  frame, and required APIs. Follow its documented unsupported-runtime behavior
+  rather than silently choosing a different presentation.
+- Never nest an auxiliary child under another child. Resolve and reuse the
+  non-child origin frame.
+- External actions launched from a temporary dashboard child must run from the
+  recorded origin. Close the dashboard child only after the destination is
+  successfully opened; on nil/not-opened/error, keep it available and restore
+  focus.
+- Attach must replace the current origin window after success. It must not
+  create a split or side window.
+- Auxiliary output, tree, diff, and Magit views must not resize an attached
+  terminal's parent window. Genuine parent-frame resize events must still
+  propagate immediately to the PTY.
+- If a third-party UI cannot work inside an auxiliary child, document the
+  concrete limitation before adding an explicit window-configuration
+  save/restore path. Do not silently resize the terminal.
 
-There are two deliberately different ways to inspect an agent:
+## API and dependency rules
 
-- `agent-fleet-read` and the output view commands
-  (`agent-fleet-show-output-in-buffer` / `-in-child-frame`) request a read
-  snapshot. Their buffers are derived views and must not be treated as a live
-  terminal mirror.
-- `agent-fleet-attach` starts the Herdr CLI attach bridge inside an optional
-  Emacs terminal backend. This is a live user-controlled PTY session. Killing
-  its buffer or process detaches the client but does not close the Herdr pane.
+- Keep public commands autoloadable when they are documented for direct
+  `M-x` use.
+- Prefer small public candidate, resolver, hook, and presentation interfaces
+  over optional packages advising or calling private implementation details.
+- Do not duplicate dashboard/list/completion display semantics. Shared agent
+  presentation data should remain UI-independent.
+- Do not make Magit, Ghostel, Consult, Projectile, Evil, or GUI support a hard
+  dependency of the core control plane.
+- Preserve structured error types at layer boundaries. Interactive commands
+  may translate them into concise `user-error` messages, but must not erase
+  useful diagnostics for programmatic callers.
 
-Do not implement continuous output mirroring, client-side status parsing, or
-agent lifecycle inference from terminal text. Herdr remains the source of
-truth for state and lifecycle.
+## Working-tree and editing rules
 
-### Worktree and task relationships
+- Check `git status` before editing. Existing changes belong to the user or
+  another agent unless ownership is explicitly established.
+- Preserve unrelated changes and adapt to concurrent edits. Do not revert,
+  restage, or reformat files outside the requested scope.
+- Use `apply_patch` for manual file edits. Do not overwrite source files with
+  shell redirection.
+- Use `rg` or `rg --files` for repository searches when available.
+- Avoid destructive Git or filesystem operations. Resolve exact targets first
+  and ask when scope is ambiguous.
+- Do not create a commit unless the user requests one. Before committing,
+  inspect the staged diff and exclude unrelated files.
+- Write all repository Markdown documentation in English. Do not add
+  non-English prose to Markdown files. Treat historical non-English documents
+  as migration debt; when substantively revising one, translate it or move the
+  new material into an English document.
+- Update README/user documentation when user-visible behavior, commands,
+  configuration, or compatibility changes. Put plans and design rationale in
+  dedicated documents, not in this rules file.
 
-An agent may run in the primary checkout or in an isolated Git worktree. The
-project layer maps linked worktrees to their canonical project, while the
-worktree layer owns worktree RPCs and metadata. Parallel tasks create separate
-worktrees and track members as one aggregate task; task state must be derived
-from the member agent states rather than inferred from buffer contents.
+## Claude delegation
 
-### Project identity and related agents
+You are the primary orchestrator and reviewer.
 
-Project is the dashboard's user-facing codebase grouping and is distinct from
-Herdr Workspace. `agent-fleet-project-for-agent` derives it from the agent cwd:
+For substantial implementation tasks, prefer delegating the actual
+implementation to Claude Code when appropriate.
 
-- Git checkouts and linked worktrees normalize to their shared Git common root;
-- other projects use the configured `project.el` or Projectile backend;
-- paths are `file-truename`-canonicalized;
-- agents with no resolvable Project have no Project identity.
-
-`agent-fleet-project-agents` is the single query for agents in a Project. It
-filters the event-maintained cache and must not issue an RPC or poll. The
-dashboard `P` action presents the same grouping and may include agents from
-different Herdr Workspaces.
-
-Keep the column name `Project`; do not rename it to `Workspace`. Do not describe
-the mapping as a literal or "real" `project.el` mapping, because linked
-worktrees are deliberately collapsed to one logical codebase. The Project
-column, `P` filter, and Project-agent query must use the same identity rule.
-The current cwd-basename display fallback for agents with no Project is known
-to be inconsistent with `P`; the scoped next change should render `—` instead
-of presenting a plain directory as a Project.
-
-### Display lifecycle
-
-The dashboard display backend is independent from the control-plane data flow:
-
-- a regular buffer uses ordinary Emacs window display;
-- a child frame stores its parent and lifecycle metadata in frame parameters;
-- a standalone frame stores its origin and can be reused;
-- external actions select the recorded origin frame, display the destination,
-  and then close the temporary child frame only after success.
-
-Keep frame lifecycle handling centralized in the display module
-(`agent-fleet-display.el`). New display backends must preserve the same
-success, nil-result, error, and no-GUI fallback semantics.
-
-## Current dashboard implementation
-
-`M-x agent-fleet` opens a regular Emacs buffer by default. The
-`agent-fleet-dashboard-display` option can select:
-
-- `buffer`: a regular window;
-- `child-frame`: a native Emacs child frame;
-- `frame`: a standalone graphical frame.
-
-The native child-frame implementation must satisfy these requirements:
-
-- Emacs 29.1 or newer;
-- a graphical frame;
-- `display-buffer-in-child-frame` available at runtime;
-- a clear reason and fallback to a regular buffer when requirements are not
-  met;
-- default centering relative to the parent frame with `left = 0.5` and
-  `top = 0.5`;
-- default size of approximately `0.48 × 0.55` of the parent frame, with
-  proportional resizing preserved;
-- reopening from an existing dashboard child frame must reuse its original
-  parent and must not create recursively nested child frames;
-- a standalone dashboard frame may be reused.
-
-## Dashboard interaction contract
-
-Dashboard row actions fall into two categories.
-
-Inline actions remain in the current dashboard:
-
-- refresh and Project/task filters;
-- prompt, interrupt, kill, and rename;
-- transient help.
-
-External-interface actions must run from the dashboard's origin frame:
-
-- output, worktree status, working-tree diff, and Magit status/diff;
-- live terminal attach.
-
-When the dashboard is displayed in a child frame, external actions follow this
-lifecycle:
-
-1. Switch back to the frame from which the dashboard was opened.
-2. Run the requested action.
-3. If the action's outcome has `:opened` non-nil, close the dashboard child
-   frame.
-4. If the outcome is not opened, or the action signals an error, keep the
-   child dashboard open and restore its focus.
-
-Attach has one additional requirement: after a successful attach, the terminal
-must replace the current window in the origin frame, and the dashboard child
-frame must then close. If attach fails, the child frame remains open so the
-user can recover. Closing the dashboard, detaching, or exiting the terminal
-process must never kill the Herdr agent.
-
-The dashboard's `P` action means "show agents in this Project / clear the
-Project filter". Reuse `agent-fleet-project-agents` semantics rather than
-adding a Workspace peers filter or a second Project grouping implementation.
-
-## Current attach implementation
-
-`agent-fleet-attach` accepts an agent name, pane id, symbol, or `herdr-agent`
-struct. It resolves the stable pane id and starts:
+Use the `claude` CLI in non-interactive mode:
 
 ```text
-herdr agent attach <pane-id>
+claude -p "<task>"
 ```
 
-Backend selection uses Ghostel when its dynamic module is actually loaded. If
-Ghostel is unavailable, attach reports the external `herdr agent attach`
-command for the user to run. Eat and vterm are not current attach backends.
+Responsibilities:
 
-Attach buffers are named `*agent:NAME*`. They are temporary interactive views;
-terminal output must not be persisted or continuously mirrored. A live attach
-buffer for the same pane must be reused instead of creating a second attach
-session. Killing the buffer or terminal process only detaches; it must not
-close the agent pane.
+- Codex owns planning, task decomposition, review, and final verification.
+- Claude owns implementation when a task is delegated to it.
+- Give Claude a narrow, self-contained task with:
+  - objective
+  - relevant files/modules
+  - constraints
+  - acceptance criteria
+  - tests to run
+- Allow Claude to inspect and modify the current working tree.
+- Do not modify the same files concurrently while Claude is working.
+- After Claude finishes:
+  1. inspect `git diff`
+  2. review the implementation independently
+  3. run relevant tests
+  4. fix small issues directly or delegate another bounded task to Claude
+- Never accept Claude's implementation without review.
 
-## Next scoped implementation target
-
-The next feature work is intentionally limited to the following items.
-
-### Default Session name
-
-- Add a Herdr transport customization such as
-  `herdr-default-session-name`, default nil for compatibility.
-- A non-nil name changes socket discovery for the next connection only:
-  `default` resolves to `~/.config/herdr/herdr.sock`; another name resolves to
-  `~/.config/herdr/sessions/<name>/herdr.sock`.
-- Preserve explicit `herdr-socket-path` as the highest-precedence endpoint.
-- Validate that a Session name is a single safe path component.
-- Do not add runtime Session switching, a Session list, multi-Session caches,
-  or server lifecycle commands. Changing the option must not disrupt an
-  existing connection; reconnect continues using the socket saved on that
-  connection.
-- Automatic connection must not start Herdr. A missing/stopped named Session
-  returns a clear error with a `herdr session attach <name>` hint.
-- `agent-fleet-attach` must pin its CLI subprocess to the current connection's
-  socket (for example through subprocess-local `HERDR_SOCKET_PATH`) so control
-  RPCs and the live PTY cannot land in different Sessions. Do not mutate the
-  global Emacs process environment.
-
-### Same-Project agents
-
-- Keep `agent-fleet-project-agents` as the only set query.
-- Improve discoverability with an interactive list command only if needed;
-  it must reuse the existing agent-list renderer and include the selected
-  agent as part of the complete Project set.
-- Reword dashboard help for `P` to "show agents in this Project / clear the
-  Project filter".
-- Make the Project label strict: canonical Project basename or `—`; do not use
-  cwd basename as a false Project identity.
-- Do not introduce Workspace management or filtering as part of this work.
-
-## Terminal-size stability
-
-Addressed by the auxiliary child-frame presentation layer. Every auxiliary
-view (output, worktree status, Magit status, working-tree diff) has two
-explicit presentation commands: an `-in-buffer` variant for an ordinary
-window, and an `-in-child-frame` variant that opens the view inside a native
-child frame floating over the terminal's parent frame. The view's data is
-computed once regardless of presentation. The requirements this satisfies:
-
-- the terminal stays the only full-size window in the origin parent frame;
-- no splits, side windows, or other layout changes touch the terminal PTY's
-  rows or columns; Magit may split only inside the auxiliary child frame;
-- genuine parent-frame resizes still propagate to the PTY immediately;
-- the auxiliary child frame is owned by `agent-fleet-display.el` (one
-  child per origin, reused across opens, never nested under another child
-  frame); it fills the parent frame rather than inheriting the dashboard's
-  compact dimensions;
-- closing an auxiliary child (via `q` inside the view, which is intercepted
-  with `quit-restore-window` advice scoped to auxiliary frames, via
-  `agent-fleet-dashboard-aux-quit`, or the lifecycle rules on a not-opened
-  outcome) deletes it, forgets the reuse entry, and refocuses the origin —
-  no nested or orphaned frames.
-
-The scoped `quit-restore-window` advice is a known design debt: it
-intercepts the global quit path (checking the auxiliary-frame marker to
-short-circuit).  Removing it requires a native alternative that covers
-all quit paths (output `q`, worktree `q`, Magit status/diff `q`, multi-
-window Magit, repeated open/reuse, deleted origin, and ordinary-frame
-quit) verified in a graphical Emacs.  Without that verification, the
-advice stays — do not replace it with an unverified alternative.
-
-The child-frame presentation contract is stricter than the dashboard's: an
-explicit `-in-child-frame` command signals a `user-error` on an unsupported
-runtime (Emacs older than 29.1, non-graphical frame, missing
-`display-buffer-in-child-frame`) instead of silently falling back to a buffer.
-Users who want the buffer presentation use the `-in-buffer` variant.
-
-If a third-party interface cannot work inside an auxiliary child frame, record
-the concrete limitation first, then design an explicit parent window-
-configuration save/restore mechanism. Do not silently change the terminal PTY
-size.
-
-## Compatibility and optional dependencies
-
-- Before using child frames, check the Emacs version, graphical-frame status,
-  and required API availability.
-- Ghostel's Lisp package may load while its dynamic module is unavailable. The
-  readiness check must test actual module capability, not only whether
-  `require` succeeded.
-- Ghostel and Magit must not become hard dependencies of the core control
-  plane.
-- Non-graphical frames, missing optional dependencies, and unavailable GUI APIs
-  must provide a usable fallback or a clear error message.
-- Do not add global key bindings. Users opt in through
-  `agent-fleet-command-map`.
-
-## Change and verification rules
-
-Check `git status` before editing. Preserve unrelated worktree changes. Use
-`apply_patch` for file edits; do not overwrite source files with shell
-redirection.
+## Verification rules
 
 At minimum, run:
 
 ```text
 make test
+git diff --check
 ```
 
-Changes involving GUI, child frames, or attach display behavior should also
-include:
+Also apply the relevant checks below:
 
-- ERT coverage for success, nil, error, repeated-open, and unsupported-runtime
-  paths;
-- a graphical Emacs smoke test checking the child frame's parent, centered
-  position, close timing, and the current window after attach;
-- `git diff --check`;
-- batch loading or byte compilation when loadable Lisp is modified.
+- Loadable Lisp changes: batch load or byte-compile with warnings treated as
+  errors.
+- GUI, child-frame, or attach display changes: ERT coverage for success,
+  not-opened/nil, error, repeated-open, and unsupported-runtime paths, plus a
+  graphical Emacs smoke test covering parent, centering, close timing, focus,
+  and the origin window.
+- Authoritative list/snapshot changes: test an event arriving before an older
+  response is installed; verify queued order and replay on error.
+- Socket discovery or default Session changes: test precedence, invalid names,
+  missing sockets, reconnect endpoint stability, and subprocess environment
+  isolation.
+- Project identity changes: test linked worktrees, multiple Herdr Workspaces,
+  unrelated Projects, no-Project agents, and agreement among all Project
+  presentations and queries.
+- Optional integrations: use mocks/stubs in ordinary ERT so the default suite
+  does not require external packages or services; test the real integration in
+  a separate optional job when available.
 
-Changes involving authoritative list/snapshot reconciliation should include an
-interleaving test where a pushed event arrives before the older response is
-installed, plus coverage that queued events preserve order and still replay
-when the protected operation signals.
-
-Changes involving the default Session target should cover discovery
-precedence, invalid names, missing sockets, reconnect endpoint stability, and
-attach subprocess environment isolation. Changes involving same-Project
-agents should cover multiple Herdr Workspaces, linked worktrees, unrelated
-Projects, no-Project agents, and agreement between the Project column, `P`
-filter, and Project-agent query.
-
-Use mocks or stubs for the Herdr socket, optional terminal backends, and Magit
-in ordinary ERT tests so they do not require external services. Report the
-actual commands and results; do not merely claim that verification was done.
+Report the actual commands and results. Do not claim a check that was not run,
+and record unavailable graphical or live-service validation explicitly.
