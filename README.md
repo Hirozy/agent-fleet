@@ -327,6 +327,13 @@ Choose a backend explicitly via `agent-fleet-attach-backend`; see
 agent-fleet reports the `herdr agent attach` command to run in your own
 terminal.
 
+The attach CLI targets the same Herdr socket as the active control
+connection: Ghostel inherits a subprocess-local `HERDR_SOCKET_PATH`
+pinned to that socket (Emacs's global `process-environment` is never
+changed), and the no-backend fallback command embeds the same endpoint
+with shell quoting. The PTY attach and the control RPCs therefore
+always reach the same Herdr Session.
+
 ### Acting on the attached agent
 
 An attach buffer already knows which agent it is driving, so once attached you
@@ -415,20 +422,37 @@ Automatic connection does not start or own the Herdr server. If the server is
 restarted, the subscription reconnects with backoff and refreshes the local
 snapshot. A command issued after a failed startup connection retries on demand.
 
-The socket is discovered from `HERDR_SOCKET_PATH`, `herdr status`, or
-`~/.config/herdr/herdr.sock`; override it with `herdr-socket-path` when using a
-non-default location. A named Herdr Session can currently be selected by
-setting its socket explicitly, for example:
+The socket is discovered with the following precedence (highest first):
+a nonempty explicit `herdr-socket-path`; the configured
+`herdr-default-session-name`; the `HERDR_SOCKET_PATH` environment
+variable; the `herdr status` socket line; and the default
+`~/.config/herdr/herdr.sock`. Override the location explicitly with
+`herdr-socket-path`, or name a Herdr Session with
+`herdr-default-session-name`:
 
 ```elisp
-(setq herdr-socket-path
-      (expand-file-name "~/.config/herdr/sessions/work/herdr.sock"))
+;; Use the default Session (~/.config/herdr/herdr.sock).
+(setq herdr-default-session-name "default")
+
+;; Use a named Session (~/.config/herdr/sessions/work/herdr.sock).
+(setq herdr-default-session-name "work")
 ```
 
-Agent Fleet maintains one active Herdr connection and does not expose runtime
-Session switching or general Session/Workspace management. Run `M-x
-agent-fleet-doctor` to check the socket, Herdr connection, agent manifests, and
-configured CLI executables.
+A Session name must be a safe single path component (no separator or
+NUL, not `.` or `..`). The client only resolves the path; it never
+creates directories or starts Herdr, so a configured Session whose
+socket is missing is a connection error with a `herdr session attach
+NAME` hint. `nil` (the default) preserves the legacy discovery chain.
+
+This is a connection-configuration option: changing it does not affect
+an existing connection. Reconnect and every RPC stay pinned to the
+endpoint saved on the current connection; only the next `M-x
+herdr-connect` after an explicit disconnect resolves the current
+setting. Agent Fleet maintains one active Herdr connection and does not
+expose runtime Session switching or general Session/Workspace
+management. Run `M-x agent-fleet-doctor` to check the configured default
+Session, the effective socket, the Herdr connection, agent manifests,
+and configured CLI executables.
 
 ## Configuration
 
@@ -439,7 +463,8 @@ groups; set them with `setq` or <kbd>M-x customize-group RET agent-fleet</kbd>.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `herdr-socket-path` | `nil` | Herdr Unix socket path; `nil` auto-discovers from `HERDR_SOCKET_PATH`, `herdr status`, then `~/.config/herdr/herdr.sock` |
+| `herdr-socket-path` | `nil` | Explicit Herdr Unix socket path; highest discovery precedence. `nil` auto-discovers from `herdr-default-session-name`, then `HERDR_SOCKET_PATH`, `herdr status`, then `~/.config/herdr/herdr.sock` |
+| `herdr-default-session-name` | `nil` | Default Herdr Session name. A valid name resolves to its socket (`default` → `~/.config/herdr/herdr.sock`; other → `~/.config/herdr/sessions/NAME/herdr.sock`). `nil` keeps the legacy discovery chain. Changing it does not affect an existing connection; only the next connect after a disconnect resolves it |
 | `herdr-protocol-request-timeout` | `5.0` | Default timeout in seconds for a synchronous Herdr request |
 | `herdr-protocol-ping-timeout` | `3.0` | Timeout in seconds for a `ping` |
 | `herdr-subscription-start-timeout` | `3.0` | Seconds to wait for the `subscription_started` acknowledgement |

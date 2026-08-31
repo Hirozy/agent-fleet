@@ -19,10 +19,19 @@ assumed — but Herdr may change between versions, so the client must always:
 
 ## 1. Transport
 
-- **Unix domain socket** (AF_UNIX), path `$HERDR_SOCKET_PATH` if set, else
-  `~/.config/herdr/herdr.sock` (the path printed by `herdr status` under
-  `server.socket`). A named session uses `~/.config/herdr/sessions/<name>/
-  herdr.sock` instead; the client's `herdr-socket-path` picks whichever.
+- **Unix domain socket** (AF_UNIX). The client discovers the path with
+  the following precedence (highest first): a nonempty explicit
+  `herdr-socket-path`; the configured `herdr-default-session-name`
+  (`default` → `~/.config/herdr/herdr.sock`; any other valid name →
+  `~/.config/herdr/sessions/<name>/herdr.sock`); the `HERDR_SOCKET_PATH`
+  environment variable; the path printed by `herdr status` under
+  `server.socket`; and the default `~/.config/herdr/herdr.sock`. A nil
+  `herdr-default-session-name` keeps the legacy chain (explicit, env,
+  status, default). A missing socket for a configured Session is a
+  connection error; the name must be a safe single path component. The
+  resolved endpoint is saved on the connection and reused by reconnect
+  and every RPC, so a later setting change does not move a live
+  connection.
 - **Newline-delimited JSON.** Each message is one UTF-8 JSON object terminated by
   `\n`. A single JSON object may be split across multiple `recv` calls, so a
   client must buffer until the terminating `\n`.

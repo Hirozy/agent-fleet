@@ -250,6 +250,45 @@ the backend launch)."
   (append (list "agent" "attach" pane-id)
           (and takeover '("--takeover"))))
 
+(defun agent-fleet-attach--endpoint-socket ()
+  "Return the socket the attach CLI must target.
+This is the active control connection's saved endpoint, so the PTY
+attach and the control RPCs reach the same Herdr Session (the resolved
+endpoint is read from `herdr--connection-socket-path', NOT re-discovered
+from `herdr-default-session-name', so a setting change during a live
+connection cannot point the attach at a different Session).  When no
+fleet connection is live, fall back to `herdr-protocol-socket-path' so a
+direct attach still targets a discoverable socket."
+  (or (when-let* ((conn (herdr-connection))
+                  (path (herdr--connection-socket-path conn)))
+        path)
+      (herdr-protocol-socket-path)))
+
+(defun agent-fleet-attach--subprocess-environment (socket)
+  "Return a subprocess-local `process-environment' pinning SOCKET.
+Returns a fresh list of \"VAR=VALUE\" strings with a
+`HERDR_SOCKET_PATH=SOCKET' entry replacing any prior one.  The global
+`process-environment' is never mutated: the caller binds this copy
+dynamically around process creation so only the spawned attach CLI
+inherits the pinned endpoint."
+  (let* ((entry (format "HERDR_SOCKET_PATH=%s" socket))
+         (cleaned (cl-remove-if
+                   (lambda (env)
+                     (and (stringp env)
+                          (string-prefix-p "HERDR_SOCKET_PATH=" env)))
+                   process-environment)))
+    (cons entry cleaned)))
+
+(defun agent-fleet-attach--external-command (socket pane-id takeover)
+  "Return a shell command string pinning SOCKET for `herdr agent attach'.
+SOCKET and PANE-ID are shell-quoted with `shell-quote-argument' so a
+socket path or pane id containing shell metacharacters cannot inject
+shell syntax.  TAKEOVER non-nil appends `--takeover'.  The control RPCs
+and the PTY attach therefore target the same Herdr endpoint."
+  (concat "HERDR_SOCKET_PATH=" (shell-quote-argument socket)
+          " herdr agent attach " (shell-quote-argument pane-id)
+          (and takeover " --takeover")))
+
 (defun agent-fleet-attach--live-buffer-p (buf-name &optional pane-id)
   "Return non-nil if BUF-NAME is a live attach buffer for PANE-ID.
 When PANE-ID is nil only process liveness is checked.  With PANE-ID, the
@@ -335,17 +374,24 @@ a split or resize another terminal window."
 (defun agent-fleet-attach--spawn (backend buf-name pane-id takeover)
   "Spawn `herdr agent attach PANE-ID' in BUF-NAME via BACKEND.
 TAKEOVER (non-nil) adds `--takeover'.  Pops the buffer so the user can drive
-the live terminal.  No output is persisted: the buffer is a
-transient interactive view; killing the process detaches and preserves the
-agent; detaching never closes the pane."
-  (let ((argv (agent-fleet-attach--argv pane-id takeover)))
+the live terminal.  The CLI subprocess inherits `HERDR_SOCKET_PATH' bound
+to the active control connection's socket via a subprocess-local
+`process-environment' (Emacs's global `process-environment' is never
+mutated), so the PTY attach and the control RPCs reach the same Herdr
+Session.  No output is persisted: the buffer is a transient interactive
+view; killing the process detaches and preserves the agent; detaching
+never closes the pane."
+  (let ((argv (agent-fleet-attach--argv pane-id takeover))
+        (socket (agent-fleet-attach--endpoint-socket)))
     (pcase backend
       ('ghostel
        ;; Unlike the interactive `ghostel' entry point, `ghostel-exec'
        ;; requires BUFFER to exist already (`with-current-buffer' is its
        ;; first operation).  Pass the buffer object as well, so a missing
        ;; BUF-NAME cannot surface as "No buffer named ...".
-       (let ((buffer (get-buffer-create buf-name)))
+       (let ((buffer (get-buffer-create buf-name))
+             (process-environment
+              (agent-fleet-attach--subprocess-environment socket)))
          (ghostel-exec buffer "herdr" argv)
          (agent-fleet-attach--prepare-buffer buffer pane-id)
          (agent-fleet-attach--display buffer)))
@@ -394,10 +440,11 @@ user's own terminal."
           (agent-fleet-attach--display buf-name))
       (if backend
           (agent-fleet-attach--spawn backend buf-name pane-id takeover)
-        (user-error
-         "No Emacs terminal backend found (install ghostel).  \
-Run in your terminal: herdr agent attach %s%s"
-         pane-id (if takeover " --takeover" ""))))))
+        (let ((cmd (agent-fleet-attach--external-command
+                    (agent-fleet-attach--endpoint-socket) pane-id takeover)))
+          (user-error
+           "No Emacs terminal backend found (install ghostel).  \
+Run in your terminal: %s" cmd))))))
 
 ;;; --- Current-agent actions (attach buffer keymap + transient) -------
 ;;
