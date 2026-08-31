@@ -808,13 +808,14 @@ buffer-local pane id; the inspect pair honors its prefix line count."
 
 (ert-deftest agent-fleet-interactive-attach-compose ()
   "C-g in an attach buffer opens a compose child frame; submit pastes the
-text into the terminal (bracketed paste) and presses Enter; abort closes
-without sending.  The compose buffer carries the pane id buffer-locally
+text into the terminal (bracketed paste) without pressing Enter; abort closes
+without sending.  A successful paste closes the compose frame, while a
+failed paste leaves it open.  The compose buffer carries the pane id buffer-locally
 so the submit key routes the prompt to the right agent.  `--aux-run',
 `--aux-close', the live-buffer lookup, and ghostel input are stubbed so
 the lifecycle runs in batch."
   (let ((herdr-model--cache (agent-fleet-interactive-test--session))
-        calls aux-closed)
+        calls aux-closed compose-buf)
     (with-temp-buffer
       (setq-local agent-fleet-attach-pane-id "w1:p1")
       (let ((attach-buf (current-buffer)))
@@ -827,13 +828,17 @@ the lifecycle runs in batch."
                   ((symbol-function 'agent-fleet-attach--live-buffer-for-pane)
                    (lambda (_pane-id) attach-buf))
                   ((symbol-function 'ghostel-paste-string)
-                   (lambda (text) (push (list 'paste text) calls)))
+                   (lambda (text)
+                     ;; The child frame must remain until the paste succeeds.
+                     (should-not aux-closed)
+                     (push (list 'paste text) calls)))
                   ((symbol-function 'ghostel-send-key)
                    (lambda (key &optional _mods) (push (list 'key key) calls))))
           ;; Opening the compose frame creates the buffer with the pane id
           ;; and a header line naming the agent.
           (call-interactively #'agent-fleet-attach-prompt-in-child-frame)
           (should (get-buffer "*agent-fleet-compose*"))
+          (setq compose-buf (get-buffer "*agent-fleet-compose*"))
           (with-current-buffer "*agent-fleet-compose*"
             (should (equal agent-fleet-attach--compose-pane-id "w1:p1"))
             (should (string-match-p "arch" (or header-line-format "")))
@@ -847,11 +852,165 @@ the lifecycle runs in batch."
           ;; Re-open, abort: no paste.
           (setq calls nil aux-closed nil)
           (call-interactively #'agent-fleet-attach-prompt-in-child-frame)
+          ;; Closing and recreating the temporary child frame must not create
+          ;; an accumulating series of hidden compose buffers for one origin.
+          (should (eq compose-buf (get-buffer "*agent-fleet-compose*")))
           (with-current-buffer "*agent-fleet-compose*"
             (insert "discarded")
             (call-interactively #'agent-fleet-attach--compose-abort))
           (should-not calls)
           (should aux-closed))))))
+
+
+(ert-deftest agent-fleet-interactive-attach-compose-isolated-per-frame ()
+  "Compose buffers and pane ids remain isolated across parent frames.
+Opening compose for one agent must not retarget an already-open compose
+buffer when a second frame starts composing for another agent."
+  (let* ((herdr-model--cache (agent-fleet-interactive-test--session))
+         (agent-b (make-herdr-agent :id "w1:p2" :workspace-id "w1"
+                                    :name "codex" :agent "codex"))
+         (attach-a (generate-new-buffer " *af-attach-a*"))
+         (attach-b (generate-new-buffer " *af-attach-b*"))
+         (frame 'frame-a)
+         buffers calls)
+    (puthash "w1:p2" agent-b (herdr-session-agents herdr-model--cache))
+    (unwind-protect
+        (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+                  ((symbol-function 'selected-frame) (lambda () frame))
+                  ((symbol-function 'set-window-buffer) #'ignore)
+                  ((symbol-function 'agent-fleet-display--aux-run)
+                   (lambda (thunk &optional _parameters) (funcall thunk)))
+                  ((symbol-function 'agent-fleet-display--aux-close) #'ignore)
+                  ((symbol-function 'agent-fleet-attach--live-buffer-for-pane)
+                   (lambda (pane-id)
+                     (if (equal pane-id "w1:p1") attach-a attach-b)))
+                  ((symbol-function 'ghostel-paste-string)
+                   (lambda (text)
+                     (push (list (buffer-local-value
+                                  'agent-fleet-attach-pane-id (current-buffer))
+                                 text)
+                           calls)))
+                  ((symbol-function 'agent-fleet--find-agent)
+                   (lambda (pane-id)
+                     (gethash pane-id (herdr-session-agents
+                                       herdr-model--cache)))))
+          (with-current-buffer attach-a
+            (setq-local agent-fleet-attach-pane-id "w1:p1")
+            (call-interactively #'agent-fleet-attach-prompt-in-child-frame))
+          (setq frame 'frame-b)
+          (with-current-buffer attach-b
+            (setq-local agent-fleet-attach-pane-id "w1:p2")
+            (call-interactively #'agent-fleet-attach-prompt-in-child-frame))
+          (setq buffers
+                (list (gethash 'frame-a agent-fleet-attach--compose-buffers)
+                      (gethash 'frame-b agent-fleet-attach--compose-buffers)))
+          (should (not (eq (car buffers) (cadr buffers))))
+          (dolist (entry `((,(car buffers) . "for claude")
+                           (,(cadr buffers) . "for codex")))
+            (with-current-buffer (car entry)
+              (insert (cdr entry))
+              (call-interactively #'agent-fleet-attach--compose-submit)))
+          (should (member '("w1:p1" "for claude") calls))
+          (should (member '("w1:p2" "for codex") calls)))
+      (dolist (buffer (append buffers (list attach-a attach-b)))
+        (when (buffer-live-p buffer)
+          (kill-buffer buffer))))))
+
+
+(ert-deftest agent-fleet-interactive-attach-compose-submit-success-lifecycle ()
+  "A successful non-blank compose paste closes its child frame afterwards.
+The paste runs while the frame is still available, and the original text is
+passed to the live attach buffer unchanged."
+  (let ((attach-buf (generate-new-buffer " *af-compose-attach-success*"))
+        events pasted)
+    (unwind-protect
+        (with-temp-buffer
+          (setq-local agent-fleet-attach--compose-pane-id "w1:p1")
+          (insert "  fix the bug\n")
+          (cl-letf (((symbol-function
+                      'agent-fleet-attach--live-buffer-for-pane)
+                     (lambda (_pane-id) attach-buf))
+                    ((symbol-function 'ghostel-paste-string)
+                     (lambda (text)
+                       (push 'paste events)
+                       (setq pasted text)
+                       (should-not (memq 'close events))))
+                    ((symbol-function 'agent-fleet-display--aux-close)
+                     (lambda (_frame) (push 'close events))))
+            (call-interactively #'agent-fleet-attach--compose-submit)
+            (should (equal "  fix the bug\n" pasted))
+            (should (equal '(paste close) (nreverse events)))))
+      (when (buffer-live-p attach-buf)
+        (kill-buffer attach-buf)))))
+
+
+(ert-deftest agent-fleet-interactive-attach-compose-submit-missing-buffer ()
+  "A compose submit with no live attach buffer keeps text and frame open."
+  (let (closed pasted)
+    (with-temp-buffer
+      (setq-local agent-fleet-attach--compose-pane-id "w1:p1")
+      (insert "recover this prompt")
+      (cl-letf (((symbol-function
+                  'agent-fleet-attach--live-buffer-for-pane)
+                 (lambda (_pane-id) nil))
+                ((symbol-function 'ghostel-paste-string)
+                 (lambda (_text) (setq pasted t)))
+                ((symbol-function 'agent-fleet-display--aux-close)
+                 (lambda (_frame) (setq closed t))))
+        (let ((err (should-error
+                    (call-interactively #'agent-fleet-attach--compose-submit)
+                    :type 'user-error)))
+          (should (string-match-p "No live attach buffer for pane w1:p1"
+                                  (error-message-string err))))
+        (should-not pasted)
+        (should-not closed)
+        (should (equal "recover this prompt" (buffer-string)))))))
+
+
+(ert-deftest agent-fleet-interactive-attach-compose-submit-paste-error ()
+  "A paste error propagates unchanged and keeps the compose frame open."
+  (let (closed)
+    (with-temp-buffer
+      (setq-local agent-fleet-attach--compose-pane-id "w1:p1")
+      (insert "keep this prompt")
+      (let ((attach-buf (generate-new-buffer " *af-compose-attach-error*")))
+        (unwind-protect
+            (cl-letf (((symbol-function
+                        'agent-fleet-attach--live-buffer-for-pane)
+                       (lambda (_pane-id) attach-buf))
+                      ((symbol-function 'ghostel-paste-string)
+                       (lambda (_text)
+                         (signal 'error '("paste failed"))))
+                      ((symbol-function 'agent-fleet-display--aux-close)
+                       (lambda (_frame) (setq closed t))))
+              (let ((err (should-error
+                          (call-interactively
+                           #'agent-fleet-attach--compose-submit)
+                          :type 'error)))
+                (should (eq 'error (car err)))
+                (should (equal '("paste failed") (cdr err))))
+              (should-not closed)
+              (should (equal "keep this prompt" (buffer-string))))
+          (when (buffer-live-p attach-buf)
+            (kill-buffer attach-buf)))))))
+
+
+(ert-deftest agent-fleet-interactive-attach-compose-submit-blank-keeps-frame ()
+  "Blank compose text is a no-op and remains available for editing."
+  (let (closed looked-up)
+    (with-temp-buffer
+      (setq-local agent-fleet-attach--compose-pane-id "w1:p1")
+      (insert " \n\t ")
+      (cl-letf (((symbol-function
+                  'agent-fleet-attach--live-buffer-for-pane)
+                 (lambda (_pane-id) (setq looked-up t)))
+                ((symbol-function 'agent-fleet-display--aux-close)
+                 (lambda (_frame) (setq closed t))))
+        (should-not (call-interactively
+                     #'agent-fleet-attach--compose-submit))
+        (should-not looked-up)
+        (should-not closed)
+        (should (equal " \n\t " (buffer-string)))))))
 
 
 (ert-deftest agent-fleet-interactive-aux-child-frame ()
