@@ -227,8 +227,8 @@ Agents in linked worktrees are mapped back to the same canonical Project, so
 the dashboard's `P` filter shows all agents in that codebase even when they run
 in different Herdr Workspaces. The Lisp API `agent-fleet-project-agents`
 returns the same cached set without issuing a server request. An agent whose
-cwd has no resolvable Project may still show its directory basename as a
-display fallback, but `P` requires an actual Project identity.
+cwd has no resolvable Project shows `—` in the column; `P` requires an
+actual Project identity.
 
 Standalone worktree commands:
 
@@ -241,6 +241,24 @@ Standalone worktree commands:
 
 Removal protects worktrees with uncommitted changes unless force is requested.
 Review the agent's changes before cleanup.
+
+### Handing a task from the current buffer
+
+`M-x agent-fleet-prompt-dwim` builds a lightweight task reference from the
+current buffer and sends it to an agent:
+
+- the file path (relative to the agent's project root when possible);
+- the active region's line range;
+- the symbol near point;
+- the selected text, when the region is small (see
+  `agent-fleet-prompt-dwim-max-region-chars`).
+
+It prefers an agent in the same Project as the buffer; when exactly one
+exists it is selected automatically. The built reference is pre-filled into
+`read-string` for review or editing, then submitted via `agent-fleet-prompt`.
+It does not save user files or copy an entire buffer by default — large
+regions are referenced by line range only so the agent reads the file
+directly from its working directory.
 
 ## Parallel tasks
 

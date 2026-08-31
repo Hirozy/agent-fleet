@@ -41,6 +41,7 @@
     (herdr-disconnect . agent-fleet-interactive-herdr-lifecycle)
     (herdr-doctor . agent-fleet-interactive-doctors)
     (agent-fleet-start . agent-fleet-interactive-start)
+    (agent-fleet-prompt-dwim . agent-fleet-interactive-prompt-dwim)
     (agent-fleet-prompt . agent-fleet-interactive-prompt-family)
     (agent-fleet-prompt-and-wait . agent-fleet-interactive-prompt-family)
     (agent-fleet-wait . agent-fleet-interactive-wait-and-input)
@@ -382,6 +383,71 @@ used for provisioning — the body does not prompt a second time."
                       "text" (cadr call)))))
     (should (= 1 (cl-count-if
                   (lambda (call) (assoc "wait" (cadr call))) calls)))))
+
+(ert-deftest agent-fleet-interactive-prompt-dwim ()
+  "prompt-dwim auto-selects the single same-Project agent, builds a
+context string from the buffer, pre-fills read-string, and submits
+via agent-fleet-prompt.  With no same-Project agent it falls back to
+the unfiltered reader."
+  (let ((herdr-model--cache (agent-fleet-interactive-test--session))
+        initial-input prompted)
+    (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+              ((symbol-function 'agent-fleet-project-current)
+               (lambda () 'fake-project))
+              ((symbol-function 'agent-fleet--project-root)
+               (lambda (_) "/repo"))
+              ((symbol-function 'agent-fleet-project-agents)
+               (lambda (&rest _) (list (herdr-find-agent "w1:p1"))))
+              ((symbol-function 'agent-fleet--find-agent)
+               (lambda (_) (herdr-find-agent "w1:p1")))
+              ((symbol-function 'agent-fleet-project-for-agent)
+               (lambda (_) "/repo"))
+              ;; read-string captures the pre-filled context as its initial.
+              ((symbol-function 'read-string)
+               (lambda (_prompt &optional initial &rest _)
+                 (setq initial-input initial)
+                 "edited task"))
+              ((symbol-function 'agent-fleet-prompt)
+               (lambda (agent text) (setq prompted (list agent text)))))
+      ;; Use a temp file buffer so buffer-file-name is set; the context
+      ;; builder makes the path relative to "/repo".
+      (let* ((dir (make-temp-file "af-dwim-interactive" t))
+             (file (expand-file-name "src.el" dir))
+             (buf (find-file-noselect file)))
+        (unwind-protect
+            (with-current-buffer buf
+              (insert "(defun foo ()")
+              (goto-char 8)            ; on 'foo'
+              ;; Exactly one same-Project agent → no selection prompt.
+              (call-interactively #'agent-fleet-prompt-dwim)
+              (should initial-input)
+              ;; The context carries the relative file path and symbol.
+              (should (string-match-p "src.el" initial-input))
+              (should (string-match-p "(symbol: foo)" initial-input))
+              ;; The (possibly edited) text and auto-selected pane-id reach prompt.
+              (should (equal prompted '("w1:p1" "edited task"))))
+          (kill-buffer buf)
+          (when (file-exists-p dir) (delete-directory dir t))))))
+    ;; Fallback: no same-Project agents → unfiltered reader is called.
+    (let ((read-called nil))
+      (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+                ((symbol-function 'agent-fleet-project-current)
+                 (lambda () nil))
+                ((symbol-function 'agent-fleet--project-root)
+                 (lambda (_) nil))
+                ((symbol-function 'agent-fleet-project-agents)
+                 (lambda (&rest _) nil))
+                ((symbol-function 'agent-fleet--read-agent-name)
+                 (lambda (_prompt) (setq read-called t) "w1:p1"))
+                ((symbol-function 'agent-fleet--find-agent)
+                 (lambda (_) (herdr-find-agent "w1:p1")))
+                ((symbol-function 'agent-fleet-project-for-agent)
+                 (lambda (_) "/repo"))
+                ((symbol-function 'read-string)
+                 (lambda (&rest _) ""))
+                ((symbol-function 'agent-fleet-prompt) #'ignore))
+        (call-interactively #'agent-fleet-prompt-dwim)
+        (should read-called))))
 
 (ert-deftest agent-fleet-interactive-wait-and-input ()
   "Wait/send-keys/interrupt consume minibuffer input and dispatch correctly.
