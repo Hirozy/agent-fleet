@@ -113,6 +113,24 @@
 Set buffer-locally on the compose buffer so the submit key can
 route the prompt to the right agent.")
 
+(defvar agent-fleet-attach--compose-buffers
+  (make-hash-table :test 'eq)
+  "Hash table mapping child frames to their compose buffers.
+Each frame gets its own compose buffer so concurrent compose
+sessions on different frames do not clobber each other.")
+
+(defun agent-fleet-attach--compose-buffer-for-frame (frame)
+  "Return the compose buffer for FRAME, creating one if absent.
+Reuses a live buffer already associated with FRAME; creates a fresh
+buffer (with a unique name derived from `*agent-fleet-compose*')
+when the frame has none or the old buffer was killed."
+  (let ((existing (gethash frame agent-fleet-attach--compose-buffers)))
+    (if (and existing (buffer-live-p existing))
+        existing
+      (let ((buf (generate-new-buffer "*agent-fleet-compose*")))
+        (puthash frame buf agent-fleet-attach--compose-buffers)
+        buf))))
+
 
 ;;; --- Customizable backend + buffer naming ---------------------------
 
@@ -462,7 +480,8 @@ so no selection prompt is needed."
          (name (or (and agent (herdr-agent-display-name agent)) pane-id)))
     (agent-fleet-display--aux-run
      (lambda ()
-       (let ((buf (get-buffer-create "*agent-fleet-compose*")))
+       (let ((buf (agent-fleet-attach--compose-buffer-for-frame
+                   (selected-frame))))
          (with-current-buffer buf
            (erase-buffer)
            (text-mode)
@@ -494,16 +513,26 @@ adds C-c C-c (submit) and C-c C-k (abort)."
   "Paste the composed text into the terminal and close the child frame.
 Pastes the text into the agent's ghostel terminal via bracketed paste
 (so multi-line prompts stay atomic) but does NOT press Enter — the
-user reviews the text and presses Enter manually to submit."
+user reviews the text and presses Enter manually to submit.
+
+Blank text (only whitespace) is a no-op: the frame stays open and the
+text is preserved for editing.  The paste runs BEFORE the frame
+closes; if the paste errors, the frame stays open and the text is
+preserved so the user can retry.  When no live attach buffer exists
+for the compose pane id, signals a `user-error' without pasting or
+closing."
   (interactive)
   (let ((text (buffer-substring-no-properties (point-min) (point-max)))
         (pane-id agent-fleet-attach--compose-pane-id)
         (frame (selected-frame)))
-    (agent-fleet-display--aux-close frame)
-    (when (and pane-id (not (string-empty-p (string-trim text))))
-      (when-let* ((buf (agent-fleet-attach--live-buffer-for-pane pane-id)))
+    (unless (string-empty-p (string-trim text))
+      (let ((buf (agent-fleet-attach--live-buffer-for-pane pane-id)))
+        (unless buf
+          (user-error "No live attach buffer for pane %s" (or pane-id "?")))
+        ;; Paste while the frame is still available, then close on success.
         (with-current-buffer buf
-          (ghostel-paste-string text))))))
+          (ghostel-paste-string text))
+        (agent-fleet-display--aux-close frame)))))
 
 (defun agent-fleet-attach--compose-abort ()
   "Close the compose child frame without sending."
