@@ -540,5 +540,25 @@ a prefix key."
           (should-not (default-value 'agent-fleet-attach-mode)))
       (kill-buffer buf))))
 
+(ert-deftest agent-fleet-attach-prepare-buffer-syncs-default-directory ()
+  "`--prepare-buffer' syncs `default-directory' to the agent's cached cwd
+so directory-aware commands (M-x magit-status) resolve correctly even
+when the agent process does not emit OSC 7."
+  (let* ((cwd (file-name-as-directory temporary-file-directory))
+         (session (herdr-model--empty-session))
+         (agent (make-herdr-agent :id "w1:p1" :workspace-id "w1"
+                                  :cwd cwd :agent "claude"
+                                  :name "arch"))
+         (buf (generate-new-buffer " *af-prepare-cwd*"))
+         (orig default-directory))
+    (puthash "w1:p1" agent (herdr-session-agents session))
+    (unwind-protect
+        (let ((herdr-model--cache session))
+          (should (eq buf (agent-fleet-attach--prepare-buffer buf "w1:p1")))
+          (should (equal (buffer-local-value 'default-directory buf)
+                         (file-truename cwd))))
+      (kill-buffer buf)
+      (setq default-directory orig))))
+
 (provide 'agent-fleet-attach-test)
 ;;; agent-fleet-attach-test.el ends here
