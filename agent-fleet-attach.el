@@ -260,13 +260,28 @@ disambiguated/old-name attach can be duplicated under a new base name."
   "Apply attach-specific input safeguards and action keymap to BUFFER.
 BUFFER may be a buffer or its name.  The terminal backend must initialize its
 major mode before this runs, because changing major mode clears buffer-local
-variables.  When PANE-ID is non-nil, owns it buffer-locally; either way,
-enables `agent-fleet-attach-mode' so the `C-c C-a' prefix keys act on the
-pane id owned by this buffer.  Returns BUFFER."
+variables.  When PANE-ID is non-nil, owns it buffer-locally and syncs
+`default-directory' to the agent's cached cwd so directory-aware commands
+\(M-x magit-status, etc.) resolve correctly even when the agent process
+does not emit OSC 7; either way, enables `agent-fleet-attach-mode' so the
+`C-c C-a' prefix keys act on the pane id owned by this buffer.  Returns
+BUFFER."
   (when-let* ((buf (get-buffer buffer)))
     (with-current-buffer buf
       (when pane-id
-        (setq-local agent-fleet-attach-pane-id pane-id))
+        (setq-local agent-fleet-attach-pane-id pane-id)
+        ;; Sync default-directory to the agent's cached cwd.  Many agent
+        ;; CLIs (Claude Code) do not emit OSC 7, so ghostel never updates
+        ;; default-directory from the terminal side; without this, M-x
+        ;; magit-status and similar commands in the attach buffer resolve
+        ;; to the wrong directory.  A later OSC 7 (if any) still wins.
+        (when-let* ((agent (agent-fleet--find-agent pane-id))
+                    (cwd (herdr-agent-cwd agent))
+                    ((and (stringp cwd)
+                          (not (string-empty-p cwd))
+                          (file-directory-p cwd))))
+          (setq-local default-directory
+                      (file-name-as-directory (file-truename cwd)))))
       (if agent-fleet-attach-inhibit-evil-escape
           (setq-local evil-escape-inhibit t)
         (kill-local-variable 'evil-escape-inhibit))
