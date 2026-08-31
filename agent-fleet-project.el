@@ -291,5 +291,102 @@ no project can be resolved."
                                  :attach interactive-p))))))
 
 
+;;; --- Prompt DWIM: task reference from buffer context ----------------
+
+(defcustom agent-fleet-prompt-dwim-max-region-chars 4000
+  "Maximum region size (chars) to include verbatim in a dwim prompt.
+A region larger than this is referenced by line range only — the
+prompt stays small and the agent reads the file directly from its
+working directory."
+  :type 'integer
+  :group 'agent-fleet)
+
+(defun agent-fleet-prompt-dwim--read-agent ()
+  "Read an agent, preferring one in the same Project as the buffer.
+When exactly one same-Project agent exists it is used without a
+prompt (the DWIM case).  Multiple same-Project agents are offered
+as a filtered completion; when none exist, fall back to the
+unfiltered `agent-fleet--read-agent-name'."
+  (let* ((current-root (agent-fleet--project-root
+                         (agent-fleet-project-current)))
+         (same-project (and current-root
+                            (agent-fleet-project-agents current-root))))
+    (cond
+     ((and same-project (= 1 (length same-project)))
+      (herdr-agent-id (car same-project)))
+     (same-project
+      (let* ((alist (mapcar (lambda (a)
+                              (cons (herdr-agent-display-name a)
+                                    (herdr-agent-id a)))
+                            same-project))
+             (choice (completing-read "Prompt agent (same project): "
+                                      (mapcar #'car alist) nil t)))
+        (cdr (assoc choice alist))))
+     (t (agent-fleet--read-agent-name "Prompt agent")))))
+
+(defun agent-fleet-prompt-dwim--context (project-root)
+  "Build a task-reference string from the current buffer context.
+PROJECT-ROOT is the selected agent's project root (for making the
+file path relative), or nil.  Gathers: the buffer's file path
+(relative to PROJECT-ROOT when under it, else absolute truename),
+the active region's line range, the symbol near point, and — when
+the region is small enough (see `agent-fleet-prompt-dwim-max-region-chars')
+— the selected text.  Returns \"\" when nothing can be gathered."
+  (let* ((file (and (buffer-file-name)
+                    (let ((truename (file-truename (buffer-file-name))))
+                      (if (and project-root
+                               (string-prefix-p
+                                (file-name-as-directory project-root)
+                                truename))
+                          (file-relative-name truename project-root)
+                        truename))))
+         (region-p (use-region-p))
+         (beg (and region-p (region-beginning)))
+         (end (and region-p (region-end)))
+         (line1 (and beg (line-number-at-pos beg)))
+         (line2 (and end (line-number-at-pos end)))
+         (symbol (thing-at-point 'symbol t))
+         (region-text (and region-p
+                           (<= (- end beg)
+                               agent-fleet-prompt-dwim-max-region-chars)
+                           (buffer-substring-no-properties beg end))))
+    (let ((loc (cond
+                ((and file line1 line2 (not (= line1 line2)))
+                 (format "%s:%d-%d" file line1 line2))
+                ((and file line1)
+                 (format "%s:%d" file line1))
+                (file file))))
+      (let ((base (if symbol
+                      (if loc
+                          (format "%s  (symbol: %s)" loc symbol)
+                        (format "(symbol: %s)" symbol))
+                    loc)))
+        (cond
+         ((and base region-text) (format "%s\n\n%s" base region-text))
+         (base base)
+         (t ""))))))
+
+;;;###autoload
+(defun agent-fleet-prompt-dwim (agent)
+  "Send a task reference built from the current buffer to AGENT.
+Gathers a lightweight reference — file path (relative to the
+agent's project root when possible), the active region's line
+range, the symbol near point, and the selected text when small
+(see `agent-fleet-prompt-dwim-max-region-chars').  Prefers an agent
+in the same Project as the current buffer; when exactly one exists
+it is selected automatically.  The built reference is pre-filled into
+`read-string' for review or editing before submission via
+`agent-fleet-prompt'.  Does not save user files or copy an entire
+buffer by default."
+  (interactive
+   (list (agent-fleet-prompt-dwim--read-agent)))
+  (let* ((struct (agent-fleet--find-agent agent))
+         (root (and struct (agent-fleet-project-for-agent struct))))
+    (agent-fleet--ensure-connected)
+    (let ((text (read-string "Task: "
+                             (agent-fleet-prompt-dwim--context root))))
+      (unless (string-empty-p text)
+        (agent-fleet-prompt agent text)))))
+
 (provide 'agent-fleet-project)
 ;;; agent-fleet-project.el ends here
