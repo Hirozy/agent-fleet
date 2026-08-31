@@ -72,6 +72,7 @@
     (agent-fleet-dashboard-open-buffer . agent-fleet-interactive-dashboard-display-backends)
     (agent-fleet-dashboard-open-child-frame . agent-fleet-interactive-dashboard-display-backends)
     (agent-fleet-dashboard-open-frame . agent-fleet-interactive-dashboard-display-backends)
+    (agent-fleet-list-project-agents . agent-fleet-interactive-list-project-agents)
     (agent-fleet-dashboard-aux-quit . agent-fleet-interactive-aux-child-frame))
   "Public commands: standalone M-x entry points with autoload and docs.")
 
@@ -1233,6 +1234,53 @@ with a `consult--lookup-cdr' lookup."
                (lambda (command &rest _) (setq prefix command))))
       (call-interactively #'agent-fleet-dashboard-help))
     (should (eq 'agent-fleet-dashboard-help prefix))))
+
+(ert-deftest agent-fleet-interactive-list-project-agents ()
+  "The same-Project command opens the dashboard narrowed to the agent's
+project root, reusing the existing renderer.  An agent with no
+resolvable project signals a `user-error'."
+  (let ((herdr-model--cache (agent-fleet-interactive-test--session))
+        (opened-display nil)
+        (refreshed nil)
+        positioned)
+    ;; With a project root: dashboard opens, filter is set, refresh + position run.
+    (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+              ((symbol-function 'agent-fleet--read-agent-name)
+               (lambda (_) "w1:p1"))
+              ((symbol-function 'agent-fleet-dashboard--open)
+               (lambda (display)
+                 (setq opened-display display)
+                 (let ((buf (generate-new-buffer " *af-project-list*")))
+                   (with-current-buffer buf (agent-fleet-mode))
+                   buf)))
+              ((symbol-function 'agent-fleet-dashboard--refresh)
+               (lambda (&optional _from-server) (setq refreshed t)))
+              ((symbol-function 'agent-fleet-dashboard--position-on-highlight)
+               (lambda () (setq positioned t)))
+              ((symbol-function 'agent-fleet-project-for-agent)
+               (lambda (_) "/repo")))
+      (let ((buf (call-interactively #'agent-fleet-list-project-agents)))
+        (should (eq agent-fleet-dashboard-display opened-display))
+        (should (equal "/repo"
+                       (buffer-local-value 'agent-fleet-dashboard--project-filter buf)))
+        (should refreshed)
+        (should positioned)
+        (kill-buffer buf)))
+    ;; No project: user-error, no dashboard open.
+    (let (called-open)
+      (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+                ((symbol-function 'agent-fleet--read-agent-name)
+                 (lambda (_) "w1:p1"))
+                ((symbol-function 'agent-fleet-project-for-agent)
+                 (lambda (_) nil))
+                ((symbol-function 'agent-fleet-dashboard--open)
+                 (lambda (&rest _) (setq called-open t))))
+        (let ((err (should-error
+                    (call-interactively #'agent-fleet-list-project-agents)
+                    :type 'user-error)))
+          (should (string-match-p "not associated with an Emacs project"
+                                  (cadr err))))
+        (should-not called-open)))))
 
 (ert-deftest agent-fleet-interactive-dashboard-row-actions ()
   "Every dashboard row command resolves point, reads input and delegates once."

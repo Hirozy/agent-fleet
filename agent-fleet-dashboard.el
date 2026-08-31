@@ -1030,6 +1030,29 @@ back to an ordinary buffer when any requirement is not met."
   (interactive)
   (agent-fleet-dashboard--open 'frame))
 
+;;;###autoload
+(defun agent-fleet-list-project-agents (agent)
+  "Open the dashboard narrowed to agents in the same Project as AGENT.
+Resolves AGENT's canonical project root, opens the dashboard, and sets
+the project filter so only same-Project agents are shown.  The existing
+list renderer is reused (no separate buffer or rendering logic).
+Signal a `user-error' when AGENT has no resolvable Project."
+  (interactive
+   (list (agent-fleet--read-agent-name "List same-Project agents for")))
+  (let* ((struct (or (agent-fleet--find-agent agent)
+                     (signal 'agent-fleet-target-not-found
+                             (list :agent agent))))
+         (root (agent-fleet-project-for-agent struct)))
+    (unless root
+      (user-error "Agent %S is not associated with an Emacs project"
+                  (herdr-agent-display-name struct)))
+    (let ((buffer (agent-fleet-dashboard--open agent-fleet-dashboard-display)))
+      (with-current-buffer buffer
+        (setq-local agent-fleet-dashboard--project-filter root)
+        (agent-fleet-dashboard--refresh)
+        (agent-fleet-dashboard--position-on-highlight))
+      buffer)))
+
 (defun agent-fleet-dashboard--quit ()
   "Close the dashboard's current display container.
 

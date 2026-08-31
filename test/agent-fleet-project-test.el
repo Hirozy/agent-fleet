@@ -96,7 +96,9 @@ The dashboard is in `*Agent Fleet*'.  Robust to sort order."
 ;;; --- Project label (dashboard column) --------------------------
 
 (ert-deftest agent-fleet-project-label ()
-  "Label = project-root basename, else cwd basename, else \"—\"."
+  "Label = project-root basename, else \"—\".
+A non-repo cwd is NOT labeled by its basename — an arbitrary directory
+is not a Project identity."
   (let ((repo (agent-fleet-project-test--make-git-repo)))
     (unwind-protect
         (progn
@@ -104,11 +106,10 @@ The dashboard is in `*Agent Fleet*'.  Robust to sort order."
           (should (equal (file-name-nondirectory (directory-file-name repo))
                          (agent-fleet-project-label
                           (make-herdr-agent :cwd repo))))
-          ;; non-repo cwd: cwd basename (fallback chain, backward compatible)
-          (let* ((d (make-temp-file "af-cwd-demo" t))
-                 (base (file-name-nondirectory (directory-file-name d))))
+          ;; non-repo cwd: "—" (not the cwd basename)
+          (let ((d (make-temp-file "af-cwd-demo" t)))
             (unwind-protect
-                (should (equal base
+                (should (equal "—"
                                (agent-fleet-project-label
                                 (make-herdr-agent :cwd d))))
               (when (file-exists-p d) (delete-directory d t))))
