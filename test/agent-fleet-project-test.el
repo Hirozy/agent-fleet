@@ -320,5 +320,108 @@ depend on whether Projectile happens to be installed on the test host."
         (should (eq 'fake-project (agent-fleet-project-current)))))))
 
 
+;;; --- Prompt DWIM context builder ----------------------------------
+
+(defun agent-fleet-project-test--with-context-buffer (file-dir file-name
+                                                       content point-pos
+                                                           &optional mark-pos)
+  "Return a temp buffer visiting FILE-DIR/FILE-NAME with CONTENT.
+POINT-POS sets point; MARK-POS (when non-nil) activates the region
+between it and POINT-POS.  The buffer is not selected for display."
+  (let* ((dir (file-name-as-directory file-dir))
+         (path (expand-file-name file-name dir))
+         (buf (find-file-noselect path)))
+    (with-current-buffer buf
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert content)
+        (goto-char (min point-pos (point-max)))
+        (when mark-pos
+          (set-mark (min mark-pos (point-max)))
+          (setq deactivate-mark nil))))
+    buf))
+
+(ert-deftest agent-fleet-prompt-dwim-context-file-only ()
+  "File path with no region and no symbol at point."
+  (let* ((dir (make-temp-file "af-dwim" t))
+         (buf (agent-fleet-project-test--with-context-buffer
+               dir "src.el" "line one\nline two" 1)))
+    (unwind-protect
+        (with-current-buffer buf
+          ;; No symbol at point (point is on 'l' of "line"), no region.
+          (let ((text (agent-fleet-prompt-dwim--context dir)))
+            (should (string-prefix-p (file-truename (buffer-file-name buf)) text))))
+      (kill-buffer buf)
+      (when (file-exists-p dir) (delete-directory dir t)))))
+
+(ert-deftest agent-fleet-prompt-dwim-context-relative-path ()
+  "File path is relative to the project root when under it."
+  (let* ((dir (make-temp-file "af-dwim" t))
+         (root (file-truename dir))
+         (buf (agent-fleet-project-test--with-context-buffer
+               dir "src.el" "x" 1)))
+    (unwind-protect
+        (with-current-buffer buf
+          (should (string-prefix-p "src.el" (agent-fleet-prompt-dwim--context root))))
+      (kill-buffer buf)
+      (when (file-exists-p dir) (delete-directory dir t)))))
+
+(ert-deftest agent-fleet-prompt-dwim-context-region-and-text ()
+  "Small region: line range + symbol + verbatim text."
+  (let* ((dir (make-temp-file "af-dwim" t))
+         (root (file-truename dir))
+         (content "alpha\nbeta\ngamma\n")
+         (buf (agent-fleet-project-test--with-context-buffer
+               dir "src.el" content 2 1))
+         (transient-mark-mode t))
+    ;; point on 'b' (beta, pos 7), mark at 'a' (pos 1) — region covers lines 1-2.
+    ;; symbol at point: thing-at-point 'symbol on "beta" gives "beta".
+    (unwind-protect
+        (with-current-buffer buf
+          (goto-char 7)            ; start of "beta"
+          (set-mark 1)
+          (setq mark-active t)
+          (setq deactivate-mark nil)
+          (let ((text (agent-fleet-prompt-dwim--context root)))
+            (should (string-prefix-p "src.el:1-2" text))
+            (should (string-match-p "(symbol: beta)" text))
+            ;; The verbatim region text is appended after a blank line.
+            (should (string-match-p "\n\nalpha" text))))
+      (kill-buffer buf)
+      (when (file-exists-p dir) (delete-directory dir t)))))
+
+(ert-deftest agent-fleet-prompt-dwim-context-large-region-omits-text ()
+  "A region above the size limit keeps the line range but drops the text."
+  (let* ((dir (make-temp-file "af-dwim" t))
+         (root (file-truename dir))
+         (big (make-string (* 2 agent-fleet-prompt-dwim-max-region-chars) ?x))
+         (content (format "line\n%s\n" big))
+         (buf (agent-fleet-project-test--with-context-buffer
+               dir "src.el" content 1 1))
+         (agent-fleet-prompt-dwim-max-region-chars
+          agent-fleet-prompt-dwim-max-region-chars)
+         (transient-mark-mode t))
+    (unwind-protect
+        (with-current-buffer buf
+          ;; Select the entire buffer as a region.
+          (goto-char (point-max))
+          (set-mark (point-min))
+          (setq mark-active t)
+          (setq deactivate-mark nil)
+          (let ((text (agent-fleet-prompt-dwim--context root)))
+            (should (string-prefix-p "src.el:1-" text))
+            ;; No verbatim text appended (the big string is not present).
+            (should-not (string-match-p (regexp-quote big) text))))
+      (kill-buffer buf)
+      (when (file-exists-p dir) (delete-directory dir t)))))
+
+(ert-deftest agent-fleet-prompt-dwim-context-no-file ()
+  "A buffer with no file: symbol-only context (or empty)."
+  (with-temp-buffer
+    (insert "(defun foo ()")
+    (goto-char 8)                  ; on 'foo'
+    (let ((text (agent-fleet-prompt-dwim--context nil)))
+      (should (string-match-p "(symbol: foo)" text)))))
+
 (provide 'agent-fleet-project-test)
 ;;; agent-fleet-project-test.el ends here
