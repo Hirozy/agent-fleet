@@ -112,8 +112,13 @@ non-nil — `auto' picks ghostel (native libghostty-vt, fastest)."
 (ert-deftest agent-fleet-attach-auto-with-no-backend-reports-command ()
   "With no Emacs backend ready, `auto' picks nil and the attach command
 `user-error's with the `herdr agent attach' command text so the user can
-run it in their own terminal (path C)."
-  (let ((agent-fleet-attach-backend 'auto))
+run it in their own terminal (path C).  The command is pinned to the
+active control connection's socket (the control RPCs and the PTY attach
+target the same Herdr endpoint)."
+  (let* ((agent-fleet-attach-backend 'auto)
+        (conn (make-herdr--connection
+               :socket-path "/tmp/herdr-fallback.sock"))
+        (herdr--conn conn))
     (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
               ((symbol-function 'agent-fleet--find-agent)
                (lambda (_) (make-herdr-agent :id "w4:p1" :name "x")))
@@ -131,7 +136,12 @@ run it in their own terminal (path C)."
       (let ((err (should-error (agent-fleet-attach "x")
                                :type 'user-error)))
         (should (string-match-p "herdr agent attach" (cadr err)))
-        (should (string-match-p "w4:p1" (cadr err))))
+        (should (string-match-p (regexp-quote (shell-quote-argument "w4:p1"))
+                                (cadr err)))
+        ;; The pinned endpoint is shown so the user targets the same
+        ;; Session the control connection uses.
+        (should (string-match-p (regexp-quote "/tmp/herdr-fallback.sock")
+                                (cadr err))))
       ;; A takeover request appends `--takeover' to the suggested command.
       (let ((err (should-error (agent-fleet-attach "x" t)
                                :type 'user-error)))
@@ -144,6 +154,54 @@ silently substituted (set `auto' for graceful fallback)."
     (cl-letf (((symbol-function 'agent-fleet-attach--ghostel-ready-p)
                (lambda () nil)))
       (should-error (agent-fleet-attach--pick-backend) :type 'user-error))))
+
+(ert-deftest agent-fleet-attach-external-command-pins-and-quotes ()
+  "The no-backend fallback command pins the control connection socket,
+shell-quotes the socket and pane id, and retains takeover.  A socket
+path containing a space is quoted so it cannot inject shell syntax;
+the command embeds the same endpoint the control RPCs use."
+  (let* ((sock "/tmp/herdr pinned.sock")
+         (conn (make-herdr--connection :socket-path sock))
+         (herdr--conn conn)
+         (cmd (agent-fleet-attach--external-command
+               (agent-fleet-attach--endpoint-socket) "w4:p1" t)))
+    (should (string-prefix-p "HERDR_SOCKET_PATH=" cmd))
+    ;; The socket path with a space is shell-quoted (single-quoted) so
+    ;; the value cannot break out of the VAR=... assignment.
+    (should (string-match-p (regexp-quote (shell-quote-argument sock)) cmd))
+    (should (string-match-p "herdr agent attach" cmd))
+    (should (string-match-p (regexp-quote (shell-quote-argument "w4:p1")) cmd))
+    (should (string-match-p "--takeover" cmd))
+    ;; Without takeover the flag is absent.
+    (let ((no-take (agent-fleet-attach--external-command sock "w4:p1" nil)))
+      (should-not (string-match-p "--takeover" no-take)))))
+
+(ert-deftest agent-fleet-attach-subprocess-environment-isolated ()
+  "Building the subprocess environment pins HERDR_SOCKET_PATH and
+replaces any prior entry without touching the global
+`process-environment'.  The function returns a fresh list; it does
+not mutate the list it reads."
+  (let* ((global-before (copy-sequence process-environment))
+         ;; Seed a stale entry the call must replace, not duplicate.
+         (process-environment
+          (cons "HERDR_SOCKET_PATH=/tmp/stale.sock"
+                process-environment))
+         (snapshot-before (copy-sequence process-environment))
+         (env (agent-fleet-attach--subprocess-environment
+               "/tmp/fresh.sock")))
+    ;; The pinned value is present exactly once.
+    (should (member "HERDR_SOCKET_PATH=/tmp/fresh.sock" env))
+    (should (= 1 (cl-count "HERDR_SOCKET_PATH=/tmp/fresh.sock" env
+                           :test #'equal)))
+    ;; The stale entry is gone.
+    (should-not (member "HERDR_SOCKET_PATH=/tmp/stale.sock" env))
+    ;; The input list is unchanged (no in-place mutation), and the
+    ;; global `process-environment' (the let-bound value) is untouched.
+    (should (equal snapshot-before process-environment))
+    (should (equal global-before
+                 (cl-remove-if
+                  (lambda (e) (equal e "HERDR_SOCKET_PATH=/tmp/stale.sock"))
+                  process-environment)))))
 
 
 ;;; --- Target resolution + live-buffer reuse (the command) -------------
@@ -343,12 +401,20 @@ ordinary Evil editing buffers."
 ;;; --- Spawn dispatch (per backend, entry points stubbed) --------------
 
 (ert-deftest agent-fleet-attach-spawn-via-ghostel ()
-  "`--spawn' creates Ghostel's buffer before calling `ghostel-exec'.
-The real `ghostel-exec' starts with `with-current-buffer' and therefore
-signals `No buffer named ...' when callers pass an uncreated name.  Pin
-both that precondition and the attach argv (TAKEOVER adds `--takeover')."
-  (let ((buf-name "*agent:arch-ghostel*")
-        ghostel-called pop-inhibited)
+  "`--spawn' creates Ghostel's buffer before calling `ghostel-exec',
+pins the active control-connection socket in a subprocess-local
+`HERDR_SOCKET_PATH' (without mutating Emacs's global
+`process-environment'), and prepares the buffer.  TAKEOVER adds
+`--takeover' to the attach argv.  The real `ghostel-exec' starts with
+`with-current-buffer' and therefore signals `No buffer named ...' when
+callers pass an uncreated name; pin both that precondition and the
+attach argv."
+  (let* ((buf-name "*agent:arch-ghostel*")
+         (conn (make-herdr--connection
+                :socket-path "/tmp/herdr-pinned.sock"))
+         (herdr--conn conn)
+         (global-before (copy-sequence process-environment))
+         ghostel-called pop-inhibited sub-env)
     (unwind-protect
         (cl-letf (((symbol-function 'ghostel-exec)
                    (lambda (buffer program &optional args)
@@ -356,7 +422,11 @@ both that precondition and the attach argv (TAKEOVER adds `--takeover')."
                                  (buffer-live-p buffer)
                                  (buffer-name buffer)
                                  program args)
-                           ghostel-called)))
+                           ghostel-called)
+                     ;; Capture the subprocess-local environment the
+                     ;; CLI inherits: `process-environment' is bound
+                     ;; by `--spawn' around this call.
+                     (setq sub-env (copy-sequence process-environment))))
                   ((symbol-function 'agent-fleet-attach--display)
                    (lambda (buffer)
                      (setq pop-inhibited
@@ -371,7 +441,11 @@ both that precondition and the attach argv (TAKEOVER adds `--takeover')."
     (should (equal buf-name (nth 2 (car ghostel-called))))
     (should (equal "herdr" (nth 3 (car ghostel-called))))
     (should (equal '("agent" "attach" "w4:p1" "--takeover")
-                   (nth 4 (car ghostel-called))))))
+                   (nth 4 (car ghostel-called))))
+    ;; The subprocess inherited a pinned HERDR_SOCKET_PATH...
+    (should (member "HERDR_SOCKET_PATH=/tmp/herdr-pinned.sock" sub-env))
+    ;; ...without mutating Emacs's global process-environment.
+    (should (equal global-before process-environment))))
 
 
 ;;; --- Presentation: same-window display ------------------------------
