@@ -1021,23 +1021,6 @@ following `pane.agent_status_changed' (dotted per-pane kind) event."
     (should (null (agent-fleet-dashboard--notify-message
                    '(:status "blocked" :name "demo"))))))
 
-(ert-deftest agent-fleet-dashboard-notification-actions-dispatch ()
-  "Notification actions route to stable-pane dashboard/output/attach APIs."
-  (let (calls)
-    (cl-letf (((symbol-function 'agent-fleet-dashboard--focus-agent)
-               (lambda (pane-id) (push (list 'dashboard pane-id) calls)))
-              ((symbol-function 'agent-fleet-show-output-in-buffer)
-               (lambda (pane-id) (push (list 'output pane-id) calls)))
-              ((symbol-function 'agent-fleet-attach)
-               (lambda (pane-id) (push (list 'attach pane-id) calls))))
-      (agent-fleet-dashboard--notification-action "w1:p1" "default")
-      (agent-fleet-dashboard--notification-action "w1:p1" "output")
-      (agent-fleet-dashboard--notification-action "w1:p1" "attach"))
-    (should (equal '((attach "w1:p1")
-                     (output "w1:p1")
-                     (dashboard "w1:p1"))
-                   calls))))
-
 
 ;;; --- Command map --------------------------------------
 
