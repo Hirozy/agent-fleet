@@ -1461,5 +1461,28 @@ variant leaves the view buffer alive; the kill variant kills it."
     (should switched)))
 
 
+;;; --- Action registry <-> dashboard sync ----------------------------
+
+(ert-deftest agent-fleet-action-registry-dashboard-sync ()
+  "Every registry action's dashboard (key.cmd) is a `--bindings' entry and a
+`--help' transient suffix carrying the registry label (no drift)."
+  (dolist (entry agent-fleet-action-registry)
+    (let* ((name (car entry))
+           (kc (plist-get (cdr entry) :dashboard))
+           (key (car kc))
+           (suffix (transient-get-suffix 'agent-fleet-dashboard-help key))
+           (cmd (cond ((vectorp suffix) (aref suffix 2))
+                      ((keywordp (cadr suffix))
+                       (plist-get (cdr suffix) :command))
+                      (t (plist-get (nth 2 suffix) :command))))
+           (label (cond ((vectorp suffix) (aref suffix 1))
+                         ((keywordp (cadr suffix))
+                          (plist-get (cdr suffix) :description))
+                         (t (plist-get (nth 2 suffix) :description)))))
+      (should (member kc agent-fleet-dashboard--bindings))
+      (should (eq cmd (cdr kc)))
+      (should (equal label (agent-fleet-action-label name))))))
+
+
 (provide 'agent-fleet-dashboard-test)
 ;;; agent-fleet-dashboard-test.el ends here

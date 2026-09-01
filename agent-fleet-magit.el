@@ -164,7 +164,7 @@ worktree agent, status opens on the worktree root; for a bare agent, the
 main repo root.  Cherry-pick, merge, and worktree deletion are then
 Magit's own keys inside the status buffer (use Magit public API, do not
 reinvent).  `user-error's if Magit is not installed."
-  (interactive (list (agent-fleet--read-agent-name "Magit status for agent")))
+  (interactive (list (agent-fleet-read-agent-name "Magit status for agent")))
   (agent-fleet-display--outcome-value
    (agent-fleet-magit--status-outcome target)))
 
@@ -178,7 +178,7 @@ agent name, pane id, symbol, or `herdr-agent' struct.  Signal a
 `user-error' when child frames are unsupported; there is no silent
 buffer fallback (use `agent-fleet-magit-status-in-buffer' for that).
 `user-error's if Magit is not installed."
-  (interactive (list (agent-fleet--read-agent-name "Magit status for agent")))
+  (interactive (list (agent-fleet-read-agent-name "Magit status for agent")))
   (require 'agent-fleet-display nil t)
   (agent-fleet-display--outcome-value
    (agent-fleet-display--aux-run
@@ -191,7 +191,7 @@ Opens `magit-diff-working-tree' scoped to TARGET's checkout -- the
 uncommitted changes the agent is making right now (HEAD vs working tree).
 The branch-vs-base review diff is reachable by opening Magit status (`m')
 and pressing `d' there.  `user-error's if Magit is not installed."
-  (interactive (list (agent-fleet--read-agent-name "Diff for agent")))
+  (interactive (list (agent-fleet-read-agent-name "Diff for agent")))
   (agent-fleet-display--outcome-value
    (agent-fleet-magit--diff-outcome target)))
 
@@ -205,7 +205,7 @@ or `herdr-agent' struct.  Signal a `user-error' when child frames are
 unsupported; there is no silent buffer fallback (use
 `agent-fleet-magit-diff-in-buffer' for that).  `user-error's if Magit is
 not installed."
-  (interactive (list (agent-fleet--read-agent-name "Diff for agent")))
+  (interactive (list (agent-fleet-read-agent-name "Diff for agent")))
   (require 'agent-fleet-display nil t)
   (agent-fleet-display--outcome-value
    (agent-fleet-display--aux-run
