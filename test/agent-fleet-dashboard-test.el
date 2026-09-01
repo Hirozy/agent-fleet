@@ -98,7 +98,7 @@ Columns: 0 Project, 1 Agent, 2 Kind, 3 State, 4 Task."
         (should-not (cadr entry))))))
 
 (ert-deftest agent-fleet-dashboard-reload-updates-existing-mode-map ()
-  "Reinstalling bindings repairs additions and removals in an older map."
+  "Reinstalling bindings repairs additions and changes in an older map."
   (let ((agent-fleet-mode-map (make-sparse-keymap)))
     (define-key agent-fleet-mode-map (kbd "RET")
                 #'agent-fleet-dashboard--inspect)
@@ -106,7 +106,9 @@ Columns: 0 Project, 1 Agent, 2 Kind, 3 State, 4 Task."
     (agent-fleet-dashboard--install-key-bindings)
     (should (eq #'agent-fleet-dashboard-help
                 (lookup-key agent-fleet-mode-map (kbd "h"))))
-    (should-not (lookup-key agent-fleet-mode-map (kbd "RET")))))
+    ;; RET was rebound from inspect to attach by the reinstall.
+    (should (eq #'agent-fleet-dashboard--attach
+                (lookup-key agent-fleet-mode-map (kbd "RET"))))))
 
 
 ;;; --- Display backends ----------------------------------------------
