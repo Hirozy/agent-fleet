@@ -253,21 +253,34 @@ Review the agent's changes before cleanup.
 
 ### Handing a task from the current buffer
 
-`M-x agent-fleet-prompt-dwim` builds a lightweight task reference from the
-current buffer and sends it to an agent:
+`M-x agent-fleet-prompt-dwim` hands the current buffer context to an agent:
 
 - the file path (relative to the agent's project root when possible);
 - the active region's line range;
 - the symbol near point;
-- the selected text, when the region is small (see
-  `agent-fleet-prompt-dwim-max-region-chars`).
+- the selected text, when the region is within
+  `agent-fleet-prompt-dwim-max-region-lines` and
+  `agent-fleet-prompt-dwim-max-region-chars`.
 
-It prefers an agent in the same Project as the buffer; when exactly one
-exists it is selected automatically. The built reference is pre-filled into
-`read-string` for review or editing, then submitted via `agent-fleet-prompt`.
-It does not save user files or copy an entire buffer by default — large
-regions are referenced by line range only so the agent reads the file
-directly from its working directory.
+The command first opens an agent completion list. It prefers agents in the
+same Project as the current buffer, and still requires an explicit selection
+when there is only one matching agent. If the buffer has no Project or no
+agent is associated with it, the completion falls back to all cached agents
+and says so in the minibuffer prompt/message. After selection, Agent Fleet
+attaches to the live terminal and opens the existing compose child frame with
+the reference prefilled. Append the task there and press `C-c C-c` to paste it
+into the terminal; Enter remains a separate, explicit submission step.
+When native child frames are unavailable, the context is instead pasted
+directly into the live attach terminal using bracketed paste, without Enter;
+finish the task in the terminal and submit it explicitly.
+
+The selected text is included only when it is at most
+`agent-fleet-prompt-dwim-max-region-lines` lines and
+`agent-fleet-prompt-dwim-max-region-chars` characters. The character limit is
+also a compatibility setting for configurations that predate the line limit,
+and protects against very large single-line selections. When either limit is
+exceeded, the file and line-range reference is retained and the selected text
+is omitted. It does not save user files or copy an entire buffer by default.
 
 ## Parallel tasks
 
@@ -519,6 +532,8 @@ groups; set them with `setq` or <kbd>M-x customize-group RET agent-fleet</kbd>.
 | `agent-fleet-wait-timeout-ms` | `120000` | Default timeout in ms for `agent-fleet-wait` and `-prompt-and-wait` |
 | `agent-fleet-default-wait-until` | `'(done blocked)` | Default statuses `wait`/`prompt-and-wait` wait for |
 | `agent-fleet-output-buffer-prefix` | `*Agent Output: ` | Prefix for output buffer names (buffer is `PREFIX<name>*`) |
+| `agent-fleet-prompt-dwim-max-region-lines` | `50` | Maximum selected-region lines included verbatim by `agent-fleet-prompt-dwim`; larger regions send reference-only context |
+| `agent-fleet-prompt-dwim-max-region-chars` | `4000` | Secondary character ceiling for selected text, retained for compatibility and very long single-line regions |
 
 ### Dashboard
 
