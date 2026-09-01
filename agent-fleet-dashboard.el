@@ -235,6 +235,32 @@ Blocked first (needs attention), then working, idle, done, unknown."
     ('done 3)
     (_ 4)))
 
+(defun agent-fleet-dashboard--agent-sort-p (a b)
+  "Return non-nil when agent A sorts before agent B in the dashboard.
+The ordering is shared by the rendered table and authoritative attention
+navigation so a jump remains predictable even when dashboard filters are
+active."
+  (let ((pa (agent-fleet-dashboard--status-priority
+             (agent-fleet-status a)))
+        (pb (agent-fleet-dashboard--status-priority
+             (agent-fleet-status b)))
+        (na (or (herdr-agent-display-name a) ""))
+        (nb (or (herdr-agent-display-name b) "")))
+    (or (< pa pb)
+        (and (= pa pb)
+             (or (string< na nb)
+                 (and (string= na nb)
+                      (string< (or (herdr-agent-id a) "")
+                               (or (herdr-agent-id b) ""))))))))
+
+(defun agent-fleet-dashboard--sorted-agents (&rest args)
+  "Return AGENTS sorted in dashboard order.
+When omitted, AGENTS defaults to all cached agents; an explicitly passed nil
+therefore sorts to an empty list.  The input is copied before sorting."
+  (let ((agents (if args (car args) (herdr-agents))))
+    (sort (copy-sequence agents)
+          #'agent-fleet-dashboard--agent-sort-p)))
+
 (defun agent-fleet-dashboard--entry (agent)
   "Build one `tabulated-list-entries' row for AGENT.
 Returns (PANE-ID . [Project Agent Kind State Task])."
@@ -265,6 +291,14 @@ nil when no task filter is active; otherwise `Parallel task: {title} —
 aggregate state tracks each status event (event-driven, no polling).
 Shown in the mode line rather than the header line so the tabulated-list
 column headers (set by `tabulated-list-init-header') are preserved.")
+
+(defvar-local agent-fleet-dashboard--connection-banner nil
+  "Mode-line segment string for the Herdr connection state.
+nil when connected (no banner — the healthy case).  Otherwise one of:
+` ⚠ Reconnecting (n/max)… ', ` ✗ Connection lost — M-x herdr-connect ',
+or ` Disconnected '.  Refreshed from `agent-fleet-dashboard--refresh'
+and from `agent-fleet-connection-state-changed-hook' (event-driven, no
+polling).  Shown in the mode line alongside the task banner.")
 
 (defvar-local agent-fleet-dashboard--focus-project nil
   "Canonical project root to group at the top of the dashboard, or nil.
@@ -304,29 +338,21 @@ separator line and other agents below it.  Returns nil when not connected
          (pfilter agent-fleet-dashboard--project-filter)
          (tfilter agent-fleet-dashboard--task-filter)
          (fproj agent-fleet-dashboard--focus-project)
-         (visible (cl-remove-if-not
-                   (lambda (a)
-                     (let ((pid (herdr-agent-id a)))
-                       (and (or (null pfilter)
-                                (let ((r (agent-fleet-project-for-agent a)))
-                                  (and r (string= r pfilter))))
-                            (or (null tfilter)
-                                (when-let* ((task (agent-fleet-task-for-agent pid)))
-                                  (equal (agent-fleet-task-id task) tfilter))))))
-                   agents))
-         (sort-fn (lambda (a b)
-                    (let ((pa (agent-fleet-dashboard--status-priority
-                               (agent-fleet-status a)))
-                          (pb (agent-fleet-dashboard--status-priority
-                               (agent-fleet-status b))))
-                      (or (< pa pb)
-                          (and (= pa pb)
-                               (string< (or (herdr-agent-display-name a) "")
-                                        (or (herdr-agent-display-name b) ""))))))))
+         (visible
+          (cl-remove-if-not
+           (lambda (a)
+             (let ((pid (herdr-agent-id a)))
+               (and (or (null pfilter)
+                        (let ((r (agent-fleet-project-for-agent a)))
+                          (and r (string= r pfilter))))
+                    (or (null tfilter)
+                        (when-let* ((task (agent-fleet-task-for-agent pid)))
+                          (equal (agent-fleet-task-id task) tfilter))))))
+           agents)))
     (if (null fproj)
         ;; No focus project: flat sort, current behavior.
         (mapcar #'agent-fleet-dashboard--entry
-                (sort (copy-sequence visible) sort-fn))
+                (agent-fleet-dashboard--sorted-agents visible))
       ;; Focus project: partition into same-project and others, each sorted,
       ;; with a separator entry between them.
       (let (same other)
@@ -335,10 +361,14 @@ separator line and other agents below it.  Returns nil when not connected
                 (and r (string= r fproj)))
               (push a same)
             (push a other)))
-        (let ((sorted-same (mapcar #'agent-fleet-dashboard--entry
-                                   (sort (nreverse same) sort-fn)))
-              (sorted-other (mapcar #'agent-fleet-dashboard--entry
-                                    (sort (nreverse other) sort-fn))))
+        (let ((sorted-same
+               (mapcar #'agent-fleet-dashboard--entry
+                       (agent-fleet-dashboard--sorted-agents
+                        (nreverse same))))
+              (sorted-other
+               (mapcar #'agent-fleet-dashboard--entry
+                       (agent-fleet-dashboard--sorted-agents
+                        (nreverse other)))))
           (if (and sorted-same sorted-other)
               (append sorted-same
                       (list (agent-fleet-dashboard--separator-row))
@@ -364,22 +394,87 @@ hooks fire."
     (agent-fleet--ensure-connected)
     (agent-fleet-list t))
   (agent-fleet-dashboard--set-entries)
+  (agent-fleet-dashboard--update-connection-banner)
   (agent-fleet-dashboard--update-task-banner)
   (tabulated-list-print t))
+
+(defun agent-fleet-dashboard--goto-id (id)
+  "Move point to the dashboard row whose id is ID, refreshing `hl-line'.
+Returns non-nil when a matching row was found, nil otherwise (leaving
+point at `point-min' in the not-found case)."
+  (goto-char (point-min))
+  (let (found)
+    (while (and (not found) (not (eobp)))
+      (if (equal (tabulated-list-get-id) id)
+          (setq found t)
+        (forward-line 1)))
+    (when (bound-and-true-p hl-line-mode)
+      (hl-line-highlight))
+    found))
 
 (defun agent-fleet-dashboard--position-on-highlight ()
   "Move point to the highlighted agent's row and refresh `hl-line'."
   (when agent-fleet-dashboard--highlighted-agent
-    (goto-char (point-min))
-    (let ((id agent-fleet-dashboard--highlighted-agent)
-          (found nil))
-      (while (and (not found)
-                  (not (eobp)))
-        (if (equal (tabulated-list-get-id) id)
-            (setq found t)
-          (forward-line 1))))
-    (when (bound-and-true-p hl-line-mode)
-      (hl-line-highlight))))
+    (agent-fleet-dashboard--goto-id
+     agent-fleet-dashboard--highlighted-agent)))
+
+
+(defun agent-fleet-dashboard--next-needs-attention (&optional include-done)
+  "Move point to the next agent needing attention, wrapping past point.
+Needs attention = an agent in the `blocked' state; with non-nil
+INCLUDE-DONE, `done' agents also qualify.  Scans all authoritative cached
+agents in dashboard order, not just the currently displayed rows, so active
+Project/task filters cannot hide a blocked agent.  When the selected agent
+is hidden by a filter, clears the incompatible filters before positioning
+point.  Lands point on the first qualifying row and refreshes `hl-line';
+messages and returns nil when none qualify (or the list is empty).  Returns
+the pane id landed on otherwise."
+  (interactive "P")
+  (let* ((agents (agent-fleet-dashboard--sorted-agents))
+         (entries (mapcar #'herdr-agent-id agents))
+         (n (length entries))
+         (cur (tabulated-list-get-id))
+         (start (or (and cur (cl-position cur entries :test #'equal)) -1))
+         (found nil))
+    (catch 'done
+      (dotimes (i n)
+        (let ((id (nth (mod (+ start 1 i) n) entries)))
+          (when (and id
+                     (agent-fleet-dashboard--attention-p id include-done))
+            (setq found id)
+            (throw 'done t)))))
+    (if found
+        (progn
+          ;; Keep the rendered table in sync with the authoritative cache
+          ;; before positioning.  A status event can update the model while
+          ;; this buffer has not yet been rendered (for example when it has
+          ;; no live window), so an absent row is not necessarily filtered.
+          (unless (assoc found tabulated-list-entries)
+            (agent-fleet-dashboard--refresh))
+          ;; A target still outside the Project/task intersection cannot be
+          ;; selected until those filters are cleared.  Preserve filters
+          ;; when the target is visible, but reveal it otherwise.
+          (unless (assoc found tabulated-list-entries)
+            (when (or agent-fleet-dashboard--project-filter
+                      agent-fleet-dashboard--task-filter)
+              (setq agent-fleet-dashboard--project-filter nil
+                    agent-fleet-dashboard--task-filter nil)
+              (agent-fleet-dashboard--refresh)))
+          (agent-fleet-dashboard--goto-id found)
+          (message "agent-fleet: %s needs attention"
+                   (let ((a (agent-fleet--find-agent found)))
+                     (or (and a (herdr-agent-display-name a)) found)))
+          found)
+      (message "agent-fleet: no agents need attention")
+      nil)))
+
+(defun agent-fleet-dashboard--attention-p (pane-id include-done)
+  "Return non-nil when pane-id's agent needs attention.
+`blocked' always qualifies; `done' qualifies when INCLUDE-DONE is
+non-nil.  Returns nil for an unknown agent."
+  (let ((s (agent-fleet-status (agent-fleet--find-agent pane-id))))
+    (or (eq s 'blocked)
+        (and include-done (eq s 'done)))))
 
 
 ;;; --- Row actions --------------------------------------
@@ -496,6 +591,29 @@ then show in the mode line via `agent-fleet-dashboard--task-banner'."
           (setq agent-fleet-dashboard--task-filter task-id)
           (agent-fleet-dashboard--refresh)
           (message "agent-fleet: filtered to %s" sel))))))
+
+(defun agent-fleet-dashboard--update-connection-banner ()
+  "Set the connection-banner mode-line segment from the live state.
+nil (no banner) when connected; otherwise a short, face-propertized
+status string.  Called from `agent-fleet-dashboard--refresh' and from
+the connection-state-changed hook, so the banner tracks transitions
+without a polling timer.  The attempt count is shown only while
+reconnecting."
+  (setq agent-fleet-dashboard--connection-banner
+        (pcase (agent-fleet-connection-state)
+          ('connected nil)
+          ('reconnecting
+           (let ((n (and herdr--conn
+                         (herdr--connection-reconnect-attempts herdr--conn))))
+             (propertize
+              (format " ⚠ Reconnecting (%s/%s)… "
+                      (or n "?") herdr-reconnect-max-attempts)
+              'face 'warning)))
+          ('disconnected
+           (propertize " Disconnected — M-x herdr-connect "
+                       'face 'error))
+          (_ nil)))
+  (force-mode-line-update))
 
 (defun agent-fleet-dashboard--update-task-banner ()
   "Set the task-filter mode-line segment from the live aggregate state.
@@ -640,6 +758,7 @@ Unlike the row actions, this does not act on the agent at point."
     ("r"   "Rename" agent-fleet-dashboard--rename)]
    ["View / Filter"
     ("g" "Refresh from server" agent-fleet-dashboard--refresh)
+    ("!" "Next agent needing attention" agent-fleet-dashboard--next-needs-attention)
     ("P" "Toggle project filter" agent-fleet-dashboard--toggle-project-filter)
     ("T" "Toggle task filter" agent-fleet-dashboard--toggle-task-filter)]
    ["Worktree / Git"
@@ -661,6 +780,7 @@ Unlike the row actions, this does not act on the agent at point."
     ("m"   . agent-fleet-dashboard--magit)
     ("a"   . agent-fleet-dashboard--attach)
     ("N"   . agent-fleet-dashboard--new)
+    ("!"   . agent-fleet-dashboard--next-needs-attention)
     ("h"   . agent-fleet-dashboard-help)
     ("q"   . agent-fleet-dashboard--quit))
   "Documented action key bindings for `agent-fleet-mode'.")
@@ -741,7 +861,9 @@ narrows the list to one parallel task's agents and shows that task's title
   ;; NOT the header line — `tabulated-list-init-header'
   ;; owns header-line-format for the column headers.
   (setq mode-line-format
-        (append mode-line-format '(agent-fleet-dashboard--task-banner)))
+        (append mode-line-format
+                '(agent-fleet-dashboard--connection-banner
+                  agent-fleet-dashboard--task-banner)))
   (add-hook 'tabulated-list-revert-hook #'agent-fleet-dashboard--set-entries nil t)
   (tabulated-list-init-header)
   (hl-line-mode 1))
@@ -994,6 +1116,40 @@ read from SRC but set in the dashboard buffer (the current buffer)."
       (agent-fleet-dashboard--position-on-highlight))
     buffer))
 
+(defun agent-fleet-dashboard--select-buffer-window (buffer)
+  "Select the existing window displaying BUFFER, across all live frames.
+Return the selected window, or nil when BUFFER is not currently visible.
+The helper also focuses a child or standalone frame so commands invoked from
+desktop notification callbacks visibly land on the dashboard."
+  (when-let* ((window (get-buffer-window buffer t))
+              (frame (window-frame window)))
+    (select-window window)
+    (when (frame-live-p frame)
+      (select-frame-set-input-focus frame))
+    window))
+
+(defun agent-fleet-dashboard--focus-agent (pane-id)
+  "Open/select the dashboard and reveal the row for PANE-ID.
+This is shared by attention navigation and desktop notification actions.
+If active filters hide PANE-ID, they are cleared before the row is selected."
+  (agent-fleet--ensure-connected)
+  (let* ((buffer (get-buffer agent-fleet-dashboard-buffer-name))
+         (window (and buffer
+                      (get-buffer-window buffer t))))
+    (unless window
+      (setq buffer (agent-fleet-dashboard--open agent-fleet-dashboard-display)
+            window (get-buffer-window buffer t)))
+    (when window
+      (agent-fleet-dashboard--select-buffer-window buffer))
+    (with-current-buffer buffer
+      (unless (assoc pane-id tabulated-list-entries)
+        (when (or agent-fleet-dashboard--project-filter
+                  agent-fleet-dashboard--task-filter)
+          (setq agent-fleet-dashboard--project-filter nil
+                agent-fleet-dashboard--task-filter nil)
+          (agent-fleet-dashboard--refresh)))
+      (agent-fleet-dashboard--goto-id pane-id))))
+
 ;;;###autoload
 (defun agent-fleet ()
   "Open the agent-fleet dashboard.
@@ -1038,7 +1194,13 @@ the project filter so only same-Project agents are shown.  The existing
 list renderer is reused (no separate buffer or rendering logic).
 Signal a `user-error' when AGENT has no resolvable Project."
   (interactive
-   (list (agent-fleet--read-agent-name "List same-Project agents for")))
+   (progn
+     ;; Candidate readers inspect the cache, so connect before the first
+     ;; minibuffer prompt.  The body still ensures connectivity for callers
+     ;; that invoke the command non-interactively.
+     (agent-fleet--ensure-connected)
+     (list (agent-fleet--read-agent-name "List same-Project agents for"))))
+  (agent-fleet--ensure-connected)
   (let* ((struct (or (agent-fleet--find-agent agent)
                      (signal 'agent-fleet-target-not-found
                              (list :agent agent))))
@@ -1048,10 +1210,33 @@ Signal a `user-error' when AGENT has no resolvable Project."
                   (herdr-agent-display-name struct)))
     (let ((buffer (agent-fleet-dashboard--open agent-fleet-dashboard-display)))
       (with-current-buffer buffer
+        ;; This command promises the complete same-Project set.  A prior
+        ;; task filter is an incompatible intersection and could hide the
+        ;; selected agent or its Project peers, so clear it explicitly.
+        (setq-local agent-fleet-dashboard--task-filter nil)
         (setq-local agent-fleet-dashboard--project-filter root)
         (agent-fleet-dashboard--refresh)
         (agent-fleet-dashboard--position-on-highlight))
       buffer)))
+
+;;;###autoload
+(defun agent-fleet-next-needs-attention (&optional include-done)
+  "Select the dashboard and jump to the next agent needing attention.
+Needs attention = an agent in the `blocked' state; with a prefix arg,
+`done' agents also qualify.  Opens the dashboard (per
+`agent-fleet-dashboard-display') when it is not already visible, then
+advances point to the next qualifying row, wrapping past the current
+row.  Messages \"no agents need attention\" when none qualify — handy as
+a one-key way to confirm nothing is blocked."
+  (interactive "P")
+  (agent-fleet--ensure-connected)
+  (let* ((buffer (get-buffer agent-fleet-dashboard-buffer-name))
+         (window (and buffer (get-buffer-window buffer t))))
+    (unless window
+      (setq buffer (agent-fleet-dashboard--open agent-fleet-dashboard-display)))
+    (agent-fleet-dashboard--select-buffer-window buffer)
+    (with-current-buffer buffer
+      (agent-fleet-dashboard--next-needs-attention include-done))))
 
 (defun agent-fleet-dashboard--quit ()
   "Close the dashboard's current display container.
@@ -1100,14 +1285,60 @@ the gating logic is testable without intercepting `message'."
                       "agent")))
         (format "agent-fleet: %s → %s" name status)))))
 
+(defun agent-fleet-dashboard--notification-actions-supported-p ()
+  "Return non-nil when the desktop notification server supports actions.
+The `notifications' library remains optional and capability probing is
+guarded because headless sessions and unavailable D-Bus servers may signal."
+  (and (require 'notifications nil t)
+       (fboundp 'notifications-notify)
+       (fboundp 'notifications-get-capabilities)
+       (condition-case nil
+           (memq :actions (notifications-get-capabilities))
+         (error nil))))
+
+(defun agent-fleet-dashboard--notification-action (pane-id action)
+  "Handle ACTION for the notification associated with PANE-ID.
+Actions use stable pane identity and delegate to the same public Fleet
+operations as dashboard rows.  Failures are reported as a message because
+the callback runs asynchronously outside the original command context."
+  (condition-case err
+      (pcase action
+        ((or "default" "dashboard")
+         (agent-fleet-dashboard--focus-agent pane-id))
+        ("output"
+         (agent-fleet-show-output-in-buffer pane-id))
+        ("attach"
+         (agent-fleet-attach pane-id))
+        (_ (message "agent-fleet: unknown notification action %s" action)))
+    (error
+     (message "agent-fleet notification action failed: %s"
+              (error-message-string err)))))
+
 (defun agent-fleet-dashboard--notify (descriptor)
   "Notify on a blocked/done transition when gated by `agent-fleet-notify-on'.
-Emits `message' and, when available, a desktop notification."
+Emits `message' and, when available, a desktop notification.  Desktop
+actions (dashboard, output, attach) are included only when the notification
+server advertises `:actions'; otherwise the existing message-only desktop
+notification is retained."
   (when-let* ((msg (agent-fleet-dashboard--notify-message descriptor)))
     (message "%s" msg)
-    (when (fboundp 'notifications-notify)
-      (ignore-errors
-        (notifications-notify :title "agent-fleet" :body msg)))))
+    (when (and (require 'notifications nil t)
+               (fboundp 'notifications-notify))
+      (let ((pane-id (or (plist-get descriptor :pane-id)
+                         (plist-get descriptor :id))))
+        (ignore-errors
+          (if (and pane-id
+                   (agent-fleet-dashboard--notification-actions-supported-p))
+              (notifications-notify
+               :title "agent-fleet"
+               :body msg
+               :actions '("default" "Open dashboard"
+                           "output" "Open output"
+                           "attach" "Attach terminal")
+               :on-action
+               (lambda (_notification-id action)
+                 (agent-fleet-dashboard--notification-action pane-id action)))
+            (notifications-notify :title "agent-fleet" :body msg)))))))
 
 
 ;;; --- Setup ----------------------------------------------------------
@@ -1136,6 +1367,10 @@ notifications into the blocked/done hooks.  Safe to call repeatedly."
                 agent-fleet-synced-hook)
     (add-hook 'agent-fleet-synced-hook
               #'agent-fleet-dashboard--on-event))
+  (unless (memq #'agent-fleet-dashboard--on-event
+                agent-fleet-connection-state-changed-hook)
+    (add-hook 'agent-fleet-connection-state-changed-hook
+              #'agent-fleet-dashboard--on-event))
   (unless (memq #'agent-fleet-dashboard--notify
                 agent-fleet-agent-blocked-hook)
     (add-hook 'agent-fleet-agent-blocked-hook
@@ -1159,7 +1394,8 @@ The package binds NO global keys."
   "s" #'agent-fleet-start
   "p" #'agent-fleet-prompt
   "o" #'agent-fleet-show-output-in-buffer
-  "i" #'agent-fleet-interrupt)
+  "i" #'agent-fleet-interrupt
+  "!" #'agent-fleet-next-needs-attention)
 
 
 

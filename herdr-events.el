@@ -153,9 +153,12 @@ descriptor plist (:event :what :id :status ...).")
 descriptor plist, whose :id is the worktree `path' (the canonical key).")
 
 (defvar herdr-event-agent-status-hook nil
-  "Hook run when an agent's status changes.  Receives the descriptor
-plist, whose :status is the new Herdr agent status
-(idle/working/blocked/done/unknown).")
+  "Hook run when an agent's status actually changes.  Receives the
+descriptor plist, whose :status is the new Herdr agent status
+(idle/working/blocked/done/unknown), :previous-status is the prior value,
+and :changed-p is non-nil.  Duplicate/replayed status frames still reach
+the catch-all hook but are suppressed here so transition consumers do not
+repeat side effects.")
 
 (defun herdr-events-dispatch (kind data)
   "Reconcile one pushed event into the cache and run event hooks.
@@ -180,7 +183,8 @@ Returns the descriptor, or nil if there is no live cache to update."
           ((or :worktree-created :worktree-opened :worktree-removed)
            (run-hook-with-args 'herdr-event-worktree-hook descriptor))
           (:agent-status
-           (run-hook-with-args 'herdr-event-agent-status-hook descriptor))
+           (when (plist-get descriptor :changed-p)
+             (run-hook-with-args 'herdr-event-agent-status-hook descriptor)))
           (_ nil))
         ;; A workspace/tab close can remove several agent panes without the
         ;; server necessarily delivering separate pane_closed frames first.

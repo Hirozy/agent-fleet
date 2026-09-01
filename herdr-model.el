@@ -316,8 +316,9 @@ PATH is the canonical key.  BRANCH is nil for a detached worktree."
 ;; Each handler mutates the session's hash tables in place and returns a
 ;; descriptor plist describing what changed, for the local event bus.
 ;; The descriptor shape is (:event KIND :what SYMBOL :id ID :status
-;; STATUS-OR-NIL).  Unknown event kinds return a no-op descriptor so the
-;; bus can still route them to a catch-all hook.
+;; STATUS-OR-NIL), with :previous-status and :changed-p on status events.
+;; Unknown event kinds return a no-op descriptor so the bus can still route
+;; them to a catch-all hook.
 
 (defun herdr-model--remove-pane-cascade (session pane-id)
   "Remove PANE-ID and its agent from SESSION and remember it as gone."
@@ -693,7 +694,13 @@ DATA is the decoded event payload plist.  Returns a descriptor plist
             (display (plist-get data :display_agent))
             (state-labels (plist-get data :state_labels))
             (cached (herdr-model-find-agent session pid))
-            (pn (herdr-model-find-pane session pid)))
+            (pn (herdr-model-find-pane session pid))
+            (old-status (and cached (herdr-agent-agent-status cached)))
+            ;; A status frame without a status is a partial patch, not a
+            ;; transition.  Duplicate/replayed frames with the same value
+            ;; are likewise observable through the catch-all hook but must
+            ;; not trigger transition consumers or notifications.
+            (changed-p (and status (not (equal old-status status)))))
        ;; A per-pane status frame can race ahead of the global detection
        ;; event after subscribe.  If it identifies an agent kind, create a
        ;; minimal AgentInfo projection instead of dropping the only status
@@ -719,7 +726,8 @@ DATA is the decoded event payload plist.  Returns a descriptor plist
        (when pn
          (when status  (setf (herdr-pane-agent-status pn) status))
          (when ag-kind (setf (herdr-pane-agent pn) ag-kind)))
-       `(:event ,kind :what :agent-status :id ,pid :status ,status)))
+       `(:event ,kind :what :agent-status :id ,pid :status ,status
+         :previous-status ,old-status :changed-p ,changed-p)))
     ("layout_updated"
      `(:event ,kind :what :layout :id nil))
     (_
