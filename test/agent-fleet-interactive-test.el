@@ -74,6 +74,7 @@
     (agent-fleet-dashboard-open-child-frame . agent-fleet-interactive-dashboard-display-backends)
     (agent-fleet-dashboard-open-frame . agent-fleet-interactive-dashboard-display-backends)
     (agent-fleet-list-project-agents . agent-fleet-interactive-list-project-agents)
+    (agent-fleet-next-needs-attention . agent-fleet-interactive-next-needs-attention)
     (agent-fleet-dashboard-aux-quit . agent-fleet-interactive-aux-child-frame))
   "Public commands: standalone M-x entry points with autoload and docs.")
 
@@ -107,6 +108,7 @@
     (agent-fleet-dashboard--diff . agent-fleet-interactive-dashboard-row-actions)
     (agent-fleet-dashboard--magit . agent-fleet-interactive-dashboard-row-actions)
     (agent-fleet-dashboard--attach . agent-fleet-interactive-dashboard-row-actions)
+    (agent-fleet-dashboard--next-needs-attention . agent-fleet-interactive-dashboard-next-needs-attention)
     (agent-fleet-dashboard--new . agent-fleet-interactive-dashboard-row-actions))
   "Context commands: dashboard row actions and attach-buffer wrappers.")
 
@@ -448,6 +450,23 @@ the unfiltered reader."
                 ((symbol-function 'agent-fleet-prompt) #'ignore))
         (call-interactively #'agent-fleet-prompt-dwim)
         (should read-called))))
+
+(ert-deftest agent-fleet-interactive-prompt-dwim-connects-before-candidates ()
+  "Prompt DWIM establishes an on-demand connection before reading candidates.
+This protects a first invocation with an empty cache from failing before the
+interactive target reader gets a chance to see the freshly connected agents."
+  (let (calls)
+    (cl-letf (((symbol-function 'agent-fleet--ensure-connected)
+               (lambda () (setq calls (append calls '(ensure)))))
+              ((symbol-function 'agent-fleet-prompt-dwim--read-agent)
+               (lambda () (setq calls (append calls '(read-agent))) "w1:p1"))
+              ((symbol-function 'agent-fleet--find-agent)
+               (lambda (_) nil))
+              ((symbol-function 'read-string)
+               (lambda (&rest _) (setq calls (append calls '(read-task))) "")))
+      (with-temp-buffer
+        (call-interactively #'agent-fleet-prompt-dwim)))
+    (should (equal '(ensure read-agent ensure read-task) calls))))
 
 (ert-deftest agent-fleet-interactive-wait-and-input ()
   "Wait/send-keys/interrupt consume minibuffer input and dispatch correctly.
@@ -1317,7 +1336,9 @@ resolvable project signals a `user-error'."
                (lambda (display)
                  (setq opened-display display)
                  (let ((buf (generate-new-buffer " *af-project-list*")))
-                   (with-current-buffer buf (agent-fleet-mode))
+                   (with-current-buffer buf
+                     (agent-fleet-mode)
+                     (setq-local agent-fleet-dashboard--task-filter "stale-task"))
                    buf)))
               ((symbol-function 'agent-fleet-dashboard--refresh)
                (lambda (&optional _from-server) (setq refreshed t)))
@@ -1329,6 +1350,7 @@ resolvable project signals a `user-error'."
         (should (eq agent-fleet-dashboard-display opened-display))
         (should (equal "/repo"
                        (buffer-local-value 'agent-fleet-dashboard--project-filter buf)))
+        (should-not (buffer-local-value 'agent-fleet-dashboard--task-filter buf))
         (should refreshed)
         (should positioned)
         (kill-buffer buf)))
@@ -1347,6 +1369,57 @@ resolvable project signals a `user-error'."
           (should (string-match-p "not associated with an Emacs project"
                                   (cadr err))))
         (should-not called-open)))))
+
+(ert-deftest agent-fleet-interactive-next-needs-attention ()
+  "`agent-fleet-next-needs-attention' opens the dashboard when it is not
+already visible, then delegates to the row navigator.  Stubs isolate it
+from the live connection and rendering; the row navigator itself is
+covered by the dashboard tests."
+  (let (opened called-with)
+    (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+              ((symbol-function 'agent-fleet-dashboard--open)
+               (lambda (display)
+                 (setq opened display)
+                 (let ((buf (get-buffer-create agent-fleet-dashboard-buffer-name)))
+                   (with-current-buffer buf (agent-fleet-mode))
+                   buf)))
+              ((symbol-function 'agent-fleet-dashboard--next-needs-attention)
+               (lambda (&optional include-done)
+                 (setq called-with include-done))))
+      (unwind-protect
+          (progn
+            ;; No live dashboard window -> the command opens one, then
+            ;; navigates.  No prefix arg -> INCLUDE-DONE is nil.
+            (call-interactively #'agent-fleet-next-needs-attention)
+            (should (eq agent-fleet-dashboard-display opened))
+            (should (null called-with)))
+        (when (get-buffer agent-fleet-dashboard-buffer-name)
+          (kill-buffer agent-fleet-dashboard-buffer-name))))))
+
+(ert-deftest agent-fleet-interactive-dashboard-next-needs-attention ()
+  "The dashboard `!' row command advances point to the next blocked
+agent.  Stubs isolate it from the rendered buffer: the entries list is
+faked, `agent-fleet-status' picks out the blocked pane, and `--goto-id'
+captures the target instead of walking a non-printed buffer."
+  (let (goto)
+    (cl-letf (((symbol-function 'agent-fleet-status)
+               (lambda (agent)
+                 (let ((id (and (herdr-agent-p agent) (herdr-agent-id agent))))
+                   (when (equal id "w1:p2") 'blocked))))
+              ((symbol-function 'herdr-agents)
+               (lambda ()
+                 (list (make-herdr-agent :id "w1:p1" :name "one")
+                       (make-herdr-agent :id "w1:p2" :name "two"))))
+              ((symbol-function 'agent-fleet--find-agent)
+               (lambda (id) (make-herdr-agent :id id :name id)))
+              ((symbol-function 'agent-fleet-dashboard--goto-id)
+               (lambda (id) (push id goto))))
+      (with-temp-buffer
+        (let ((tabulated-list-entries
+               (list (list "w1:p1" (vector "" "" "" "" ""))
+                     (list "w1:p2" (vector "" "" "" "" "")))))
+          (call-interactively #'agent-fleet-dashboard--next-needs-attention))
+        (should (equal '("w1:p2") goto))))))
 
 (ert-deftest agent-fleet-interactive-dashboard-row-actions ()
   "Every dashboard row command resolves point, reads input and delegates once."

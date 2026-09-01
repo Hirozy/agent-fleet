@@ -32,6 +32,23 @@
     (call-process "git" nil nil nil "init" "--quiet" dir)
     dir))
 
+(defun agent-fleet-project-test--add-linked-worktree (repo)
+  "Create and return a detached linked worktree for REPO.
+REPO receives one empty commit so Git has a revision to attach to the
+worktree.  The caller owns cleanup of the returned directory and REPO."
+  (let ((worktree (make-temp-name
+                   (expand-file-name "af-linked-" temporary-file-directory))))
+    (should (eq 0 (process-file
+                   "git" nil nil nil "-C" repo
+                   "-c" "user.name=Agent Fleet Test"
+                   "-c" "user.email=agent-fleet@example.invalid"
+                   "-c" "commit.gpgSign=false"
+                   "commit" "--quiet" "--allow-empty" "-m" "initial")))
+    (should (eq 0 (process-file "git" nil nil nil "-C" repo
+                                "worktree" "add" "--quiet" "--detach"
+                                worktree "HEAD")))
+    worktree))
+
 (defun agent-fleet-project-test--goto-row (pane-id)
   "Move point to the dashboard row for PANE-ID; return non-nil if found.
 The dashboard is in `*Agent Fleet*'.  Robust to sort order."
@@ -154,6 +171,79 @@ of one repo would all match."
             (should (cl-some (lambda (ag) (equal "w1:p4" (herdr-agent-id ag))) b))))
       (when (file-exists-p repo-a) (delete-directory repo-a t))
       (when (file-exists-p repo-b) (delete-directory repo-b t)))))
+
+(ert-deftest agent-fleet-project-agents-normalizes-linked-worktree-root ()
+  "An explicit linked-worktree root matches agents in the source checkout.
+The project query must normalize a project.el/explicit root with the same
+Git common-root rule used for each agent cwd."
+  (let* ((repo (agent-fleet-project-test--make-git-repo))
+         (worktree nil))
+    (unwind-protect
+        (progn
+          (setq worktree
+                (agent-fleet-project-test--add-linked-worktree repo))
+          (with-agent-fleet-mock path server
+            (herdr-mock-create-pane
+             server `(:pane_id "w1:p2" :workspace_id "w1" :agent "claude"
+                       :agent_status "idle" :name "source"
+                       :cwd ,repo :terminal_id "term_p2" :tab_id "w1:t1"
+                       :focused nil :revision 0))
+            (herdr-mock-create-pane
+             server `(:pane_id "w1:p3" :workspace_id "w2" :agent "codex"
+                       :agent_status "idle" :name "linked"
+                       :cwd ,worktree :terminal_id "term_p3" :tab_id "w1:t1"
+                       :focused nil :revision 0))
+            (agent-fleet-test--pump)
+            (let ((agents (agent-fleet-project-agents worktree)))
+              (should (= 2 (length agents)))
+              (should (equal '("w1:p2" "w1:p3")
+                             (sort (mapcar #'herdr-agent-id agents)
+                                   #'string<))))))
+      (when (and worktree (file-exists-p worktree))
+        (delete-directory worktree t))
+      (when (file-exists-p repo) (delete-directory repo t)))))
+
+(ert-deftest agent-fleet-prompt-dwim-prefers-and-disambiguates-linked-agents ()
+  "Prompt DWIM offers both same-Project linked-worktree agents distinctly.
+The completion collection is built from public candidate descriptors, so two
+agents with the same name can still be selected independently."
+  (let* ((repo (agent-fleet-project-test--make-git-repo))
+         (worktree nil)
+         choices)
+    (unwind-protect
+        (progn
+          (setq worktree
+                (agent-fleet-project-test--add-linked-worktree repo))
+          (with-agent-fleet-mock path server
+            (herdr-mock-create-pane
+             server `(:pane_id "w1:p2" :workspace_id "w1" :agent "claude"
+                       :agent_status "idle" :name "same"
+                       :cwd ,repo :terminal_id "term_p2" :tab_id "w1:t1"
+                       :focused nil :revision 0))
+            (herdr-mock-create-pane
+             server `(:pane_id "w1:p3" :workspace_id "w2" :agent "codex"
+                       :agent_status "idle" :name "same"
+                       :cwd ,worktree :terminal_id "term_p3" :tab_id "w1:t1"
+                       :focused nil :revision 0))
+            (agent-fleet-test--pump)
+            (cl-letf (((symbol-function 'agent-fleet-project-current)
+                       (lambda () worktree))
+                      ((symbol-function 'completing-read)
+                       (lambda (_prompt collection &rest _)
+                         (setq choices collection)
+                         ;; Select the second disambiguated candidate.  The
+                         ;; real `completing-read' returns its display string,
+                         ;; not the alist cons cell.
+                         (car (cadr collection)))))
+              (should (equal "w1:p3"
+                             (agent-fleet-prompt-dwim--read-agent))))
+            (should (= 2 (length choices)))
+            (should-not (equal (car choices) (cadr choices)))
+            (should (string-match-p "w1:p2" (car (car choices))))
+            (should (string-match-p "w1:p3" (car (cadr choices))))))
+      (when (and worktree (file-exists-p worktree))
+        (delete-directory worktree t))
+      (when (file-exists-p repo) (delete-directory repo t)))))
 
 (ert-deftest agent-fleet-project-workspace-for-root ()
   "`--workspace-for-root' finds the workspace hosting a project's agent."
@@ -367,24 +457,25 @@ between it and POINT-POS.  The buffer is not selected for display."
       (when (file-exists-p dir) (delete-directory dir t)))))
 
 (ert-deftest agent-fleet-prompt-dwim-context-region-and-text ()
-  "Small region: line range + symbol + verbatim text."
+  "Small region: line range + selected text, without an outside symbol."
   (let* ((dir (make-temp-file "af-dwim" t))
          (root (file-truename dir))
          (content "alpha\nbeta\ngamma\n")
          (buf (agent-fleet-project-test--with-context-buffer
                dir "src.el" content 2 1))
          (transient-mark-mode t))
-    ;; point on 'b' (beta, pos 7), mark at 'a' (pos 1) — region covers lines 1-2.
-    ;; symbol at point: thing-at-point 'symbol on "beta" gives "beta".
+    ;; Point at the start of "beta" (pos 7), mark at 'a' (pos 1) — the
+    ;; exclusive endpoint is the next line start, so the selection is line 1
+    ;; only and must not attach metadata for the unselected "beta" symbol.
     (unwind-protect
         (with-current-buffer buf
-          (goto-char 7)            ; start of "beta"
+          (goto-char 7)            ; start of "beta", outside the selection
           (set-mark 1)
           (setq mark-active t)
           (setq deactivate-mark nil)
           (let ((text (agent-fleet-prompt-dwim--context root)))
-            (should (string-prefix-p "src.el:1-2" text))
-            (should (string-match-p "(symbol: beta)" text))
+            (should (string-prefix-p "src.el:1" text))
+            (should-not (string-match-p "(symbol: beta)" text))
             ;; The verbatim region text is appended after a blank line.
             (should (string-match-p "\n\nalpha" text))))
       (kill-buffer buf)

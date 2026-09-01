@@ -215,6 +215,15 @@ Return t when connected.  In automatic modes, make one immediate connection
 attempt before signalling `agent-fleet-not-connected'."
   (cond
    ((herdr-connected-p) t)
+   ;; A subscription loss leaves the connection object (and its resolved
+   ;; socket path) alive while a reconnect timer is pending.  Do not call
+   ;; `herdr-connect' here: it would tear down that object and rediscover the
+   ;; endpoint from mutable Session/environment settings.  The reconnect
+   ;; machinery will retry against the endpoint saved on the connection.
+   ((and (herdr-connection)
+         (eq (herdr-connection-state) 'reconnecting))
+    (signal 'agent-fleet-not-connected
+            (list :hint "Herdr is reconnecting on its existing Session endpoint; retry shortly")))
    ((null agent-fleet-auto-connect)
     (signal 'agent-fleet-not-connected
             (list :hint "run M-x herdr-connect, or enable agent-fleet-auto-connect")))
@@ -349,6 +358,13 @@ from the Herdr-mirrored cache."
   (let ((a (agent-fleet--find-agent agent)))
     (and a (let ((s (herdr-agent-agent-status a)))
              (and s (intern s))))))
+
+(defun agent-fleet-connection-state ()
+  "Return the current Herdr connection state as a symbol.
+Delegates to `herdr-connection-state': `connected', `reconnecting',
+`gave-up', or `disconnected'.  Transitions are surfaced via
+`agent-fleet-connection-state-changed-hook' (event-driven, no polling)."
+  (herdr-connection-state))
 
 
 ;;; --- Pane provisioning (for agent.start) ----------------------------
@@ -1271,6 +1287,16 @@ resync signal: the cache was just replaced from `session.snapshot'
 during connect/reconnect, so views and registries should rebuild from
 the cache without a server fetch.")
 
+(defvar agent-fleet-connection-state-changed-hook nil
+  "Hook run when the Herdr connection state changes.
+Bridged from `herdr-connection-state-changed-hook' by
+`agent-fleet--on-connection-state-changed'.  Each function is called
+with one argument, a state symbol: `connected', `reconnecting',
+or `disconnected'.  This is the event-driven signal for
+views that surface connection health (the dashboard shows a
+Disconnected/Reconnecting/Connection-lost banner); there is no polling
+timer.  See `agent-fleet-connection-state'.")
+
 (defun agent-fleet--enrich-descriptor (descriptor pane-id)
   "Surface PANE-ID as :pane-id and add :name/:kind from the cache.
 The raw model descriptor carries the entity id under :id; agent-fleet
@@ -1288,15 +1314,19 @@ have been removed eagerly)."
                     :kind ,(herdr-agent-agent agent)))))))
 
 (defun agent-fleet--on-agent-status (descriptor)
-  "Bridge `herdr-event-agent-status-hook' to the agent-fleet hooks."
-  (let* ((pane-id (plist-get descriptor :id))
-         (status (plist-get descriptor :status))
-         (enriched (agent-fleet--enrich-descriptor descriptor pane-id)))
-    (run-hook-with-args 'agent-fleet-agent-status-changed-hook enriched)
-    (pcase status
-      ("blocked" (run-hook-with-args 'agent-fleet-agent-blocked-hook enriched))
-      ("done"    (run-hook-with-args 'agent-fleet-agent-done-hook enriched))
-      (_ nil))))
+  "Bridge a genuine status transition to the agent-fleet hooks.
+`herdr-events-dispatch' already suppresses duplicate/replayed status
+descriptors, but retain the guard here so the Fleet-facing blocked/done
+hooks cannot acquire repeated side effects if called by another adapter."
+  (when (plist-get descriptor :changed-p)
+    (let* ((pane-id (plist-get descriptor :id))
+           (status (plist-get descriptor :status))
+           (enriched (agent-fleet--enrich-descriptor descriptor pane-id)))
+      (run-hook-with-args 'agent-fleet-agent-status-changed-hook enriched)
+      (pcase status
+        ("blocked" (run-hook-with-args 'agent-fleet-agent-blocked-hook enriched))
+        ("done"    (run-hook-with-args 'agent-fleet-agent-done-hook enriched))
+        (_ nil)))))
 
 (defun agent-fleet--on-pane-event (descriptor)
   "Bridge pane events to agent-fleet hooks (started / exited).
@@ -1329,6 +1359,13 @@ and registries can rebuild from the cache without a server fetch or a
 polling timer."
   (run-hook-with-args 'agent-fleet-synced-hook nil))
 
+(defun agent-fleet--on-connection-state-changed (state)
+  "Bridge `herdr-connection-state-changed-hook' to the fleet hook.
+STATE is the symbol reported by `herdr--notify-connection-state'
+\(connected/reconnecting/gave-up/disconnected).  Re-forwarded unchanged
+so fleet consumers depend on the agent-fleet hook, not `herdr' directly."
+  (run-hook-with-args 'agent-fleet-connection-state-changed-hook state))
+
 (defun agent-fleet--setup-hooks ()
   "Install the agent-fleet bridge on the Herdr event hooks (idempotent)."
   (unless (memq #'agent-fleet--on-agent-status herdr-event-agent-status-hook)
@@ -1336,7 +1373,11 @@ polling timer."
   (unless (memq #'agent-fleet--on-pane-event herdr-event-pane-hook)
     (add-hook 'herdr-event-pane-hook #'agent-fleet--on-pane-event))
   (unless (memq #'agent-fleet--on-synced herdr-synced-hook)
-    (add-hook 'herdr-synced-hook #'agent-fleet--on-synced)))
+    (add-hook 'herdr-synced-hook #'agent-fleet--on-synced))
+  (unless (memq #'agent-fleet--on-connection-state-changed
+                herdr-connection-state-changed-hook)
+    (add-hook 'herdr-connection-state-changed-hook
+              #'agent-fleet--on-connection-state-changed)))
 
 (agent-fleet--setup-hooks)
 (agent-fleet--configure-auto-connect)

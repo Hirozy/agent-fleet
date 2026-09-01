@@ -64,6 +64,7 @@ Columns: 0 Project, 1 Agent, 2 Kind, 3 State, 4 Task."
                    ("m" . agent-fleet-dashboard--magit)
                    ("a" . agent-fleet-dashboard--attach)
                    ("N" . agent-fleet-dashboard--new)
+                   ("!" . agent-fleet-dashboard--next-needs-attention)
                    ("q" . agent-fleet-dashboard--quit)))
     (let ((suffix (transient-get-suffix
                    'agent-fleet-dashboard-help (car entry))))
@@ -691,6 +692,105 @@ closes the child dashboard on success — the same lifecycle as `a'.
         (should (eq 'agent-fleet-blocked-face
                     (get-text-property 0 'face cell)))))))
 
+;;; --- Next-needs-attention -------------------------------------------
+
+(defun agent-fleet-dashboard-test--make-agent-pane (server pane-id status
+                                                           &optional name)
+  "Register a second mock agent pane PANE-ID at STATUS, pushing events.
+The pane is registered in the server pane table (so `pane.list'
+reconcile keeps it) and pushed as `pane_created', then its status is
+transitioned to STATUS.  NAME defaults to the pane id.  The plist is
+minimal — the model parser returns nil for absent fields."
+  (let* ((name (or name pane-id))
+         (info `(:pane_id ,pane-id :workspace_id "w1" :tab_id "w1:t1"
+                  :terminal_title ,name :terminal_title_stripped ,name
+                  :cwd "/tmp" :focused :false
+                  :agent "claude" :agent_status ,status)))
+    (herdr-mock-create-pane server info)
+    (herdr-mock-push-event server "pane.agent_status_changed"
+                           `(:pane_id ,pane-id :workspace_id "w1"
+                             :agent_status ,status :agent "claude"
+                             :title ,name :display_agent "claude"))))
+
+(ert-deftest agent-fleet-dashboard-next-needs-attention-finds-blocked ()
+  "`next-needs-attention' lands point on a blocked agent, wrapping past
+the current row when the blocked agent is the only (or first) row."
+  (with-agent-fleet-mock path server
+    (with-dashboard-fresh
+      (agent-fleet)
+      (agent-fleet-test--pump)
+      (herdr-mock-push-event server "pane_agent_status_changed"
+                             '(:pane_id "w1:p1" :agent_status "blocked"))
+      (agent-fleet-test--pump)
+      (with-current-buffer "*Agent Fleet*"
+        (agent-fleet-dashboard--next-needs-attention)
+        (should (equal "w1:p1" (tabulated-list-get-id)))))))
+
+(ert-deftest agent-fleet-dashboard-next-needs-attention-advances-past-point ()
+  "With a working agent at point and a blocked agent on another row,
+`next-needs-attention' advances to the blocked agent (wrapping)."
+  (with-agent-fleet-mock path server
+    (with-dashboard-fresh
+      (agent-fleet)
+      (agent-fleet-test--pump)
+      ;; w1:p1 stays working; add a second agent w1:p2 and mark it blocked.
+      (agent-fleet-dashboard-test--make-agent-pane server "w1:p2" "blocked")
+      (agent-fleet-test--pump)
+      (with-current-buffer "*Agent Fleet*"
+        ;; Blocked sorts above working, so w1:p2 is row 1 and w1:p1 row 2.
+        ;; Put point on the working agent (w1:p1) and require the jump to
+        ;; reach the blocked agent (w1:p2).
+        (agent-fleet-dashboard--goto-id "w1:p1")
+        (should (equal "w1:p1" (tabulated-list-get-id)))
+        (agent-fleet-dashboard--next-needs-attention)
+        (should (equal "w1:p2" (tabulated-list-get-id)))))))
+
+(ert-deftest agent-fleet-dashboard-next-needs-attention-none-qualifies ()
+  "With no blocked agent, `next-needs-attention' returns nil and messages."
+  (with-agent-fleet-mock path server
+    (with-dashboard-fresh
+      (agent-fleet)
+      (agent-fleet-test--pump)
+      ;; w1:p1 is working — not attention-worthy by default.
+      (with-current-buffer "*Agent Fleet*"
+        (should-not (agent-fleet-dashboard--next-needs-attention))))))
+
+(ert-deftest agent-fleet-dashboard-next-needs-attention-done-with-prefix ()
+  "A `done' agent is skipped by default and reached only with a prefix
+arg (INCLUDE-DONE non-nil)."
+  (with-agent-fleet-mock path server
+    (with-dashboard-fresh
+      (agent-fleet)
+      (agent-fleet-test--pump)
+      (herdr-mock-push-event server "pane_agent_status_changed"
+                             '(:pane_id "w1:p1" :agent_status "done"))
+      (agent-fleet-test--pump)
+      (with-current-buffer "*Agent Fleet*"
+        (should-not (agent-fleet-dashboard--next-needs-attention))
+        (agent-fleet-dashboard--next-needs-attention t)
+        (should (equal "w1:p1" (tabulated-list-get-id)))))))
+
+;;; --- Connection-state banner ----------------------------------------
+
+(ert-deftest agent-fleet-dashboard-connection-banner-tracks-state ()
+  "The connection banner is nil when connected and shows a status string
+for reconnecting/disconnected.  Stubbing `agent-fleet-connection-state'
+isolates the banner formatter from the live connection."
+  (with-dashboard-fresh
+    (with-current-buffer (get-buffer-create "*Agent Fleet*")
+      (agent-fleet-mode)
+      (dolist (case '((connected       . nil)
+                      (reconnecting    . "Reconnecting")
+                      (disconnected    . "Disconnected")))
+        (let ((want (cdr case)))
+          (cl-letf (((symbol-function 'agent-fleet-connection-state)
+                     (lambda () (car case))))
+            (agent-fleet-dashboard--update-connection-banner))
+          (if want
+              (should (string-match-p want
+                        agent-fleet-dashboard--connection-banner))
+            (should-not agent-fleet-dashboard--connection-banner)))))))
+
 (ert-deftest agent-fleet-dashboard--refreshes-on-reconnect ()
   "An open dashboard refreshes from the post-reconnect snapshot (no `g').
 The synced hook fires after `herdr--reconnect' replaces the cache from a
@@ -920,6 +1020,23 @@ following `pane.agent_status_changed' (dotted per-pane kind) event."
   (let ((agent-fleet-notify-on nil))
     (should (null (agent-fleet-dashboard--notify-message
                    '(:status "blocked" :name "demo"))))))
+
+(ert-deftest agent-fleet-dashboard-notification-actions-dispatch ()
+  "Notification actions route to stable-pane dashboard/output/attach APIs."
+  (let (calls)
+    (cl-letf (((symbol-function 'agent-fleet-dashboard--focus-agent)
+               (lambda (pane-id) (push (list 'dashboard pane-id) calls)))
+              ((symbol-function 'agent-fleet-show-output-in-buffer)
+               (lambda (pane-id) (push (list 'output pane-id) calls)))
+              ((symbol-function 'agent-fleet-attach)
+               (lambda (pane-id) (push (list 'attach pane-id) calls))))
+      (agent-fleet-dashboard--notification-action "w1:p1" "default")
+      (agent-fleet-dashboard--notification-action "w1:p1" "output")
+      (agent-fleet-dashboard--notification-action "w1:p1" "attach"))
+    (should (equal '((attach "w1:p1")
+                     (output "w1:p1")
+                     (dashboard "w1:p1"))
+                   calls))))
 
 
 ;;; --- Command map --------------------------------------

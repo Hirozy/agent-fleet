@@ -123,6 +123,7 @@ fails.
 | `d` | Open the working-tree diff |
 | `m` | Open Magit status |
 | `a` | Attach to the live terminal |
+| `!` | Jump to the next agent needing attention (`blocked`; prefix adds `done`) |
 | `h` | Open the transient help menu |
 | `p` / `k` | Move up a row |
 | `n` / `j` | Move down a row |
@@ -161,6 +162,14 @@ stop agents.
 The dashboard supports its keys in normal and motion states when Evil is
 loaded. Notifications can be tuned with `agent-fleet-notify-on`; see
 [Configuration](#configuration).
+
+The dashboard mode line surfaces the Herdr connection state when it is not
+healthy: `Reconnecting (n/max)…` while a dropped subscription is being
+re-established, or `Disconnected — M-x herdr-connect` when there is no
+connection (after an explicit disconnect, a failed initial connect, or once
+reconnect gives up). No banner is shown while connected. The state is driven
+by `herdr-connection-state-changed-hook` — there is no polling timer — so the
+banner tracks the real transitions reported by the Herdr connection layer.
 
 ## Start and control agents
 
@@ -439,6 +448,9 @@ backend's copy or scrollback mode before navigating the buffer.
 Automatic connection does not start or own the Herdr server. If the server is
 restarted, the subscription reconnects with backoff and refreshes the local
 snapshot. A command issued after a failed startup connection retries on demand.
+The dashboard mode line reports `Reconnecting`/`Disconnected` during these
+transitions (see [Dashboard](#dashboard)), so a stale-looking list is never
+silent about why.
 
 The socket is discovered with the following precedence (highest first):
 a nonempty explicit `herdr-socket-path`; the configured

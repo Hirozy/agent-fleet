@@ -152,6 +152,19 @@ caller's project as the agent's."
     (or (agent-fleet-project--git-common-root (file-truename dir))
         (agent-fleet-project--backend-root-for-cwd dir))))
 
+(defun agent-fleet-project--canonical-root (dir)
+  "Return the canonical Project identity for explicit root DIR, or nil.
+Unlike `agent-fleet-project-root-for-cwd', DIR is already a project root and
+must not be re-discovered through the current buffer.  It still goes through
+the shared Git common-root normalization so a `project.el' struct rooted at a
+linked worktree matches agents in the primary checkout and sibling worktrees.
+Non-Git roots retain their explicit `file-truename' identity."
+  (when (and (stringp dir) (not (string-empty-p dir))
+             (file-directory-p dir))
+    (let ((truename (file-truename dir)))
+      (or (agent-fleet-project--git-common-root truename)
+          (directory-file-name truename)))))
+
 (defun agent-fleet-project-for-agent (agent)
   "Return the canonical project root for AGENT (by its cwd), or nil."
   (agent-fleet-project-root-for-cwd (herdr-agent-cwd agent)))
@@ -159,14 +172,14 @@ caller's project as the agent's."
 (defun agent-fleet--project-root (project-or-root)
   "Normalize PROJECT-OR-ROOT to a canonical root directory string.
 PROJECT-OR-ROOT is either a project struct (its `project-root' is used) or
-a directory string; either way the result is `file-truename'-canonicalized.
-Returns nil when PROJECT-OR-ROOT is nil."
+a directory string; either way the result uses the same linked-worktree/Git
+common-root Project identity as `agent-fleet-project-root-for-cwd'.  Returns
+nil when PROJECT-OR-ROOT is nil or its root is not a directory."
   (when project-or-root
-    (directory-file-name
-     (file-truename
-      (if (stringp project-or-root)
-          project-or-root
-        (project-root project-or-root))))))
+    (agent-fleet-project--canonical-root
+     (if (stringp project-or-root)
+         project-or-root
+       (project-root project-or-root)))))
 
 (defun agent-fleet-project-current ()
   "Return the current project, for `agent-fleet--project-root'.
@@ -315,20 +328,35 @@ unfiltered `agent-fleet--read-agent-name'."
      ((and same-project (= 1 (length same-project)))
       (herdr-agent-id (car same-project)))
      (same-project
-      (let* ((alist (mapcar (lambda (a)
-                              (cons (herdr-agent-display-name a)
-                                    (herdr-agent-id a)))
-                            same-project))
+      ;; Reuse the public candidate descriptors so duplicate display names
+      ;; carry the same pane-id disambiguation and dashboard metadata as all
+      ;; other Fleet completion UIs.  Filtering the descriptors by the
+      ;; canonical Project keeps the target preference without rebuilding a
+      ;; second, ambiguous candidate format here.
+      (let* ((same-ids (mapcar #'herdr-agent-id same-project))
+             (candidates
+              (cl-remove-if-not
+               (lambda (entry)
+                 (member (plist-get entry :pane-id) same-ids))
+               (agent-fleet-agent-candidates)))
+             (alist (mapcar
+                     (lambda (entry)
+                       (cons (format "%s  %s"
+                                     (plist-get entry :label)
+                                     (agent-fleet-agent-candidate-suffix entry))
+                             (plist-get entry :pane-id)))
+                     candidates))
              (choice (completing-read "Prompt agent (same project): "
-                                      (mapcar #'car alist) nil t)))
+                                      alist nil t)))
         (cdr (assoc choice alist))))
      (t (agent-fleet--read-agent-name "Prompt agent")))))
 
 (defun agent-fleet-prompt-dwim--context (project-root)
   "Build a task-reference string from the current buffer context.
-PROJECT-ROOT is the selected agent's project root (for making the
+PROJECT-ROOT is the selected agent's working directory (for making the
 file path relative), or nil.  Gathers: the buffer's file path
-(relative to PROJECT-ROOT when under it, else absolute truename),
+(relative to the selected agent's working directory when under it, else
+absolute truename),
 the active region's line range, the symbol near point, and — when
 the region is small enough (see `agent-fleet-prompt-dwim-max-region-chars')
 — the selected text.  Returns \"\" when nothing can be gathered."
@@ -344,8 +372,21 @@ the region is small enough (see `agent-fleet-prompt-dwim-max-region-chars')
          (beg (and region-p (region-beginning)))
          (end (and region-p (region-end)))
          (line1 (and beg (line-number-at-pos beg)))
-         (line2 (and end (line-number-at-pos end)))
-         (symbol (thing-at-point 'symbol t))
+         ;; REGION-END is exclusive.  Looking up its line directly includes
+         ;; the next line when the selection ends at that line's first
+         ;; character (for example, selecting "alpha\n" before "beta").
+         (line2 (and end
+                     (line-number-at-pos
+                      (if (and beg (> end beg))
+                          (max beg (1- end))
+                        end))))
+         ;; When a region is active, only report a symbol if point is inside
+         ;; the selected half-open interval.  At the end boundary
+         ;; `thing-at-point' would otherwise describe text outside the
+         ;; selection.
+         (symbol (and (or (not region-p)
+                          (and beg end (>= (point) beg) (< (point) end)))
+                      (thing-at-point 'symbol t)))
          (region-text (and region-p
                            (<= (- end beg)
                                agent-fleet-prompt-dwim-max-region-chars)
@@ -379,9 +420,14 @@ it is selected automatically.  The built reference is pre-filled into
 `agent-fleet-prompt'.  Does not save user files or copy an entire
 buffer by default."
   (interactive
-   (list (agent-fleet-prompt-dwim--read-agent)))
+   (progn
+     ;; Candidate readers inspect the cache, so establish the on-demand
+     ;; connection before asking the user to choose a target.  The body keeps
+     ;; its own ensure for non-interactive callers and race-safe reuse.
+     (agent-fleet--ensure-connected)
+     (list (agent-fleet-prompt-dwim--read-agent))))
   (let* ((struct (agent-fleet--find-agent agent))
-         (root (and struct (agent-fleet-project-for-agent struct))))
+       (root (and struct (herdr-agent-cwd struct))))
     (agent-fleet--ensure-connected)
     (let ((text (read-string "Task: "
                              (agent-fleet-prompt-dwim--context root))))
