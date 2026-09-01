@@ -882,6 +882,9 @@ agent's text."
                 (lambda (d) (push d fired)))
       (herdr-mock-push-event server "pane_agent_status_changed"
                              '(:pane_id "w1:p1" :agent_status "blocked"))
+      ;; A duplicate/replayed state must not produce a second side effect.
+      (herdr-mock-push-event server "pane_agent_status_changed"
+                             '(:pane_id "w1:p1" :agent_status "blocked"))
       (agent-fleet-test--pump)
       (should (= 1 (length fired)))
       (should (equal "blocked" (plist-get (car fired) :status))))))
@@ -894,11 +897,11 @@ agent's text."
       (add-hook 'agent-fleet-agent-status-changed-hook
                 (lambda (d) (push (plist-get d :status) statuses)))
       (herdr-mock-push-event server "pane_agent_status_changed"
-                             '(:pane_id "w1:p1" :agent_status "working"))
+                             '(:pane_id "w1:p1" :agent_status "idle"))
       (herdr-mock-push-event server "pane_agent_status_changed"
                              '(:pane_id "w1:p1" :agent_status "done"))
       (agent-fleet-test--pump)
-      (should (member "working" statuses))
+      (should (member "idle" statuses))
       (should (member "done" statuses)))))
 
 (ert-deftest agent-fleet-dotted-per-pane-status-push-fires-hook ()
@@ -1042,6 +1045,29 @@ teeth test: push the faithful dotted kind and assert the hook fires."
       (should-error (agent-fleet--ensure-connected)
                     :type 'agent-fleet-not-connected))
     (should-not called)))
+
+(ert-deftest agent-fleet-ensure-connected-does-not-redetect-during-reconnect ()
+  "A command during reconnect preserves the connection's saved endpoint.
+Changing the Session and explicit socket settings while the reconnect timer
+is pending must not call `herdr-connect' and rediscover a different socket."
+  (let* ((saved "/tmp/agent-fleet-session-a.sock")
+         (herdr--conn
+          (make-herdr--connection :socket-path saved
+                                  :connected nil
+                                  :reconnect-timer 'pending-reconnect))
+         (herdr-socket-path "/tmp/agent-fleet-session-b.sock")
+         (herdr-default-session-name "session-b")
+         (agent-fleet-auto-connect 'on-demand)
+         called)
+    (cl-letf (((symbol-function 'herdr-connect)
+               (lambda (&optional _path) (setq called t))))
+      (let* ((err (should-error (agent-fleet--ensure-connected)
+                                :type 'agent-fleet-not-connected))
+             (data (cdr err)))
+        (should-not called)
+        (should (equal saved (herdr--connection-socket-path herdr--conn)))
+        (should (string-match-p "existing Session endpoint"
+                                (plist-get data :hint)))))))
 
 (ert-deftest agent-fleet-after-init-auto-connect-is-idle-and-nonfatal ()
   "Startup mode schedules on idle and contains a failed bootstrap."

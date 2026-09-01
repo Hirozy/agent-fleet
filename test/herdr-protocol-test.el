@@ -579,6 +579,91 @@ snapshot replaces the cache."
       (should (herdr-connected-p))
       (should (equal '(t) fired)))))         ; fired once on reconnect
 
+;;; --- Connection state + hook ----------------------------------------
+
+(ert-deftest herdr-connection-state-connected ()
+  "After a successful connect the state is `connected'."
+  (with-herdr-mock path srv
+    (herdr-connect)
+    (should (eq (herdr-connection-state) 'connected))))
+
+(ert-deftest herdr-connection-state-disconnected ()
+  "After an explicit disconnect the state is `disconnected'."
+  (with-herdr-mock path srv
+    (herdr-connect)
+    (should (eq (herdr-connection-state) 'connected))
+    (herdr-disconnect)
+    (should (eq (herdr-connection-state) 'disconnected))))
+
+(ert-deftest herdr-connection-state-reconnecting-and-hook ()
+  "A dropped subscription transitions the state to `reconnecting' and
+fires `herdr-connection-state-changed-hook' with that symbol."
+  (with-herdr-mock path srv
+    (let ((herdr-reconnect-delay 0.5)   ; keep the timer pending while we assert
+          (herdr-reconnect-max-delay 1.0)
+          (herdr-reconnect-max-attempts 5)
+          (herdr-connection-state-changed-hook nil)
+          seen)
+      (add-hook 'herdr-connection-state-changed-hook
+                (lambda (s) (push s seen)))
+      (herdr-connect)
+      (should (eq (herdr-connection-state) 'connected))
+      (should (equal '(connected) seen))
+      (herdr-protocol-test--drain 0.3)     ; let the subscribe settle
+      ;; simulate connection loss (mirrors the reconnect tests above)
+      (let ((proc (herdr--connection-subscription-proc herdr--conn)))
+        (delete-process proc))
+      ;; the subscription-loss callback runs synchronously during/after
+      ;; delete-process; drain briefly so the sentinel + scheduled
+      ;; reconnect land.
+      (herdr-protocol-test--drain 0.1)
+      (should (eq (herdr-connection-state) 'reconnecting))
+      (should (memq 'reconnecting seen)))))
+
+(ert-deftest herdr-connection-state-disconnected-after-give-up ()
+  "When reconnect exhausts `herdr-reconnect-max-attempts' the give-up
+path clears the connection, so the state reads `disconnected' (not a
+distinct gave-up state).  The hook first sees `reconnecting' during the
+attempts, then `disconnected' once give-up clears the connection.  The
+mock server is stopped so every reconnect attempt fails."
+  (with-herdr-mock path srv
+    (let ((herdr-reconnect-delay 0.05)
+          (herdr-reconnect-max-delay 0.05)
+          (herdr-reconnect-max-attempts 2)
+          (herdr-connection-state-changed-hook nil)
+          seen)
+      (add-hook 'herdr-connection-state-changed-hook
+                (lambda (s) (push s seen)))
+      (herdr-connect)
+      (herdr-protocol-test--drain 0.2)
+      ;; Stop the server so every reconnect attempt fails fast.
+      (herdr-mock-stop srv)
+      (let ((proc (herdr--connection-subscription-proc herdr--conn)))
+        (delete-process proc))
+      ;; drain past the (tiny) backoff schedule so attempts exhaust and
+      ;; the give-up path clears the connection.
+      (let ((deadline (+ (float-time) 4.0)))
+        (while (and (not (eq (herdr-connection-state) 'disconnected))
+                    (< (float-time) deadline))
+          (herdr-protocol-test--drain 0.05)))
+      (should (eq (herdr-connection-state) 'disconnected))
+      (should (memq 'reconnecting seen))     ; during the failed attempts
+      (should (memq 'disconnected seen)))))  ; once give-up cleared conn
+
+(ert-deftest herdr-connection-state-hook-fires-on-disconnect ()
+  "An explicit disconnect fires the hook with `disconnected'."
+  (with-herdr-mock path srv
+    (let ((herdr-connection-state-changed-hook nil)
+          seen)
+      (add-hook 'herdr-connection-state-changed-hook
+                (lambda (s) (push s seen)))
+      (herdr-connect)
+      (setq seen nil)
+      (herdr-disconnect)
+      (should (eq (herdr-connection-state) 'disconnected))
+      (should (memq 'disconnected seen)))))
+
+
 (ert-deftest herdr-connect-does-not-succeed-without-subscription ()
   "Bootstrap fails atomically when the subscription socket cannot start."
   (let ((herdr--conn nil)

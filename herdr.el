@@ -117,6 +117,27 @@ the subscription is not yet live.  Consumers must not call `herdr-connect'
 or `herdr-disconnect' from within the hook, as the connection is
 mid-bootstrap.")
 
+(defvar herdr-connection-state-changed-hook nil
+  "Hook run when the Herdr connection state changes.
+Each function is called with one argument, a state symbol:
+`connected', `reconnecting', or `disconnected'.  Fires only on
+a real transition, not on every lifecycle call.  This is the
+event-driven signal for views that surface connection health (the agent
+dashboard uses it to show a Disconnected/Reconnecting/Connection-lost
+banner) — there is no polling timer.  See `herdr-connection-state'.
+
+Consumers must not call `herdr-connect' or `herdr-disconnect' from
+within the hook: it can fire from inside `herdr-connect' (the internal
+teardown of a prior connection) while the new connection is
+mid-bootstrap.  Read state via `herdr-connection-state' / the cache
+instead.")
+
+(defvar herdr--last-connection-state nil
+  "Last state reported by `herdr--notify-connection-state'.
+Lets the notifier fire `herdr-connection-state-changed-hook' only on a
+real transition.  Reset to nil by `herdr-disconnect' so a fresh connect
+after a disconnect is a transition.")
+
 
 ;;; --- Connection lifecycle -----------------------------------------
 
@@ -161,6 +182,7 @@ disconnects."
               (signal 'herdr-connection-error
                       (list :reason 'subscription-failed :path path))))
           (herdr--log 'info "connected to Herdr %s (protocol %s)" ver proto)
+          (herdr--notify-connection-state)
           t)))))
 
 (defun herdr--check-protocol (server-protocol)
@@ -340,7 +362,8 @@ preventing duplicate reconnect timers."
       (setf (herdr--connection-connected conn) nil)
       (setf (herdr--connection-subscription-proc conn) nil)
       (herdr--log 'warn "subscription lost: %S" errdata)
-      (herdr--schedule-reconnect))))
+      (herdr--schedule-reconnect)
+      (herdr--notify-connection-state))))
 
 (defun herdr--schedule-reconnect ()
   "Schedule a reconnect attempt with exponential backoff.
@@ -415,7 +438,8 @@ server still reaches `herdr-reconnect-max-attempts' and gives up."
          (setf (herdr--connection-connected conn) nil)
          (herdr--log 'warn "reconnect failed: %s" (error-message-string err))
          (unless (herdr--connection-reconnect-timer conn)
-           (herdr--schedule-reconnect)))))))
+           (herdr--schedule-reconnect))))
+      (herdr--notify-connection-state))))
 
 ;;;###autoload
 (defun herdr-disconnect ()
@@ -437,6 +461,7 @@ server still reaches `herdr-reconnect-max-attempts' and gives up."
   (setq herdr--conn nil)
   (herdr-model-clear-cache)
   (herdr--log 'info "disconnected")
+  (herdr--notify-connection-state)
   t)
 
 (defun herdr-connected-p ()
@@ -446,6 +471,40 @@ server still reaches `herdr-reconnect-max-attempts' and gives up."
        (herdr-protocol-subscription-alive-p
         (herdr--connection-subscription-proc herdr--conn))
        t))
+
+(defun herdr-connection-state ()
+  "Return the current Herdr connection state as a symbol.
+One of:
+  `connected'     — a live connection with a subscription (`herdr-connected-p');
+  `reconnecting'  — the subscription was lost and a reconnect is pending
+                    (the connection object is still alive, just not live);
+  `disconnected'  — there is no connection object at all: after
+                    `herdr-disconnect', a failed initial connect, OR after
+                    reconnect exhausts `herdr-reconnect-max-attempts'
+                    (the give-up path clears the connection, so a given-up
+                    connection reads as `disconnected' — reconnect manually).
+
+Derived from the live `herdr--connection' slots; nil-safe when there is
+no connection.  Transitions are surfaced via
+`herdr-connection-state-changed-hook' (event-driven, no polling)."
+  (cond
+   ((null herdr--conn) 'disconnected)
+   ((herdr-connected-p) 'connected)
+   ((herdr--connection-reconnect-timer herdr--conn) 'reconnecting)
+   (t 'reconnecting)))
+
+(defun herdr--notify-connection-state ()
+  "Fire `herdr-connection-state-changed-hook' on a real state transition.
+Computes the current state via `herdr-connection-state', compares it to
+`herdr--last-connection-state', and runs the hook with the new state only
+when it changed; then records it.  Called at the end of each lifecycle
+transition point (`herdr-connect', `herdr--on-subscription-lost',
+`herdr--reconnect', `herdr-disconnect').  Idempotent: a no-op when the
+state did not change."
+  (let ((state (herdr-connection-state)))
+    (unless (eq state herdr--last-connection-state)
+      (setq herdr--last-connection-state state)
+      (run-hook-with-args 'herdr-connection-state-changed-hook state))))
 
 
 ;;; --- RPC passthrough ----------------------------------------------
