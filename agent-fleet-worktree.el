@@ -289,7 +289,7 @@ is persisted).  Refreshes worktree state from `worktree.list' on each call
 (user-initiated, never a timer).  Returns the worktree struct, or nil and
 messages when no worktree is open for the workspace."
   (interactive
-   (list (agent-fleet--read-agent-name "Worktree status for agent")))
+   (list (agent-fleet-read-agent-name "Worktree status for agent")))
   (let ((wt (agent-fleet-worktree--status-op target)))
     (when wt
       (pop-to-buffer (get-buffer agent-fleet-worktree-buffer-name)))
@@ -306,7 +306,7 @@ silent buffer fallback (use `agent-fleet-worktree-status-in-buffer' for
 that).  Returns the worktree struct, or nil and messages when no worktree
 is open for the workspace."
   (interactive
-   (list (agent-fleet--read-agent-name "Worktree status for agent")))
+   (list (agent-fleet-read-agent-name "Worktree status for agent")))
   (require 'agent-fleet-display nil t)
   (agent-fleet-display--outcome-value
    (agent-fleet-display--aux-run

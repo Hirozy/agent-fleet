@@ -16,7 +16,7 @@
 ;; live minibuffer; the real `consult--lookup-cdr' is exercised through
 ;; the stub, so the (label . pane-id) alist shape is checked end to end.
 ;; The mode tests use `advice-member-p' to check that enabling adds and
-;; disabling removes the `:around' advice on `agent-fleet--read-agent-name'.
+;; disabling removes the `:around' advice on `agent-fleet-read-agent-name'.
 
 ;;; Code:
 
@@ -27,8 +27,10 @@
   "Build (label . pane-id) pairs and return the consult lookup result.
 `consult-agent-fleet--select' hands `consult--read' the alist plus a
 `consult--lookup-cdr' lookup, and consult returns the cdr for the
-selected candidate; `--select' must return that pane id, not the label."
-  (let (got-table got-lookup)
+selected candidate; `--select' must return that pane id, not the label.
+It also passes the `agent-fleet-agent' category and an `:annotate' that
+reuses the public `agent-fleet-agent-annotation' for the suffix."
+  (let (got-table got-lookup got-annotate got-category)
     (cl-letf (((symbol-function #'agent-fleet-agent-candidates)
                (lambda ()
                  (list (list :agent nil :pane-id "w1:p1" :name "arch"
@@ -42,13 +44,19 @@ selected candidate; `--select' must return that pane id, not the label."
       (cl-letf (((symbol-function #'consult--read)
                  (lambda (table &rest opts)
                    (setq got-table table
-                         got-lookup (plist-get opts :lookup))
+                         got-lookup (plist-get opts :lookup)
+                         got-annotate (plist-get opts :annotate)
+                         got-category (plist-get opts :category))
                    (let ((sel (car (cadr table))))
                      (funcall got-lookup sel table nil nil)))))
         (should (equal (consult-agent-fleet--select "Pick") "w1:p2"))))
     (should (equal got-table
                    '(("arch" . "w1:p1") ("arch  [w1:p2]" . "w1:p2"))))
-    (should (eq got-lookup #'consult--lookup-cdr))))
+    (should (eq got-lookup #'consult--lookup-cdr))
+    (should (eq got-category 'agent-fleet-agent))
+    ;; consult reuses the public agent-fleet-agent-annotation for the suffix
+    ;; (consult--annotate-align wraps it; the suffix substring survives).
+    (should (string-match-p "Claude · — · demo" (funcall got-annotate "arch")))))
 
 (ert-deftest consult-agent-fleet--select-signals-when-no-agents ()
   "With no cached agents, signal `user-error' before `consult--read'."
@@ -59,14 +67,14 @@ selected candidate; `--select' must return that pane id, not the label."
                   :type 'user-error)))
 
 (ert-deftest consult-agent-fleet-mode-installs-advice ()
-  "Enabling the mode adds `:around' advice on `agent-fleet--read-agent-name'.
+  "Enabling the mode adds `:around' advice on `agent-fleet-read-agent-name'.
 The mode is global; the unwind-protect restores the global advice
 state even if an assertion fails."
   (unwind-protect
       (progn
         (consult-agent-fleet-mode 1)
         (should (advice-member-p #'consult-agent-fleet--read-agent-name
-                                 'agent-fleet--read-agent-name)))
+                                 'agent-fleet-read-agent-name)))
     (consult-agent-fleet-mode -1)))
 
 (ert-deftest consult-agent-fleet-mode-toggle-removes-advice ()
@@ -77,15 +85,15 @@ state even if an assertion fails."
       (progn
         (consult-agent-fleet-mode 1)
         (should (advice-member-p #'consult-agent-fleet--read-agent-name
-                                 'agent-fleet--read-agent-name))
+                                 'agent-fleet-read-agent-name))
         (consult-agent-fleet-mode -1)
         (should-not (advice-member-p #'consult-agent-fleet--read-agent-name
-                                    'agent-fleet--read-agent-name)))
+                                    'agent-fleet-read-agent-name)))
     (consult-agent-fleet-mode -1)))
 
 (ert-deftest consult-agent-fleet--read-agent-name-uses-consult ()
   "With the mode on, the advised reader selects via consult.
-`agent-fleet--read-agent-name' is advised to call
+`agent-fleet-read-agent-name' is advised to call
 `consult-agent-fleet--select', so invoking the reader returns the
 consult lookup result (the pane id), not the built-in
 `completing-read' path.  The advice is removed in the unwind-protect so
@@ -108,7 +116,7 @@ the real reader is left intact."
         (unwind-protect
             (progn
               (consult-agent-fleet-mode 1)
-              (should (equal (agent-fleet--read-agent-name "Pick")
+              (should (equal (agent-fleet-read-agent-name "Pick")
                              "w1:p2")))
           (consult-agent-fleet-mode -1))))
     (should (equal got-table

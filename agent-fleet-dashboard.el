@@ -749,23 +749,20 @@ Unlike the row actions, this does not act on the agent at point."
     ("m" "Magit status" agent-fleet-dashboard--magit)]])
 
 (defconst agent-fleet-dashboard--bindings
-  '(("o"   . agent-fleet-dashboard--inspect)
-    ("s"   . agent-fleet-dashboard--prompt)
-    ("i"   . agent-fleet-dashboard--interrupt)
-    ("x"   . agent-fleet-dashboard--kill)
-    ("r"   . agent-fleet-dashboard--rename)
-    ("g"   . agent-fleet-dashboard--refresh)
-    ("P"   . agent-fleet-dashboard--toggle-project-filter)
-    ("T"   . agent-fleet-dashboard--toggle-task-filter)
-    ("w"   . agent-fleet-dashboard--worktree)
-    ("d"   . agent-fleet-dashboard--diff)
-    ("m"   . agent-fleet-dashboard--magit)
-    ("a"   . agent-fleet-dashboard--attach)
-    ("N"   . agent-fleet-dashboard--new)
-    ("!"   . agent-fleet-dashboard--next-needs-attention)
-    ("h"   . agent-fleet-dashboard-help)
-    ("q"   . agent-fleet-dashboard--quit))
-  "Documented action key bindings for `agent-fleet-mode'.")
+  (append (agent-fleet-action-dashboard-bindings)
+          '(("g" . agent-fleet-dashboard--refresh)
+            ("P" . agent-fleet-dashboard--toggle-project-filter)
+            ("T" . agent-fleet-dashboard--toggle-task-filter)
+            ("!" . agent-fleet-dashboard--next-needs-attention)
+            ("a" . agent-fleet-dashboard--attach)
+            ("N" . agent-fleet-dashboard--new)
+            ("h" . agent-fleet-dashboard-help)
+            ("q" . agent-fleet-dashboard--quit)))
+  "Documented action key bindings for `agent-fleet-mode'.
+The shared actions (inspect/prompt/interrupt/kill/rename/worktree/diff/
+magit) are sourced from `agent-fleet-action-registry' so the dashboard and
+attach surfaces share one key->command source; the rest (refresh/filters/
+attention/attach/new/help/quit) are dashboard-only.")
 
 (defconst agent-fleet-dashboard--retired-bindings
   '("RET")
@@ -1181,7 +1178,7 @@ Signal a `user-error' when AGENT has no resolvable Project."
      ;; minibuffer prompt.  The body still ensures connectivity for callers
      ;; that invoke the command non-interactively.
      (agent-fleet--ensure-connected)
-     (list (agent-fleet--read-agent-name "List same-Project agents for"))))
+     (list (agent-fleet-read-agent-name "List same-Project agents for"))))
   (agent-fleet--ensure-connected)
   (let* ((struct (or (agent-fleet--find-agent agent)
                      (signal 'agent-fleet-target-not-found

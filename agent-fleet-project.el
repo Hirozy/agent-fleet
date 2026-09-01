@@ -319,7 +319,7 @@ working directory."
 When exactly one same-Project agent exists it is used without a
 prompt (the DWIM case).  Multiple same-Project agents are offered
 as a filtered completion; when none exist, fall back to the
-unfiltered `agent-fleet--read-agent-name'."
+unfiltered `agent-fleet-read-agent-name'."
   (let* ((current-root (agent-fleet--project-root
                          (agent-fleet-project-current)))
          (same-project (and current-root
@@ -349,7 +349,7 @@ unfiltered `agent-fleet--read-agent-name'."
              (choice (completing-read "Prompt agent (same project): "
                                       alist nil t)))
         (cdr (assoc choice alist))))
-     (t (agent-fleet--read-agent-name "Prompt agent")))))
+     (t (agent-fleet-read-agent-name "Prompt agent")))))
 
 (defun agent-fleet-prompt-dwim--context (project-root)
   "Build a task-reference string from the current buffer context.

@@ -361,7 +361,7 @@ used for provisioning — the body does not prompt a second time."
 (ert-deftest agent-fleet-interactive-prompt-family ()
   "Prompt and prompt-and-wait read the target/text and preserve wait semantics."
   (let ((herdr-model--cache (agent-fleet-interactive-test--session)) calls)
-    (cl-letf (((symbol-function 'agent-fleet--read-agent-name)
+    (cl-letf (((symbol-function 'agent-fleet-read-agent-name)
                (lambda (_) "w1:p1"))
               ((symbol-function 'read-string)
                (lambda (&rest _) "do the work"))
@@ -439,7 +439,7 @@ the unfiltered reader."
                  (lambda (_) nil))
                 ((symbol-function 'agent-fleet-project-agents)
                  (lambda (&rest _) nil))
-                ((symbol-function 'agent-fleet--read-agent-name)
+                ((symbol-function 'agent-fleet-read-agent-name)
                  (lambda (_prompt) (setq read-called t) "w1:p1"))
                 ((symbol-function 'agent-fleet--find-agent)
                  (lambda (_) (herdr-find-agent "w1:p1")))
@@ -475,7 +475,7 @@ no interactive form (asserted in
 `agent-fleet-interactive-obsolete-view-aliases')."
   (let ((herdr-model--cache (agent-fleet-interactive-test--session))
         calls)
-    (cl-letf (((symbol-function 'agent-fleet--read-agent-name)
+    (cl-letf (((symbol-function 'agent-fleet-read-agent-name)
                (lambda (_) "w1:p1"))
               ((symbol-function 'read-string)
                (lambda (prompt &rest _)
@@ -506,7 +506,7 @@ no interactive form (asserted in
   "Rename/kill/switch/list cover input, confirmation, cancellation and prefix refresh."
   (let ((herdr-model--cache (agent-fleet-interactive-test--session))
         calls confirm)
-    (cl-letf (((symbol-function 'agent-fleet--read-agent-name)
+    (cl-letf (((symbol-function 'agent-fleet-read-agent-name)
                (lambda (_) "w1:p1"))
               ((symbol-function 'read-string)
                (lambda (&rest _) "architect"))
@@ -550,7 +550,7 @@ no interactive form (asserted in
          (buf-name "*Agent Output: arch*")
          captured)
     (unwind-protect
-        (cl-letf (((symbol-function 'agent-fleet--read-agent-name)
+        (cl-letf (((symbol-function 'agent-fleet-read-agent-name)
                    (lambda (_) "w1:p1"))
                   ((symbol-function 'read-number)
                    (lambda (&rest _) 7))
@@ -648,7 +648,7 @@ for a deterministic project."
         (wt-buf agent-fleet-worktree-buffer-name))
     (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
               ((symbol-function 'read-directory-name) (lambda (&rest _) "/repo"))
-              ((symbol-function 'agent-fleet--read-agent-name) (lambda (_) "w1:p1"))
+              ((symbol-function 'agent-fleet-read-agent-name) (lambda (_) "w1:p1"))
               ((symbol-function 'agent-fleet-worktree--fetch)
                (lambda (&optional cwd)
                  (push cwd fetches)
@@ -711,7 +711,7 @@ for a deterministic project."
 (ert-deftest agent-fleet-interactive-magit ()
   "Magit status/diff read the target and invoke public Magit entry points."
   (let ((herdr-model--cache (agent-fleet-interactive-test--session)) calls)
-    (cl-letf (((symbol-function 'agent-fleet--read-agent-name)
+    (cl-letf (((symbol-function 'agent-fleet-read-agent-name)
                (lambda (_) "w1:p1"))
               ((symbol-function 'agent-fleet-magit--available-p) (lambda () t))
               ((symbol-function 'agent-fleet-magit--root-for-agent)
@@ -772,7 +772,7 @@ for a deterministic project."
          (agent-fleet--agent-tasks (make-hash-table :test 'equal))
          asked)
     (puthash "w1:p1" "task-done" agent-fleet--agent-tasks)
-    (cl-letf (((symbol-function 'agent-fleet--read-agent-name)
+    (cl-letf (((symbol-function 'agent-fleet-read-agent-name)
                (lambda (_) "w1:p1"))
               ((symbol-function 'completing-read)
                (lambda (&rest _) "running (running)"))
@@ -790,7 +790,7 @@ for a deterministic project."
 (ert-deftest agent-fleet-interactive-attach ()
   "Attach reads the target and forwards a prefix argument as takeover."
   (let ((herdr-model--cache (agent-fleet-interactive-test--session)) captured)
-    (cl-letf (((symbol-function 'agent-fleet--read-agent-name)
+    (cl-letf (((symbol-function 'agent-fleet-read-agent-name)
                (lambda (_) "w1:p1"))
               ((symbol-function 'agent-fleet--ensure-connected) #'ignore)
               ((symbol-function 'agent-fleet-attach--pick-backend)
@@ -805,7 +805,7 @@ for a deterministic project."
 
 (ert-deftest agent-fleet-interactive-attach-current-agent ()
   "Every attach-buffer current-agent command acts on this buffer pane id.
-The leaf commands skip `agent-fleet--read-agent-name' and dispatch the base
+The leaf commands skip `agent-fleet-read-agent-name' and dispatch the base
 action with the buffer-local pane id; the minor mode toggles on and the menu
 enters its transient.  Lowercase leaves drive the child-frame presentation
 and uppercase leaves the buffer presentation, but both resolve the same
@@ -1117,7 +1117,7 @@ stubbed so the lifecycle runs in batch."
         display-actions setwb magit-calls deleted)
     (unwind-protect
         (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
-                  ((symbol-function 'agent-fleet--read-agent-name)
+                  ((symbol-function 'agent-fleet-read-agent-name)
                    (lambda (_) "w1:p1"))
                   ((symbol-function 'agent-fleet-read)
                    (lambda (&rest _) '(:text "child-frame output")))
@@ -1340,7 +1340,7 @@ resolvable project signals a `user-error'."
         positioned)
     ;; With a project root: dashboard opens, filter is set, refresh + position run.
     (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
-              ((symbol-function 'agent-fleet--read-agent-name)
+              ((symbol-function 'agent-fleet-read-agent-name)
                (lambda (_) "w1:p1"))
               ((symbol-function 'agent-fleet-dashboard--open)
                (lambda (display)
@@ -1367,7 +1367,7 @@ resolvable project signals a `user-error'."
     ;; No project: user-error, no dashboard open.
     (let (called-open)
       (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
-                ((symbol-function 'agent-fleet--read-agent-name)
+                ((symbol-function 'agent-fleet-read-agent-name)
                  (lambda (_) "w1:p1"))
                 ((symbol-function 'agent-fleet-project-for-agent)
                  (lambda (_) nil))
