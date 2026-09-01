@@ -976,6 +976,75 @@ before the bare-single-AgentInfo check because the envelope's car is
    ((keywordp (car result)) (list result))     ; bare single AgentInfo
    (t result)))
 
+;;; --- Shared presentation descriptor --------------------------------
+;;
+;; The dashboard, quick list, minibuffer completion, and consult integration
+;; all render the same agent.  Before this descriptor each builder formatted
+;; the fields itself, and they drifted: the dashboard grouped by Project
+;; while the list and completion surfaced Workspace; the list showed a raw
+;; wire status string and a raw kind while the dashboard showed a derived
+;; symbol label and a capitalized kind.  This struct is the single source:
+;; every builder reads pre-formatted slots from it, so the fields cannot
+;; diverge across UIs.
+
+(cl-defstruct agent-fleet-agent-presentation
+  "UI-independent presentation of one cached agent for rendering.
+AGENT is the raw `herdr-agent' struct (for callers needing fields outside
+the descriptor).  PANE-ID, NAME, PROJECT, KIND, and TASK are pre-formatted
+display strings.  STATUS is the derived symbol from `agent-fleet-status'
+\(idle/working/blocked/done/unknown, or nil); callers format it for display
+via `agent-fleet-status-label' (the dashboard adds a face on top)."
+  agent pane-id name project kind status task)
+
+(defun agent-fleet-status-label (status)
+  "Return the display label for STATUS (a symbol or nil).
+`BLOCKED'/`WORKING'/`IDLE'/`DONE', or `UNKNOWN' when nil.  The dashboard
+propertizes this with a status face via
+`agent-fleet-dashboard--face-for-status'; the quick list uses it plain."
+  (if status (upcase (symbol-name status)) "UNKNOWN"))
+
+(defun agent-fleet-agent-kind-label (agent)
+  "Return a capitalized Kind label for AGENT, or \"—\".
+The single kind formatter shared by the dashboard, quick list, and
+completion candidates."
+  (let ((kind (and agent (herdr-agent-agent agent))))
+    (if (and kind (not (string-empty-p kind)))
+        (capitalize kind)
+      "—")))
+
+(defun agent-fleet--agent-project-label (agent)
+  "Return the Project label for AGENT, or \"—\".
+Delegates to `agent-fleet-project-label' (canonical project-root basename)
+when the project feature module is loaded; the base layer does not require
+it, so an absent module degrades to \"—\" rather than a void-function error.
+This mirrors the `fboundp' guard on `agent-fleet-task-for-agent' in
+`agent-fleet--agent-task-label'."
+  (if (fboundp 'agent-fleet-project-label)
+      (agent-fleet-project-label agent)
+    "—"))
+
+(defun agent-fleet--presentation-for-agent (agent)
+  "Return an `agent-fleet-agent-presentation' for AGENT.
+The single source of the rendered fields (name/project/kind/status/task):
+the dashboard, quick list, and completion candidates all read from it so
+the fields cannot drift between UIs.  NAME falls back to the pane id when
+the agent has no display name."
+  (let ((name (or (and agent (herdr-agent-display-name agent))
+                  (and agent (herdr-agent-id agent)))))
+    (make-agent-fleet-agent-presentation
+     :agent agent
+     :pane-id (and agent (herdr-agent-id agent))
+     :name name
+     :project (agent-fleet--agent-project-label agent)
+     :kind (agent-fleet-agent-kind-label agent)
+     :status (agent-fleet-status agent)
+     :task (agent-fleet--agent-task-label agent name))))
+
+(defun agent-fleet--presentations ()
+  "Return presentations for every cached agent (in cache order)."
+  (mapcar #'agent-fleet--presentation-for-agent (herdr-agents)))
+
+
 (defun agent-fleet--list-label (agent)
   "Return a one-line label for AGENT as Herdr's sidebar shows it.
 `{display-name} · {kind}' — the display name (workspace identity, or an
@@ -990,31 +1059,37 @@ project).  Falls back to the display name alone when the kind is nil."
 
 (defun agent-fleet--list-entry (agent)
   "Return a `tabulated-list-entries' row for AGENT.
-The entry is `(ID [NAME STATUS KIND TASK WORKSPACE])': ID is the pane
-id, and the five cells are the display name, status, kind (the CLI),
-task label, and workspace id."
-  (let ((name (herdr-agent-display-name agent)))
-    (list (herdr-agent-id agent)
-          (vector name
-                  (or (herdr-agent-agent-status agent) "unknown")
-                  (or (herdr-agent-agent agent) "")
-                  (agent-fleet--agent-task-label agent name)
-                  (or (herdr-agent-workspace-id agent) "")))))
+The entry is `(ID [NAME STATUS KIND TASK PROJECT])': ID is the pane id
+and the five cells are the display name, the status label, the kind, the
+task label, and the project.  All cells are read from the shared
+`agent-fleet-agent-presentation' so the quick list and the dashboard
+render the same fields and cannot drift (e.g. one grouping by Project
+while another surfaces Workspace)."
+  (let ((p (agent-fleet--presentation-for-agent agent)))
+    (list (agent-fleet-agent-presentation-pane-id p)
+          (vector (or (agent-fleet-agent-presentation-name p) "")
+                  (agent-fleet-status-label
+                   (agent-fleet-agent-presentation-status p))
+                  (agent-fleet-agent-presentation-kind p)
+                  (agent-fleet-agent-presentation-task p)
+                  (agent-fleet-agent-presentation-project p)))))
 
 (defun agent-fleet--list-buffer (agents)
   "Display AGENTS (a list of `herdr-agent' structs) in a read-only table.
-One row per agent with columns Name, Status, Kind, Task, Workspace -- the
-same fields as the dashboard, so the buffer reads as a quick snapshot of
-the cache.  Uses `tabulated-list-mode' (parent `special-mode', so `q'
-quits and the buffer is read-only); rows are rebuilt on each call, so
-re-running `agent-fleet-list' refreshes it.  When not connected, a short
-notice is shown instead of an empty table."
+One row per agent with columns Name, Status, Kind, Task, Project -- the
+same fields as the dashboard, derived from the shared
+`agent-fleet-agent-presentation' so the buffer reads as a quick
+snapshot of the cache.  Uses `tabulated-list-mode' (parent
+`special-mode', so `q' quits and the buffer is read-only); rows are
+rebuilt on each call, so re-running `agent-fleet-list' refreshes it.
+When not connected, a short notice is shown instead of an empty
+table."
   (let ((buf (get-buffer-create "*Agent Fleet List*")))
     (with-current-buffer buf
       (tabulated-list-mode)
       (setq tabulated-list-format
             `[("Name" 22 t) ("Status" 10 t) ("Kind" 8 t)
-              ("Task" 28 nil) ("Workspace" 14 t)])
+              ("Task" 28 nil) ("Project" 14 t)])
       (setq tabulated-list-padding 2)
       (setq tabulated-list-sort-key nil)
       (if (null (herdr-model-cache))
@@ -1040,7 +1115,7 @@ An interactive call, or a REFRESH call, tries the configured automatic
 connection first.  It still returns nil rather than signalling when the
 server is unavailable, so cache inspection remains safe while offline.
 When called interactively, also display the agents in a read-only
-`*Agent Fleet List*' table (Name, Status, Kind, Task, Workspace)."
+`*Agent Fleet List*' table (Name, Status, Kind, Task, Project)."
   (interactive "P")
   (when (or refresh (called-interactively-p 'any))
     (ignore-errors (agent-fleet--ensure-connected)))
@@ -1084,10 +1159,12 @@ Unwraps the `agent_info' envelope before caching."
   "Return the task label for AGENT, whose display name is NAME.
 A parallel task title wins when the agent is in one; otherwise the
 stripped terminal title, unless it duplicates NAME; otherwise \"—\".
-This mirrors `agent-fleet-dashboard--task-label' so completion
-candidates and the dashboard Task column agree.  The parallel lookup
-is guarded with `fboundp' so the base layer stays usable before
-`agent-fleet-parallel' is loaded."
+This is the single task-label implementation: the dashboard Task cell
+and the completion candidates both reach it through the shared
+`agent-fleet-agent-presentation' (built by
+`agent-fleet--presentation-for-agent'), so the two cannot drift.  The
+parallel lookup is guarded with `fboundp' so the base layer stays
+usable before `agent-fleet-parallel' is loaded."
   (or (and (fboundp 'agent-fleet-task-for-agent)
            (when-let* ((task (agent-fleet-task-for-agent
                                (herdr-agent-id agent))))
@@ -1104,9 +1181,12 @@ is guarded with `fboundp' so the base layer stays usable before
 Each element is a plist with keys `:agent' (the struct), `:pane-id',
 `:name' (the `herdr-agent-display-name' identity), `:label' (that
 name disambiguated with the pane id in brackets when two agents share
-one), and `:kind', `:task', and `:workspace' mirroring the dashboard
-columns.  Any completion UI -- or a separate `consult-agent-fleet'
-package built on `consult--read' with an `:annotate' function and the
+one), and `:kind', `:task', and `:project' mirroring the dashboard
+columns.  The kind/task/project values are read from the shared
+`agent-fleet-agent-presentation' so completion and the dashboard carry
+identical information (no Workspace-vs-Project drift).  Any completion
+UI -- or a separate `consult-agent-fleet' package built on
+`consult--read' with an `:annotate' function and the
 `consult--lookup-cdr' lookup -- can show the same fields from this
 data.  Returns nil when no agents are cached."
   (let* ((agents (herdr-agents))
@@ -1117,14 +1197,9 @@ data.  Returns nil when no agents are cached."
                    h)))
     (mapcar
      (lambda (agent)
-       (let* ((name (herdr-agent-display-name agent))
-              (pane-id (herdr-agent-id agent))
-              (kind (let ((k (herdr-agent-agent agent)))
-                      (if (and k (not (string-empty-p k)))
-                          (capitalize k)
-                        "—")))
-              (task (agent-fleet--agent-task-label agent name))
-              (workspace (or (herdr-model--agent-workspace-label agent) "—"))
+       (let* ((p (agent-fleet--presentation-for-agent agent))
+              (name (agent-fleet-agent-presentation-name p))
+              (pane-id (agent-fleet-agent-presentation-pane-id p))
               (label (if (> (gethash name counts 0) 1)
                          (format "%s  [%s]" name pane-id)
                        name)))
@@ -1132,29 +1207,25 @@ data.  Returns nil when no agents are cached."
                :pane-id pane-id
                :name name
                :label label
-               :kind kind
-               :task task
-               :workspace workspace)))
+               :kind (agent-fleet-agent-presentation-kind p)
+               :task (agent-fleet-agent-presentation-task p)
+               :project (agent-fleet-agent-presentation-project p))))
      agents)))
 
 (defun agent-fleet-agent-candidate-suffix (entry)
-  "Return the kind/task/workspace suffix for candidate ENTRY.
+  "Return the kind/task/project suffix for candidate ENTRY.
 ENTRY is one element of `agent-fleet-agent-candidates'.  The suffix
-joins the kind, task, and workspace with the `·' separator
+joins the kind, task, and project with the `·' separator
 `agent-fleet--list-label' already uses, so it can serve as the inline
 tail of a `completing-read' candidate and as a `consult' `:annotate'
 string; a separate `consult-agent-fleet' package can reuse it for
-consistent formatting.  The workspace is dropped when it is missing or
-duplicates the candidate name, since an unnamed agent's identity is
-already its workspace label."
+consistent formatting.  The project (not the workspace) is shown,
+mirroring the dashboard's Project column rather than leaking Workspace
+as the user-facing group."
   (let ((kind (plist-get entry :kind))
         (task (plist-get entry :task))
-        (workspace (plist-get entry :workspace)))
-    (if (and workspace
-             (not (string= workspace "—"))
-             (not (string= workspace (plist-get entry :name))))
-        (format "%s · %s · %s" kind task workspace)
-      (format "%s · %s" kind task))))
+        (project (plist-get entry :project)))
+    (format "%s · %s · %s" kind task project)))
 
 
 ;;; --- Output viewer (read snapshot) --------------------
@@ -1162,7 +1233,7 @@ already its workspace label."
 (defun agent-fleet--read-agent-name (prompt)
   "Read an agent pane id from the minibuffer, completing over cached agents.
 Each candidate shows the agent identity (`herdr-agent-display-name')
-followed by its kind, task, and workspace -- the same fields the
+followed by its kind, task, and project -- the same fields the
 dashboard shows -- so the listing carries the same information as the
 dashboard.  Agents sharing an identity are disambiguated with the pane
 id in brackets.  Returns the pane id so it round-trips through

@@ -595,13 +595,18 @@ Mirrors `agent-fleet-interactive-output-viewer': `pop-to-buffer' is stubbed
 so no window opens in batch, but the `get-buffer-create'd buffer is live
 for content/mode assertions.  `tabulated-list-mode' derives from
 `special-mode', so the buffer is read-only and `q' quits.  The canned
-session holds one agent (w1:p1/`arch'/claude/`working' in workspace `w1'),
-so the table shows one row whose cells include those fields."
+session holds one agent (w1:p1/`arch'/claude/`working'); the row's cells
+are read from `agent-fleet-agent-presentation', so the status shows the
+shared upcase label (WORKING) and the 5th column is Project (not
+Workspace), matching the dashboard.  `agent-fleet-project-label' is stubbed
+for a deterministic project."
   (let* ((herdr-model--cache (agent-fleet-interactive-test--session))
          (buf-name "*Agent Fleet List*"))
     (unwind-protect
         (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
-                  ((symbol-function 'pop-to-buffer) (lambda (&rest _) nil)))
+                  ((symbol-function 'pop-to-buffer) (lambda (&rest _) nil))
+                  ((symbol-function 'agent-fleet-project-label)
+                   (lambda (_) "af-proj")))
           (call-interactively #'agent-fleet-list)
           (with-current-buffer buf-name
             (should buffer-read-only)
@@ -610,9 +615,9 @@ so the table shows one row whose cells include those fields."
                         (lookup-key (current-local-map) (kbd "q"))))
             (let ((s (buffer-string)))
               (should (string-match-p "arch" s))
-              (should (string-match-p "claude" s))
-              (should (string-match-p "working" s))
-              (should (string-match-p "w1" s)))))
+              (should (string-match-p "Claude" s))
+              (should (string-match-p "WORKING" s))
+              (should (string-match-p "af-proj" s)))))
       (when (get-buffer buf-name) (kill-buffer buf-name)))))
 
 ;;; --- Project/worktree/Magit -----------------------------------------
@@ -1179,52 +1184,57 @@ stubbed so the lifecycle runs in batch."
         (when (get-buffer buf) (kill-buffer buf))))))
 
 
-(ert-deftest agent-fleet-agent-candidates-lists-kind-task-workspace ()
-  "Candidates carry the identity plus kind, task, and workspace.
-The fields mirror the dashboard, and the alist shape (label . pane-id) is
-what a future `consult-agent-fleet' package would feed to `consult--read'
-with a `consult--lookup-cdr' lookup."
+(ert-deftest agent-fleet-agent-candidates-lists-kind-task-project ()
+  "Candidates carry the identity plus kind, task, and project.
+The fields mirror the dashboard via `agent-fleet-agent-presentation', and
+the alist shape (label . pane-id) is what a future `consult-agent-fleet'
+package would feed to `consult--read' with a `consult--lookup-cdr' lookup.
+`agent-fleet-project-label' is stubbed for a deterministic project label."
   (let ((herdr-model--cache (agent-fleet-interactive-test--session)))
-    ;; Fixture agent: name "arch", kind "claude", workspace label "demo",
-    ;; no terminal title and no parallel task -> task is "—".
-    (let ((entry (car (agent-fleet-agent-candidates))))
-      (should (equal "arch" (plist-get entry :name)))
-      (should (equal "arch" (plist-get entry :label)))
-      (should (equal "Claude" (plist-get entry :kind)))
-      (should (equal "demo" (plist-get entry :workspace)))
-      (should (equal "—" (plist-get entry :task)))
-      (should (equal "w1:p1" (plist-get entry :pane-id)))
-      (should (equal "Claude · — · demo"
-                     (agent-fleet-agent-candidate-suffix entry))))
-    ;; A parallel task title wins for the task field.
-    (let ((agent-fleet--tasks
-           (list (make-agent-fleet-task :id "tk" :title "fix bug")))
-          (agent-fleet--agent-tasks
-           (let ((h (make-hash-table :test 'equal)))
-             (puthash "w1:p1" "tk" h) h)))
+    (cl-letf (((symbol-function 'agent-fleet-project-label)
+               (lambda (_) "demo")))
+      ;; Fixture agent: name "arch", kind "claude", project "demo", no
+      ;; terminal title and no parallel task -> task is "—".
       (let ((entry (car (agent-fleet-agent-candidates))))
-        (should (equal "fix bug" (plist-get entry :task)))
-        (should (equal "Claude · fix bug · demo"
-                       (agent-fleet-agent-candidate-suffix entry)))))))
+        (should (equal "arch" (plist-get entry :name)))
+        (should (equal "arch" (plist-get entry :label)))
+        (should (equal "Claude" (plist-get entry :kind)))
+        (should (equal "demo" (plist-get entry :project)))
+        (should (equal "—" (plist-get entry :task)))
+        (should (equal "w1:p1" (plist-get entry :pane-id)))
+        (should (equal "Claude · — · demo"
+                       (agent-fleet-agent-candidate-suffix entry))))
+      ;; A parallel task title wins for the task field.
+      (let ((agent-fleet--tasks
+             (list (make-agent-fleet-task :id "tk" :title "fix bug")))
+            (agent-fleet--agent-tasks
+             (let ((h (make-hash-table :test 'equal)))
+               (puthash "w1:p1" "tk" h) h)))
+        (let ((entry (car (agent-fleet-agent-candidates))))
+          (should (equal "fix bug" (plist-get entry :task)))
+          (should (equal "Claude · fix bug · demo"
+                         (agent-fleet-agent-candidate-suffix entry))))))))
 
 (ert-deftest agent-fleet-agent-candidates-disambiguate-shared-names ()
   "Two agents sharing a display name are disambiguated by pane id."
   (let ((herdr-model--cache (agent-fleet-interactive-test--session)))
-    (puthash "w1:p2"
-             (make-herdr-agent :id "w1:p2" :workspace-id "w1"
-                               :name "arch" :agent "codex")
-             (herdr-session-agents herdr-model--cache))
-    (let ((entries (agent-fleet-agent-candidates)))
-      (should (= 2 (length entries)))
-      (let ((e1 (cl-find "w1:p1" entries
-                         :key (lambda (e) (plist-get e :pane-id)) :test #'equal))
-            (e2 (cl-find "w1:p2" entries
-                         :key (lambda (e) (plist-get e :pane-id)) :test #'equal)))
-        (should (equal "arch  [w1:p1]" (plist-get e1 :label)))
-        (should (equal "arch  [w1:p2]" (plist-get e2 :label)))
-        (should (equal "Claude" (plist-get e1 :kind)))
-        (should (equal "Codex" (plist-get e2 :kind)))
-        (should (equal "demo" (plist-get e2 :workspace)))))))
+    (cl-letf (((symbol-function 'agent-fleet-project-label)
+               (lambda (_) "demo")))
+      (puthash "w1:p2"
+               (make-herdr-agent :id "w1:p2" :workspace-id "w1"
+                                 :name "arch" :agent "codex")
+               (herdr-session-agents herdr-model--cache))
+      (let ((entries (agent-fleet-agent-candidates)))
+        (should (= 2 (length entries)))
+        (let ((e1 (cl-find "w1:p1" entries
+                           :key (lambda (e) (plist-get e :pane-id)) :test #'equal))
+              (e2 (cl-find "w1:p2" entries
+                           :key (lambda (e) (plist-get e :pane-id)) :test #'equal)))
+          (should (equal "arch  [w1:p1]" (plist-get e1 :label)))
+          (should (equal "arch  [w1:p2]" (plist-get e2 :label)))
+          (should (equal "Claude" (plist-get e1 :kind)))
+          (should (equal "Codex" (plist-get e2 :kind)))
+          (should (equal "demo" (plist-get e2 :project))))))))
 
 
 ;;; --- Dashboard -------------------------------------------------------

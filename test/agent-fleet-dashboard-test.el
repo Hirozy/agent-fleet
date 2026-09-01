@@ -961,35 +961,35 @@ following `pane.agent_status_changed' (dotted per-pane kind) event."
     (cl-letf (((symbol-function 'agent-fleet-project-for-agent)
                (lambda (_) repo)))
       (should (equal (file-name-nondirectory (directory-file-name repo))
-                     (agent-fleet-dashboard--project-label
+                     (agent-fleet-project-label
                       (make-herdr-agent :cwd "/anything"))))))
   (should (equal "—"
-                 (agent-fleet-dashboard--project-label
+                 (agent-fleet-project-label
                   (make-herdr-agent :workspace-id nil :cwd nil))))
   (should (equal "—"
-                 (agent-fleet-dashboard--project-label
+                 (agent-fleet-project-label
                   (make-herdr-agent :workspace-id nil :cwd ""))))
   (should (equal "—"
-                 (agent-fleet-dashboard--project-label
+                 (agent-fleet-project-label
                   (make-herdr-agent :workspace-id nil :cwd "/home/me/proj"))))
   ;; Kind: capitalize or "—".
-  (should (equal "Claude" (agent-fleet-dashboard--kind-label
+  (should (equal "Claude" (agent-fleet-agent-kind-label
                            (make-herdr-agent :agent "claude"))))
-  (should (equal "—"      (agent-fleet-dashboard--kind-label
+  (should (equal "—"      (agent-fleet-agent-kind-label
                            (make-herdr-agent :agent nil))))
   ;; Task: terminal title unless it duplicates the Agent label, else "—".
   (should (equal "building"
-                 (agent-fleet-dashboard--task-label
+                 (agent-fleet--agent-task-label
                   (make-herdr-agent :name "arch"
                                     :terminal-title-stripped "building")
                   "arch")))
   (should (equal "—"
-                 (agent-fleet-dashboard--task-label
+                 (agent-fleet--agent-task-label
                   (make-herdr-agent :name "arch"
                                     :terminal-title-stripped "arch")
                   "arch")))
   (should (equal "—"
-                 (agent-fleet-dashboard--task-label
+                 (agent-fleet--agent-task-label
                   (make-herdr-agent) "arch"))))
 
 
