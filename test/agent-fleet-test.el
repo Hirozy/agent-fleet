@@ -1226,5 +1226,75 @@ A nil `herdr-session' must yield an empty result, not a
         (should (nth 1 check))
         (should (equal "claude, codex" (nth 2 check)))))))
 
+;;; --- Shared presentation descriptor --------------------------------
+
+(defun agent-fleet-test--presentation-session (agent)
+  "Install AGENT in a fresh cache session for presentation tests.
+Returns the session.  The caller MUST clear the cache when done
+\(typically in an `unwind-protect' via `herdr-model-clear-cache')."
+  (let ((session (herdr-model--empty-session)))
+    (puthash (herdr-agent-id agent) agent (herdr-session-agents session))
+    (herdr-model-set-cache session)
+    session))
+
+(ert-deftest agent-fleet-presentation-fields ()
+  "The presentation's slots are the shared formatters' output (single source)."
+  (let ((agent (make-herdr-agent :id "w1:p1" :name "arch"
+                                  :agent "claude" :agent-status "blocked"
+                                  :cwd "/repo")))
+    (agent-fleet-test--presentation-session agent)
+    (unwind-protect
+        (cl-letf (((symbol-function 'agent-fleet-project-label)
+                   (lambda (_) "myproj")))
+          (let ((p (agent-fleet--presentation-for-agent agent))
+                (name (herdr-agent-display-name agent)))
+            (should (equal "w1:p1" (agent-fleet-agent-presentation-pane-id p)))
+            (should (equal name (agent-fleet-agent-presentation-name p)))
+            (should (equal "myproj" (agent-fleet-agent-presentation-project p)))
+            (should (equal "Claude" (agent-fleet-agent-presentation-kind p)))
+            (should (eq 'blocked (agent-fleet-agent-presentation-status p)))
+            (should (equal "—" (agent-fleet-agent-presentation-task p)))))
+      (herdr-model-clear-cache))))
+
+(ert-deftest agent-fleet-list-entry-uses-project-column ()
+  "The quick list's 5th cell is Project (not Workspace); 2nd is the upcase status."
+  (let ((agent (make-herdr-agent :id "w1:p1" :name "arch"
+                                  :agent "claude" :agent-status "blocked"
+                                  :cwd "/repo")))
+    (agent-fleet-test--presentation-session agent)
+    (unwind-protect
+        (cl-letf (((symbol-function 'agent-fleet-project-label)
+                   (lambda (_) "myproj")))
+          (let ((row (agent-fleet--list-entry agent)))
+            (should (equal "w1:p1" (car row)))
+            ;; [Name Status Kind Task Project]
+            (should (equal "arch"  (aref (cadr row) 0)))
+            (should (equal "BLOCKED" (aref (cadr row) 1)))
+            (should (equal "Claude" (aref (cadr row) 2)))
+            (should (equal "—"     (aref (cadr row) 3)))
+            (should (equal "myproj" (aref (cadr row) 4)))))
+      (herdr-model-clear-cache))))
+
+(ert-deftest agent-fleet-agent-candidates-carry-project ()
+  "Completion candidates carry :project (not :workspace); the suffix shows it."
+  (let ((agent (make-herdr-agent :id "w1:p1" :name "arch"
+                                  :agent "claude" :agent-status "blocked"
+                                  :cwd "/repo")))
+    (agent-fleet-test--presentation-session agent)
+    (unwind-protect
+        (cl-letf (((symbol-function 'agent-fleet-project-label)
+                   (lambda (_) "myproj")))
+          (let* ((entries (agent-fleet-agent-candidates))
+                 (entry (car entries))
+                 (suffix (agent-fleet-agent-candidate-suffix entry)))
+            (should entry)
+            (should (equal "w1:p1" (plist-get entry :pane-id)))
+            (should (equal "myproj" (plist-get entry :project)))
+            (should-not (plist-member entry :workspace))
+            (should (string-match-p "myproj" suffix))
+            (should (string-match-p "Claude" suffix))))
+      (herdr-model-clear-cache))))
+
+
 (provide 'agent-fleet-test)
 ;;; agent-fleet-test.el ends here

@@ -44,7 +44,7 @@
 ;; unchanged.
 ;;
 ;; Each candidate shows the agent identity and, as a consult
-;; annotation, its kind, task, and workspace -- the same fields the
+;; annotation, its kind, task, and project -- the same fields the
 ;; agent-fleet dashboard shows.  The candidate data comes from
 ;; `agent-fleet-agent-candidates', so consult and the built-in
 ;; `completing-read' listing carry identical information.
@@ -62,7 +62,7 @@
 PROMPT is shown in the minibuffer.  Candidates are the
 `agent-fleet-agent-candidates' data: each shows the agent identity
 and, as a consult annotation aligned with `consult--annotate-align',
-its kind, task, and workspace, mirroring the dashboard columns.
+its kind, task, and project, mirroring the dashboard columns.
 Agents sharing an identity are disambiguated with the pane id in
 brackets, as in the built-in listing.  Signal `user-error' when no
 agent is cached.  The return value is the pane id that the consult
@@ -117,7 +117,7 @@ the other selection commands all call.  Because the advice sits on the
 reader, every entry point that goes through it is covered: keys you
 have bound to those commands, `M-x', dashboard bindings, and
 programmatic calls.  The consult candidates show the agent identity
-with kind, task, and workspace as a consult annotation, with narrowing
+with kind, task, and project as a consult annotation, with narrowing
 and preview, instead of the built-in `completing-read' listing.
 Disabling the mode removes the advice, so the original reader runs
 unchanged -- no remap or residue is left behind.  This is a GLOBAL
