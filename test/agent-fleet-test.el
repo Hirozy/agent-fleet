@@ -1164,7 +1164,7 @@ mask the result."
 (ert-deftest agent-fleet-read-agent-name-errors-when-cache-empty ()
   "Interactive target readers report an empty fleet before minibuffer input."
   (let ((herdr-model--cache (herdr-model--empty-session)))
-    (should-error (agent-fleet--read-agent-name "Agent") :type 'user-error)))
+    (should-error (agent-fleet-read-agent-name "Agent") :type 'user-error)))
 
 (ert-deftest agent-fleet-list-when-disconnected-is-nil-safe ()
   "list and the cache read accessors return nil (not a type error) with no session.
@@ -1294,6 +1294,74 @@ Returns the session.  The caller MUST clear the cache when done
             (should (string-match-p "myproj" suffix))
             (should (string-match-p "Claude" suffix))))
       (herdr-model-clear-cache))))
+
+
+;;; --- Completion API + action registry ------------------------------
+
+(ert-deftest agent-fleet-agent-annotation-returns-suffix ()
+  "The public annotation fn reads the populated var; empty when unset/unknown."
+  (let ((agent (make-herdr-agent :id "w1:p1" :name "arch" :agent "claude"
+                                  :agent-status "blocked" :cwd "/repo")))
+    (agent-fleet-test--presentation-session agent)
+    (unwind-protect
+        (cl-letf (((symbol-function 'agent-fleet-project-label) (lambda (_) "myproj")))
+          ;; No annotations bound -> empty (no crash), and nil candidate safe.
+          (should (equal "" (let (agent-fleet-completion-annotations)
+                              (agent-fleet-agent-annotation "arch"))))
+          (should (equal "" (agent-fleet-agent-annotation nil)))
+          ;; Populated from candidates -> the kind/task/project suffix.
+          (let ((agent-fleet-completion-annotations
+                 (agent-fleet-completion-annotation-table
+                  (agent-fleet-agent-candidates))))
+            (should (equal "Claude · — · myproj"
+                           (agent-fleet-agent-annotation "arch")))
+            (should (equal "" (agent-fleet-agent-annotation "no-such-agent")))))
+      (herdr-model-clear-cache))))
+
+(ert-deftest agent-fleet-read-agent-name-uses-category ()
+  "The reader uses a completion table declaring the agent-fleet-agent category
+and annotation, with clean-label candidates (no inlined suffix)."
+  (let ((agent (make-herdr-agent :id "w1:p1" :name "arch" :agent "claude"
+                                  :agent-status "blocked" :cwd "/repo")))
+    (agent-fleet-test--presentation-session agent)
+    (unwind-protect
+        (cl-letf (((symbol-function 'agent-fleet-project-label) (lambda (_) "myproj"))
+                  ((symbol-function 'completing-read)
+                   (lambda (_prompt coll &rest _)
+                     (should (eq coll #'agent-fleet--agent-collection))
+                     (let ((md (funcall coll "" nil 'metadata)))
+                       (should (eq (car md) 'metadata))
+                       (should (equal (assq 'category (cdr md))
+                                      '(category . agent-fleet-agent)))
+                       (should (eq (cdr (assq 'annotation-function (cdr md)))
+                                   #'agent-fleet-agent-annotation)))
+                     ;; Clean-label candidate; suffix is an annotation, not inlined.
+                     (should (equal "w1:p1"
+                                    (cdr (assoc "arch"
+                                                agent-fleet--completion-candidates))))
+                     (should (equal "Claude · — · myproj"
+                                    (gethash "arch"
+                                             agent-fleet-completion-annotations "")))
+                     "arch")))
+          (should (equal "w1:p1" (agent-fleet-read-agent-name "Pick"))))
+      (herdr-model-clear-cache))))
+
+(ert-deftest agent-fleet-action-registry-accessors ()
+  "Registry accessors return the canonical labels and per-surface bindings."
+  (should (equal "Inspect output" (agent-fleet-action-label 'inspect)))
+  (should (equal "Magit status" (agent-fleet-action-label 'magit)))
+  (should (equal "Working-tree diff" (agent-fleet-action-label 'diff)))
+  (should-not (agent-fleet-action-label 'no-such))
+  ;; Dashboard: one (key . cmd) per shared action.
+  (should (member '("o" . agent-fleet-dashboard--inspect)
+                  (agent-fleet-action-dashboard-bindings)))
+  (should (member '("m" . agent-fleet-dashboard--magit)
+                  (agent-fleet-action-dashboard-bindings)))
+  ;; Attach: flat list incl both child-frame/buffer variants.
+  (should (member '("o" . agent-fleet-attach-inspect-in-child-frame)
+                  (agent-fleet-action-attach-bindings)))
+  (should (member '("O" . agent-fleet-attach-inspect-in-buffer)
+                  (agent-fleet-action-attach-bindings))))
 
 
 (provide 'agent-fleet-test)

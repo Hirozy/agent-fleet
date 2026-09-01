@@ -292,7 +292,7 @@ NO result extraction: returns task metadata only, never agent output — use
 `agent-fleet-read' separately to inspect a finished agent."
   (interactive
    (list (or (agent-fleet-task-for-agent
-              (agent-fleet--read-agent-name "Wait for task of agent"))
+              (agent-fleet-read-agent-name "Wait for task of agent"))
              (user-error "No task for agent at point"))))
   (let* ((until-syms (agent-fleet-parallel--normalize-until until))
          (deadline (+ (float-time) (/ timeout-ms 1000.0))))

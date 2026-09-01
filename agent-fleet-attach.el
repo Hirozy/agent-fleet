@@ -419,7 +419,7 @@ No socket RPC is involved: there is no `agent.attach' method; this is a
 client-side PTY bridge over the `herdr' CLI.  If no Emacs terminal backend is
 ready, `user-error's with the `herdr agent attach' command to run in the
 user's own terminal."
-  (interactive (list (agent-fleet--read-agent-name "Attach to agent")
+  (interactive (list (agent-fleet-read-agent-name "Attach to agent")
                      current-prefix-arg))
   (agent-fleet--ensure-connected)
   (let* ((struct (or (agent-fleet--find-agent target)
@@ -450,7 +450,7 @@ Run in your terminal: %s" cmd))))))
 ;;
 ;; An attach buffer already owns the pane id it drives
 ;; (`agent-fleet-attach-pane-id').  These leaf commands act on that agent
-;; directly -- no `agent-fleet--read-agent-name' selection prompt -- mirroring
+;; directly -- no `agent-fleet-read-agent-name' selection prompt -- mirroring
 ;; the dashboard at-point commands (agent-fleet-dashboard.el) but scoped to
 ;; the buffer's own agent.  They live under a `C-c C-a' prefix: ghostel
 ;; reserves plain keys for the PTY in char mode, and `C-c' is in
@@ -725,7 +725,11 @@ there, e.g. (keymap-set agent-fleet-attach-mode-map \"C-c C-f\"
 \\='agent-fleet-attach-command-map).
 Lowercase repo/view keys (`o'/`w'/`m'/`d') open an auxiliary child frame
 over the terminal parent, leaving its window geometry untouched; uppercase
-(`O'/`W'/`M'/`D') open an ordinary buffer."
+(`O'/`W'/`M'/`D') open an ordinary buffer.  The shared action keys mirror
+`agent-fleet-action-registry' (verified by
+`agent-fleet-action-registry-attach-sync'); `k' (send keys) and `h'/`?'
+(menu) are attach-only.  This map is literal (not dolist-generated) so its
+autoload form carries every binding before `agent-fleet-attach' loads."
   "o" #'agent-fleet-attach-inspect-in-child-frame
   "O" #'agent-fleet-attach-inspect-in-buffer
   "s" #'agent-fleet-attach-prompt

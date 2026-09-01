@@ -792,7 +792,7 @@ envelope).  The agent may keep working after this returns; use
 `agent-fleet-wait' or the status hooks to observe completion.
 See the `agent.prompt' protocol described above."
   (interactive
-   (list (agent-fleet--read-agent-name "Prompt agent")
+   (list (agent-fleet-read-agent-name "Prompt agent")
          (read-string "Prompt: ")))
   (agent-fleet--ensure-connected)
   (agent-fleet--unwrap-agent
@@ -812,7 +812,7 @@ symbol or list (default `agent-fleet-default-wait-until').  Returns the
 agent's AgentInfo plist (unwrapped); its `:agent_status' is the wait
 outcome."
   (interactive
-   (list (agent-fleet--read-agent-name "Prompt and wait for agent")
+   (list (agent-fleet-read-agent-name "Prompt and wait for agent")
          (read-string "Prompt: ")))
   (agent-fleet--ensure-connected)
   (let ((target (agent-fleet--resolve-target agent))
@@ -856,7 +856,7 @@ This is a single blocking RPC, NOT polling: Emacs stays
 responsive because the protocol layer pumps `accept-process-output' during
 the wait, which also keeps the live cache in step.  Returns the agent's
 AgentInfo plist (unwrapped); its `:agent_status' is the outcome."
-  (interactive (list (agent-fleet--read-agent-name "Wait for agent")))
+  (interactive (list (agent-fleet-read-agent-name "Wait for agent")))
   (agent-fleet--ensure-connected)
   (let ((target (agent-fleet--resolve-target agent))
         (until-list (agent-fleet--normalize-until
@@ -878,7 +878,7 @@ KEYS is a single key-notation string (\"ctrl+c\", \"enter\", \"esc\",
 \"shift+tab\", \"f1\", ...) or a list of them.  Returns the agent's
 AgentInfo plist if the server returned one, else the raw ack."
   (interactive
-   (list (agent-fleet--read-agent-name "Send keys to agent")
+   (list (agent-fleet-read-agent-name "Send keys to agent")
          (read-string "Keys (for example ctrl+c or enter): ")))
   (agent-fleet--ensure-connected)
   (let ((key-list (if (stringp keys) (list keys)
@@ -897,7 +897,7 @@ This is `interrupt', not `cancel': different CLIs attach different
 semantics to Ctrl-C, so we expose the key directly.
 Returns the agent's AgentInfo plist if the server returned one, else the
 raw ack."
-  (interactive (list (agent-fleet--read-agent-name "Interrupt agent")))
+  (interactive (list (agent-fleet-read-agent-name "Interrupt agent")))
   (agent-fleet--ensure-connected)
   (let ((res (herdr-request "agent.send_keys"
                             `(("target" . ,(agent-fleet--resolve-target agent))
@@ -913,7 +913,7 @@ raw ack."
 Refreshes the cached agent so `agent-fleet-list' reflects the new name.
 Returns the renamed agent's AgentInfo plist (unwrapped)."
   (interactive
-   (let* ((target (agent-fleet--read-agent-name "Rename agent"))
+   (let* ((target (agent-fleet-read-agent-name "Rename agent"))
           (cached (agent-fleet--find-agent target))
           (current (and cached (herdr-agent-display-name cached))))
      (list target (read-string "New name: " current))))
@@ -938,7 +938,7 @@ Returns the renamed agent's AgentInfo plist (unwrapped)."
 The agent process is terminated with the pane.  The cache is updated
 eagerly (the `pane_closed' event also removes it).  Returns the result."
   (interactive
-   (let ((target (agent-fleet--read-agent-name "Kill agent")))
+   (let ((target (agent-fleet-read-agent-name "Kill agent")))
      (unless (y-or-n-p (format "Kill agent %s? " target))
        (user-error "Canceled"))
      (list target)))
@@ -955,7 +955,7 @@ eagerly (the `pane_closed' event also removes it).  Returns the result."
 (defun agent-fleet-switch (agent)
   "Focus AGENT's pane in the Herdr UI via `agent.focus'.
 Returns the focused agent's AgentInfo plist (unwrapped)."
-  (interactive (list (agent-fleet--read-agent-name "Focus agent")))
+  (interactive (list (agent-fleet-read-agent-name "Focus agent")))
   (agent-fleet--ensure-connected)
   (agent-fleet--unwrap-agent
    (herdr-request "agent.focus" `(("target" . ,(agent-fleet--resolve-target agent))))))
@@ -1228,34 +1228,108 @@ as the user-facing group."
     (format "%s · %s · %s" kind task project)))
 
 
-;;; --- Output viewer (read snapshot) --------------------
+;;; --- Completion API (public category + annotation) ----------------
+;;
+;; Agent selection is a public completion API, not a private reader that only
+;; `consult' can advise.  The reader hands `completing-read' a completion TABLE
+;; whose metadata declares the `agent-fleet-agent' category and an
+;; `:annotation-function' for the kind/task/project suffix.  So any completion
+;; UI -- the native *Completions* buffer, Vertico+Marginalia, Embark -- shows
+;; the suffix and recognizes agents as a category, with clean-label candidates
+;; (search by name, not by suffix).  `consult' reuses the same public
+;; annotation function instead of reimplementing the label->suffix table.
 
-(defun agent-fleet--read-agent-name (prompt)
+(defvar agent-fleet-completion-annotations nil
+  "Hash mapping a candidate label to its suffix string, or nil.
+Let-bound around the `completing-read' call in
+`agent-fleet-read-agent-name' (and by `consult-agent-fleet' around its
+`consult--read'); read by `agent-fleet-agent-annotation'.  nil outside a
+read.  This is a public dynamic variable so optional completion packages can
+populate it and reuse `agent-fleet-agent-annotation' without touching private
+state.")
+
+(defun agent-fleet-agent-annotation (candidate)
+  "Return the kind/task/project annotation for a completion CANDIDATE.
+CANDIDATE is a label from `agent-fleet-agent-candidates'; the suffix is read
+from `agent-fleet-completion-annotations' (populated by the reader/consult),
+or the empty string.  Exposed via the `agent-fleet-agent' completion
+category's metadata `:annotation-function', so any `completing-read' UI
+displays it.  Public so `consult-agent-fleet' reuses it instead of
+rebuilding its own label->suffix table."
+  (if (and candidate (hash-table-p agent-fleet-completion-annotations))
+      (gethash candidate agent-fleet-completion-annotations "")
+    ""))
+
+(defun agent-fleet-completion-annotation-table (entries)
+  "Return a hash mapping each candidate label to its suffix string.
+ENTRIES is the list from `agent-fleet-agent-candidates'.  Public so
+`consult-agent-fleet' can populate `agent-fleet-completion-annotations'
+from the same source as the built-in reader."
+  (let ((table (make-hash-table :test 'equal)))
+    (dolist (entry entries table)
+      (puthash (plist-get entry :label)
+               (agent-fleet-agent-candidate-suffix entry)
+               table))))
+
+(defvar agent-fleet--completion-candidates nil
+  "Alist (label . pane-id) for the current completion, or nil.
+Let-bound by `agent-fleet-read-agent-name' around `completing-read'; read by
+`agent-fleet--agent-collection' (the completion table).  Internal -- callers
+use `agent-fleet-read-agent-name'.")
+
+(defun agent-fleet--agent-collection (string pred action)
+  "Completion table over `agent-fleet--completion-candidates'.
+On the `metadata' action, declares the `agent-fleet-agent' category and an
+`annotation-function' of `agent-fleet-agent-annotation' so any completion UI
+shows the kind/task/project suffix.  Other actions delegate to
+`complete-with-action' over the candidate labels."
+  (pcase action
+    ('metadata
+     `(metadata (category . agent-fleet-agent)
+                (annotation-function . ,#'agent-fleet-agent-annotation)))
+    (_ (complete-with-action action
+              (mapcar #'car agent-fleet--completion-candidates)
+              string pred))))
+
+(defvar agent-fleet-read-agent-name-history nil
+  "Minibuffer history for `agent-fleet-read-agent-name'.")
+
+;;;###autoload
+(defun agent-fleet-read-agent-name (prompt)
   "Read an agent pane id from the minibuffer, completing over cached agents.
-Each candidate shows the agent identity (`herdr-agent-display-name')
-followed by its kind, task, and project -- the same fields the
-dashboard shows -- so the listing carries the same information as the
-dashboard.  Agents sharing an identity are disambiguated with the pane
-id in brackets.  Returns the pane id so it round-trips through
-`agent-fleet--find-agent'."
+Each candidate is the agent identity (`herdr-agent-display-name',
+disambiguated with the pane id in brackets when two agents share one); its
+kind, task, and project appear as a completion annotation (the same fields
+the dashboard shows) via the `agent-fleet-agent' category, so any
+`completing-read' UI -- the native *Completions* buffer, Vertico+Marginalia,
+Embark -- displays them without `consult'.  Returns the pane id so it
+round-trips through `agent-fleet--find-agent'.  Signal `user-error' when no
+agent is cached."
   (let* ((entries (agent-fleet-agent-candidates))
-         (alist (mapcar
-                 (lambda (entry)
-                   (cons (format "%s  %s"
-                                 (plist-get entry :label)
-                                 (agent-fleet-agent-candidate-suffix entry))
-                         (plist-get entry :pane-id)))
-                 entries))
-         (default (and alist (caar alist)))
-         (default-name (and entries (plist-get (car entries) :label))))
-    (unless alist
+         (agent-fleet--completion-candidates
+          (mapcar (lambda (entry)
+                    (cons (plist-get entry :label)
+                          (plist-get entry :pane-id)))
+                  entries))
+         (agent-fleet-completion-annotations
+          (agent-fleet-completion-annotation-table entries))
+         (default (and entries (plist-get (car entries) :label))))
+    (unless entries
       (user-error "No agents are available"))
     (cdr (assoc (completing-read
-                 (if default-name
-                     (format "%s (default %s): " prompt default-name)
+                 (if default
+                     (format "%s (default %s): " prompt default)
                    (concat prompt ": "))
-                 alist nil t nil nil default)
-                alist))))
+                 #'agent-fleet--agent-collection nil t nil
+                 'agent-fleet-read-agent-name-history default)
+                agent-fleet--completion-candidates))))
+
+;;;###autoload
+(define-obsolete-function-alias 'agent-fleet--read-agent-name
+  'agent-fleet-read-agent-name "0.8.0")
+
+
+;;; --- Output viewer (read snapshot) --------------------
 
 (defun agent-fleet--show-output-op (agent &optional lines source)
   "Read AGENT's recent output and render it into its view buffer.
@@ -1294,7 +1368,7 @@ selected frame's window tree.  This is a read-snapshot view, NOT a
 continuously mirrored terminal.  With a prefix arg, prompt for the line
 count."
   (interactive
-   (list (agent-fleet--read-agent-name "Show output for agent")
+   (list (agent-fleet-read-agent-name "Show output for agent")
          (and current-prefix-arg
               (read-number "Lines: " agent-fleet-default-read-lines))))
   (let ((pair (agent-fleet--show-output-op agent lines source)))
@@ -1310,7 +1384,7 @@ geometry untouched.  With a prefix arg, prompt for the line count.
 Signal a `user-error' when child frames are unsupported; there is no
 silent buffer fallback (use `agent-fleet-show-output-in-buffer' for that)."
   (interactive
-   (list (agent-fleet--read-agent-name "Show output for agent")
+   (list (agent-fleet-read-agent-name "Show output for agent")
          (and current-prefix-arg
               (read-number "Lines: " agent-fleet-default-read-lines))))
   (require 'agent-fleet-display nil t)
@@ -1502,6 +1576,81 @@ agent manifests.  See the environment checks above."
   (herdr--doctor-render
    (append (herdr--doctor-checks) (agent-fleet--doctor-agent-checks))
    "*agent-fleet-doctor*" "Agent Fleet Doctor"))
+
+
+;;; --- Shared action registry ---------------------------------------
+;;
+;; The dashboard and the attach buffer surface the same set of agent actions
+;; (inspect/prompt/interrupt/kill/rename/worktree/diff/magit).  This table is
+;; the single source of their canonical labels and per-surface command+key
+;; bindings, so the two surfaces (and a future Embark agent action menu)
+;; cannot drift.  Surface-only actions (new/refresh/filters/quit/attention
+;; on the dashboard; send-keys/menu on attach) stay inline in their surfaces
+;; -- only the SHARED actions converge here.  Commands are stored as symbols,
+;; so load order is irrelevant (autoload triggers on key press); both feature
+;; modules `require' agent-fleet, so the table is available when they build
+;; their maps.
+
+(defconst agent-fleet-action-registry
+  '((inspect :label "Inspect output"
+     :dashboard ("o" . agent-fleet-dashboard--inspect)
+     :attach (("o" . agent-fleet-attach-inspect-in-child-frame)
+              ("O" . agent-fleet-attach-inspect-in-buffer)))
+    (prompt :label "Prompt"
+     :dashboard ("s" . agent-fleet-dashboard--prompt)
+     :attach (("s" . agent-fleet-attach-prompt)
+              ("S" . agent-fleet-attach-prompt-in-child-frame)))
+    (interrupt :label "Interrupt"
+     :dashboard ("i" . agent-fleet-dashboard--interrupt)
+     :attach (("i" . agent-fleet-attach-interrupt)))
+    (kill :label "Kill"
+     :dashboard ("x" . agent-fleet-dashboard--kill)
+     :attach (("x" . agent-fleet-attach-kill)))
+    (rename :label "Rename"
+     :dashboard ("r" . agent-fleet-dashboard--rename)
+     :attach (("r" . agent-fleet-attach-rename)))
+    (worktree :label "Worktree status"
+     :dashboard ("w" . agent-fleet-dashboard--worktree)
+     :attach (("w" . agent-fleet-attach-worktree-in-child-frame)
+              ("W" . agent-fleet-attach-worktree-in-buffer)))
+    (diff :label "Working-tree diff"
+     :dashboard ("d" . agent-fleet-dashboard--diff)
+     :attach (("d" . agent-fleet-attach-diff-in-child-frame)
+              ("D" . agent-fleet-attach-diff-in-buffer)))
+    (magit :label "Magit status"
+     :dashboard ("m" . agent-fleet-dashboard--magit)
+     :attach (("m" . agent-fleet-attach-magit-in-child-frame)
+              ("M" . agent-fleet-attach-magit-in-buffer))))
+  "Single source of the agent actions shared by the dashboard and attach
+surfaces (and a future Embark agent menu).
+Each entry is (NAME :label L :dashboard (key . cmd)
+:attach ((key . cmd) ...)).  NAME is the action identity; :label is its
+canonical display string; :dashboard is (key . cmd); :attach is a list of
+(key . cmd) -- one for single actions, two for the child-frame/buffer
+split.  Surface-only actions stay inline in their surfaces.")
+
+(defun agent-fleet-action-label (name)
+  "Return the canonical display label for action NAME, or nil.
+NAME is the action identity (a symbol in `agent-fleet-action-registry')."
+  (plist-get (cdr (assq name agent-fleet-action-registry)) :label))
+
+(defun agent-fleet-action-dashboard-bindings ()
+  "Return the (key . cmd) dashboard bindings for every registry action.
+The dashboard builds its keymap/table bindings from this so the shared
+actions match the registry (and the attach surface) by construction."
+  (delq nil
+        (mapcar (lambda (entry)
+                  (plist-get (cdr entry) :dashboard))
+                agent-fleet-action-registry)))
+
+(defun agent-fleet-action-attach-bindings ()
+  "Return a flat list of (key . cmd) attach bindings across registry actions.
+The attach command map is built from this so the shared actions match the
+registry (and the dashboard surface) by construction."
+  (let (out)
+    (dolist (entry agent-fleet-action-registry (nreverse out))
+      (dolist (kc (plist-get (cdr entry) :attach))
+        (push kc out)))))
 
 
 (provide 'agent-fleet)

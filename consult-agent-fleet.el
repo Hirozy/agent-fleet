@@ -32,7 +32,7 @@
 ;;     (require 'consult-agent-fleet)
 ;;     (consult-agent-fleet-mode)
 ;;
-;; The mode installs `:around' advice on `agent-fleet--read-agent-name'
+;; The mode installs `:around' advice on `agent-fleet-read-agent-name'
 ;; -- the shared reader that the interactive forms of
 ;; `agent-fleet-attach', `agent-fleet-show-output-in-buffer',
 ;; `agent-fleet-switch', `agent-fleet-kill', `agent-fleet-interrupt',
@@ -60,29 +60,24 @@
 (defun consult-agent-fleet--select (prompt)
   "Select a cached Herdr agent with consult, returning its pane id.
 PROMPT is shown in the minibuffer.  Candidates are the
-`agent-fleet-agent-candidates' data: each shows the agent identity
-and, as a consult annotation aligned with `consult--annotate-align',
-its kind, task, and project, mirroring the dashboard columns.
-Agents sharing an identity are disambiguated with the pane id in
-brackets, as in the built-in listing.  Signal `user-error' when no
-agent is cached.  The return value is the pane id that the consult
-`:lookup' yields, so it round-trips through `agent-fleet--find-agent'."
+`agent-fleet-agent-candidates' data: each shows the agent identity and,
+as a consult annotation aligned with `consult--annotate-align', its kind,
+task, and project.  The suffix comes from the SAME public
+`agent-fleet-agent-annotation' the built-in reader's completion table
+declares (via `agent-fleet-completion-annotation-table'), so consult and
+the native *Completions* show identical suffixes with no duplicated
+label->suffix logic.  Agents sharing an identity are disambiguated with
+the pane id in brackets.  Signal `user-error' when no agent is cached.
+The return value is the pane id that the consult `:lookup' yields, so it
+round-trips through `agent-fleet--find-agent'."
   (let* ((entries (agent-fleet-agent-candidates))
          (candidates
           (mapcar (lambda (entry)
                     (cons (plist-get entry :label)
                           (plist-get entry :pane-id)))
                   entries))
-         (suffix
-          (let ((table (make-hash-table :test 'equal)))
-            (dolist (entry entries table)
-              (puthash (plist-get entry :label)
-                       (agent-fleet-agent-candidate-suffix entry)
-                       table))))
-         (annotate
-          (lambda (cand)
-            (consult--annotate-align
-             cand (gethash cand suffix "")))))
+         (agent-fleet-completion-annotations
+          (agent-fleet-completion-annotation-table entries)))
     (unless candidates
       (user-error "No agents are available"))
     (consult--read
@@ -91,14 +86,16 @@ agent is cached.  The return value is the pane id that the consult
      :require-match t
      :history '(:input consult-agent-fleet--history)
      :category 'agent-fleet-agent
-     :annotate annotate
+     :annotate (lambda (cand)
+                 (consult--annotate-align
+                  cand (agent-fleet-agent-annotation cand)))
      :lookup #'consult--lookup-cdr)))
 
 (defun consult-agent-fleet--read-agent-name (_orig-fn prompt)
   "`:around' advice that selects an agent with consult.
 Installed by `consult-agent-fleet-mode' (which also removes it on
 disable), so while the mode is off the original
-`agent-fleet--read-agent-name' runs unchanged.  Delegates to
+`agent-fleet-read-agent-name' runs unchanged.  Delegates to
 `consult-agent-fleet--select', whose consult `:lookup' returns the pane
 id -- matching the return value of the original reader so it
 round-trips through `agent-fleet--find-agent'.  _ORIG-FN is the
@@ -109,7 +106,7 @@ PROMPT is passed through."
 (define-minor-mode consult-agent-fleet-mode
   "Use consult to select agents in every agent-fleet selection command.
 When on, this installs `:around' advice on
-`agent-fleet--read-agent-name' -- the shared reader that the
+`agent-fleet-read-agent-name' -- the shared public reader that the
 interactive forms of `agent-fleet-attach',
 `agent-fleet-show-output-in-buffer', `agent-fleet-switch',
 `agent-fleet-kill', `agent-fleet-interrupt', and
@@ -128,9 +125,9 @@ first, then toggle with \\[consult-agent-fleet-mode]."
   :lighter " Consult/Fleet"
   :group 'agent-fleet
   (if consult-agent-fleet-mode
-      (advice-add 'agent-fleet--read-agent-name :around
+      (advice-add 'agent-fleet-read-agent-name :around
                   #'consult-agent-fleet--read-agent-name)
-    (advice-remove 'agent-fleet--read-agent-name
+    (advice-remove 'agent-fleet-read-agent-name
                    #'consult-agent-fleet--read-agent-name)))
 
 (provide 'consult-agent-fleet)

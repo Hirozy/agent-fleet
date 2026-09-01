@@ -513,7 +513,7 @@ leaf commands fail fast instead of acting on nil."
   "`agent-fleet-attach-inspect-in-child-frame' calls
 `agent-fleet-show-output-in-child-frame' with the buffer's pane id and no
 line count (called as a function, so no prefix arg) — no selection prompt,
-no `agent-fleet--read-agent-name'."
+no `agent-fleet-read-agent-name'."
   (let ((buf (generate-new-buffer " *af-inspect*"))
         captured)
     (unwind-protect
@@ -633,6 +633,26 @@ when the agent process does not emit OSC 7."
                          (file-truename cwd))))
       (kill-buffer buf)
       (setq default-directory orig))))
+
+
+;;; --- Action registry <-> attach sync -------------------------------
+
+(ert-deftest agent-fleet-action-registry-attach-sync ()
+  "Every registry attach (key.cmd) resolves on `agent-fleet-attach-command-map'
+and is an `agent-fleet-attach-menu' suffix (key.cmd match; variant labels may
+differ from the canonical action label, so only key+command are asserted)."
+  (dolist (entry agent-fleet-action-registry)
+    (dolist (kc (plist-get (cdr entry) :attach))
+      (should (eq (cdr kc)
+                  (lookup-key agent-fleet-attach-command-map (kbd (car kc)))))
+      (let* ((key (car kc))
+             (suffix (transient-get-suffix 'agent-fleet-attach-menu key))
+             (cmd (cond ((vectorp suffix) (aref suffix 2))
+                        ((keywordp (cadr suffix))
+                         (plist-get (cdr suffix) :command))
+                        (t (plist-get (nth 2 suffix) :command)))))
+        (should (eq cmd (cdr kc)))))))
+
 
 (provide 'agent-fleet-attach-test)
 ;;; agent-fleet-attach-test.el ends here
