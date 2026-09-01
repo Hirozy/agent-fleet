@@ -109,7 +109,9 @@
     (agent-fleet-dashboard--magit . agent-fleet-interactive-dashboard-row-actions)
     (agent-fleet-dashboard--attach . agent-fleet-interactive-dashboard-row-actions)
     (agent-fleet-dashboard--next-needs-attention . agent-fleet-interactive-dashboard-next-needs-attention)
-    (agent-fleet-dashboard--new . agent-fleet-interactive-dashboard-row-actions))
+    (agent-fleet-dashboard--new . agent-fleet-interactive-dashboard-row-actions)
+    (agent-fleet-dashboard--next-line . agent-fleet-interactive-dashboard-navigation)
+    (agent-fleet-dashboard--previous-line . agent-fleet-interactive-dashboard-navigation))
   "Context commands: dashboard row actions and attach-buffer wrappers.")
 
 (defconst agent-fleet-interactive-test--mode-commands
@@ -1430,6 +1432,15 @@ captures the target instead of walking a non-printed buffer."
                      (list "w1:p2" (vector "" "" "" "" "")))))
           (call-interactively #'agent-fleet-dashboard--next-needs-attention))
         (should (equal '("w1:p2") goto))))))
+
+(ert-deftest agent-fleet-interactive-dashboard-navigation ()
+  "n/p and the arrow keys delegate to `--forward-row' (the skip-separator
+motion).  Registered here so the command inventory covers the new
+navigation commands; the real skip behavior is exercised in
+`agent-fleet-dashboard-navigation-skips-separator'."
+  (cl-letf (((symbol-function 'agent-fleet-dashboard--forward-row) #'ignore))
+    (call-interactively #'agent-fleet-dashboard--next-line)
+    (call-interactively #'agent-fleet-dashboard--previous-line)))
 
 (ert-deftest agent-fleet-interactive-dashboard-row-actions ()
   "Every dashboard row command resolves point, reads input and delegates once."
