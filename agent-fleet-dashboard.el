@@ -1264,60 +1264,15 @@ the gating logic is testable without intercepting `message'."
                       "agent")))
         (format "agent-fleet: %s → %s" name status)))))
 
-(defun agent-fleet-dashboard--notification-actions-supported-p ()
-  "Return non-nil when the desktop notification server supports actions.
-The `notifications' library remains optional and capability probing is
-guarded because headless sessions and unavailable D-Bus servers may signal."
-  (and (require 'notifications nil t)
-       (fboundp 'notifications-notify)
-       (fboundp 'notifications-get-capabilities)
-       (condition-case nil
-           (memq :actions (notifications-get-capabilities))
-         (error nil))))
-
-(defun agent-fleet-dashboard--notification-action (pane-id action)
-  "Handle ACTION for the notification associated with PANE-ID.
-Actions use stable pane identity and delegate to the same public Fleet
-operations as dashboard rows.  Failures are reported as a message because
-the callback runs asynchronously outside the original command context."
-  (condition-case err
-      (pcase action
-        ((or "default" "dashboard")
-         (agent-fleet-dashboard--focus-agent pane-id))
-        ("output"
-         (agent-fleet-show-output-in-buffer pane-id))
-        ("attach"
-         (agent-fleet-attach pane-id))
-        (_ (message "agent-fleet: unknown notification action %s" action)))
-    (error
-     (message "agent-fleet notification action failed: %s"
-              (error-message-string err)))))
-
 (defun agent-fleet-dashboard--notify (descriptor)
   "Notify on a blocked/done transition when gated by `agent-fleet-notify-on'.
-Emits `message' and, when available, a desktop notification.  Desktop
-actions (dashboard, output, attach) are included only when the notification
-server advertises `:actions'; otherwise the existing message-only desktop
-notification is retained."
+Emits an echo-area `message' built by `agent-fleet-dashboard--notify-message'.
+A desktop notification server is intentionally NOT used: the previous D-Bus
+path (`notifications-notify') failed on Emacsen built without D-Bus (e.g.
+macOS), so the cross-platform baseline is the echo-area message.  Gating and
+the message text are pure (`--notify-message') and tested separately."
   (when-let* ((msg (agent-fleet-dashboard--notify-message descriptor)))
-    (message "%s" msg)
-    (when (and (require 'notifications nil t)
-               (fboundp 'notifications-notify))
-      (let ((pane-id (or (plist-get descriptor :pane-id)
-                         (plist-get descriptor :id))))
-        (ignore-errors
-          (if (and pane-id
-                   (agent-fleet-dashboard--notification-actions-supported-p))
-              (notifications-notify
-               :title "agent-fleet"
-               :body msg
-               :actions '("default" "Open dashboard"
-                           "output" "Open output"
-                           "attach" "Attach terminal")
-               :on-action
-               (lambda (_notification-id action)
-                 (agent-fleet-dashboard--notification-action pane-id action)))
-            (notifications-notify :title "agent-fleet" :body msg)))))))
+    (message "%s" msg)))
 
 
 ;;; --- Setup ----------------------------------------------------------
