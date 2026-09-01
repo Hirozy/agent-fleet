@@ -190,38 +190,15 @@ or an unrecognized value maps to the unknown face."
 
 ;;; --- Column helpers -------------------------------------------------
 
-(defun agent-fleet-dashboard--project-label (agent)
-  "Return the Project label for AGENT.
-Delegates to `agent-fleet-project-label': the canonical
-project-root basename via `project.el', falling back to the cwd basename,
-then \"—\".  Matching is by canonical cwd, not workspace label."
-  (agent-fleet-project-label agent))
-
-(defun agent-fleet-dashboard--kind-label (agent)
-  "Return a capitalized Kind label for AGENT, or \"—\"."
-  (let ((kind (herdr-agent-agent agent)))
-    (if (and kind (not (string-empty-p kind)))
-        (capitalize kind)
-      "—")))
-
-(defun agent-fleet-dashboard--task-label (agent agent-label)
-  "Return the Task column label for AGENT.
-For an agent in a parallel task, shows the task title — the group
-label that clusters its sibling agents.  Otherwise uses the pane's stripped
-terminal title (the best live signal of current activity) unless it
-duplicates AGENT-LABEL, in which case \"—\"."
-  (if-let* ((task (agent-fleet-task-for-agent (herdr-agent-id agent))))
-      (agent-fleet-task-title task)
-    (let ((title (herdr-agent-terminal-title-stripped agent)))
-      (if (and title (not (string-empty-p title))
-               (not (string= title agent-label)))
-          title
-        "—"))))
-
 (defun agent-fleet-dashboard--state-cell (agent)
-  "Return the State column string for AGENT, propertized with its face."
+  "Return the State column string for AGENT, propertized with its face.
+The label comes from the shared `agent-fleet-status-label' (so the
+dashboard and the quick list show the same status text); the face is
+dashboard-specific view styling via `agent-fleet-dashboard--face-for-status'.
+AGENT is a `herdr-agent' struct; its status is derived once via
+`agent-fleet-status'."
   (let* ((status (agent-fleet-status agent))
-         (label (if status (upcase (symbol-name status)) "UNKNOWN"))
+         (label (agent-fleet-status-label status))
          (face (agent-fleet-dashboard--face-for-status status)))
     (propertize label 'face face)))
 
@@ -263,15 +240,20 @@ therefore sorts to an empty list.  The input is copied before sorting."
 
 (defun agent-fleet-dashboard--entry (agent)
   "Build one `tabulated-list-entries' row for AGENT.
-Returns (PANE-ID . [Project Agent Kind State Task])."
-  (let* ((pane-id (herdr-agent-id agent))
-         (label (or (herdr-agent-display-name agent) pane-id))
-         (project (agent-fleet-dashboard--project-label agent))
-         (kind (agent-fleet-dashboard--kind-label agent))
-         (state (agent-fleet-dashboard--state-cell agent))
-         (task (agent-fleet-dashboard--task-label agent label)))
-    (list pane-id
-          (vector project label kind state task))))
+Returns (PANE-ID . [Project Agent Kind State Task]).  The cells are
+read from the shared `agent-fleet-agent-presentation' so the dashboard
+renders the same fields as the quick list and completion -- no
+Project-vs-Workspace drift between UIs.  The State cell is the shared
+`agent-fleet-status-label' propertized with a status face (view styling
+the quick list leaves plain)."
+  (let ((p (agent-fleet--presentation-for-agent agent))
+        (label (or (herdr-agent-display-name agent) (herdr-agent-id agent))))
+    (list (agent-fleet-agent-presentation-pane-id p)
+          (vector (agent-fleet-agent-presentation-project p)
+                  label
+                  (agent-fleet-agent-presentation-kind p)
+                  (agent-fleet-dashboard--state-cell agent)
+                  (agent-fleet-agent-presentation-task p)))))
 
 (defvar-local agent-fleet-dashboard--project-filter nil
   "When non-nil, a canonical project root string to narrow the dashboard to.

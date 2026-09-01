@@ -33,10 +33,10 @@ selected candidate; `--select' must return that pane id, not the label."
                (lambda ()
                  (list (list :agent nil :pane-id "w1:p1" :name "arch"
                              :label "arch" :kind "Claude" :task "—"
-                             :workspace "demo")
+                             :project "demo")
                        (list :agent nil :pane-id "w1:p2" :name "arch"
                              :label "arch  [w1:p2]" :kind "Codex" :task "—"
-                             :workspace "demo")))))
+                             :project "demo")))))
       ;; Simulate consult: capture the table and :lookup it was handed,
       ;; then apply that lookup to a selected candidate as consult would.
       (cl-letf (((symbol-function #'consult--read)
@@ -95,10 +95,10 @@ the real reader is left intact."
                (lambda ()
                  (list (list :agent nil :pane-id "w1:p1" :name "arch"
                              :label "arch" :kind "Claude" :task "—"
-                             :workspace "demo")
+                             :project "demo")
                        (list :agent nil :pane-id "w1:p2" :name "arch"
                              :label "arch  [w1:p2]" :kind "Codex" :task "—"
-                             :workspace "demo")))))
+                             :project "demo")))))
       (cl-letf (((symbol-function #'consult--read)
                  (lambda (table &rest opts)
                    (setq got-table table

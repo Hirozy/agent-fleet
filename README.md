@@ -190,7 +190,7 @@ applicable.
 | `M-x agent-fleet-rename` | Rename the agent |
 | `M-x agent-fleet-switch` | Focus the agent in Herdr |
 | `M-x agent-fleet-kill` | Stop the agent |
-| `M-x agent-fleet-list` | List cached agents in a read-only table |
+| `M-x agent-fleet-list` | List cached agents in a read-only table (Name, Status, Kind, Task, Project) |
 | `M-x agent-fleet-get` | Show one agent |
 | `M-x agent-fleet-status` | Show an agent's state |
 | `M-x agent-fleet-doctor` | Check socket, connection, manifests, and CLIs |
