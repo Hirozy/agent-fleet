@@ -306,60 +306,58 @@ no project can be resolved."
 
 ;;; --- Prompt DWIM: task reference from buffer context ----------------
 
+(defcustom agent-fleet-prompt-dwim-max-region-lines 50
+  "Maximum region size (lines) to include verbatim in a dwim prompt.
+A region with more lines than this is referenced by line range only —
+the reference (file + line range + symbol) is retained so the user can
+ask the agent to read the span directly from its working directory, but
+the verbatim text is omitted to keep the compose buffer small."
+  :type 'integer
+  :group 'agent-fleet)
+
 (defcustom agent-fleet-prompt-dwim-max-region-chars 4000
-  "Maximum region size (chars) to include verbatim in a dwim prompt.
-A region larger than this is referenced by line range only — the
-prompt stays small and the agent reads the file directly from its
-working directory."
+  "Maximum region size (characters) to include verbatim in a dwim prompt.
+This remains a secondary safety ceiling alongside
+`agent-fleet-prompt-dwim-max-region-lines'.  A region that exceeds either
+limit is referenced by file and line range, while its verbatim text is
+omitted.  Keeping this option active preserves existing user configuration
+from before the line-based limit was introduced and also bounds very long
+single-line selections."
   :type 'integer
   :group 'agent-fleet)
 
 (defun agent-fleet-prompt-dwim--read-agent ()
-  "Read an agent, preferring one in the same Project as the buffer.
-When exactly one same-Project agent exists it is used without a
-prompt (the DWIM case).  Multiple same-Project agents are offered
-as a filtered completion; when none exist, fall back to the
-unfiltered `agent-fleet-read-agent-name'."
+  "Read an agent, scoped to the same Project as the buffer when possible.
+Always confirms the target (no auto-selection): with exactly one
+same-Project agent it is still offered as the sole candidate (RET
+selects).  When no same-Project agent exists, falls back to the
+unfiltered reader with a message and an explicit all-agents prompt."
   (let* ((current-root (agent-fleet--project-root
                          (agent-fleet-project-current)))
          (same-project (and current-root
                             (agent-fleet-project-agents current-root))))
-    (cond
-     ((and same-project (= 1 (length same-project)))
-      (herdr-agent-id (car same-project)))
-     (same-project
-      ;; Reuse the public candidate descriptors so duplicate display names
-      ;; carry the same pane-id disambiguation and dashboard metadata as all
-      ;; other Fleet completion UIs.  Filtering the descriptors by the
-      ;; canonical Project keeps the target preference without rebuilding a
-      ;; second, ambiguous candidate format here.
-      (let* ((same-ids (mapcar #'herdr-agent-id same-project))
-             (candidates
-              (cl-remove-if-not
-               (lambda (entry)
-                 (member (plist-get entry :pane-id) same-ids))
-               (agent-fleet-agent-candidates)))
-             (alist (mapcar
-                     (lambda (entry)
-                       (cons (format "%s  %s"
-                                     (plist-get entry :label)
-                                     (agent-fleet-agent-candidate-suffix entry))
-                             (plist-get entry :pane-id)))
-                     candidates))
-             (choice (completing-read "Prompt agent (same project): "
-                                      alist nil t)))
-        (cdr (assoc choice alist))))
-     (t (agent-fleet-read-agent-name "Prompt agent")))))
+    (if same-project
+        (let ((same-ids (mapcar #'herdr-agent-id same-project)))
+          (agent-fleet-read-agent-name
+           "Prompt agent (same project)"
+           (lambda (entry)
+             (member (plist-get entry :pane-id) same-ids))))
+      (message (if current-root
+                   "agent-fleet: no same-project agent; showing all agents"
+                 "agent-fleet: current buffer has no Project; showing all agents"))
+      (agent-fleet-read-agent-name "Prompt agent (all agents)"))))
 
 (defun agent-fleet-prompt-dwim--context (project-root)
-  "Build a task-reference string from the current buffer context.
-PROJECT-ROOT is the selected agent's working directory (for making the
-file path relative), or nil.  Gathers: the buffer's file path
+  "Build a task-reference from the current buffer context.
+Return (STRING . TRUNCATED-P).  STRING gathers: the buffer's file path
 (relative to the selected agent's working directory when under it, else
-absolute truename),
-the active region's line range, the symbol near point, and — when
-the region is small enough (see `agent-fleet-prompt-dwim-max-region-chars')
-— the selected text.  Returns \"\" when nothing can be gathered."
+absolute truename), the active region's line range, the symbol near
+point, and — when the region is at most
+`agent-fleet-prompt-dwim-max-region-lines' lines and
+`agent-fleet-prompt-dwim-max-region-chars' characters — the selected text.
+TRUNCATED-P is non-nil when a region was active but exceeded the line
+limit, so its text was omitted (the line range still lets the agent
+read the span).  Returns (\"\" . nil) when nothing can be gathered."
   (let* ((file (and (buffer-file-name)
                     (let ((truename (file-truename (buffer-file-name))))
                       (if (and project-root
@@ -387,9 +385,14 @@ the region is small enough (see `agent-fleet-prompt-dwim-max-region-chars')
          (symbol (and (or (not region-p)
                           (and beg end (>= (point) beg) (< (point) end)))
                       (thing-at-point 'symbol t)))
-         (region-text (and region-p
-                           (<= (- end beg)
-                               agent-fleet-prompt-dwim-max-region-chars)
+         (region-lines (and line1 line2 (1+ (- line2 line1))))
+         (region-chars (and beg end (- end beg)))
+         (truncated (and region-p region-lines
+                         (or (> region-lines
+                                agent-fleet-prompt-dwim-max-region-lines)
+                             (> region-chars
+                                agent-fleet-prompt-dwim-max-region-chars))))
+         (region-text (and region-p (not truncated)
                            (buffer-substring-no-properties beg end))))
     (let ((loc (cond
                 ((and file line1 line2 (not (= line1 line2)))
@@ -402,22 +405,29 @@ the region is small enough (see `agent-fleet-prompt-dwim-max-region-chars')
                           (format "%s  (symbol: %s)" loc symbol)
                         (format "(symbol: %s)" symbol))
                     loc)))
-        (cond
-         ((and base region-text) (format "%s\n\n%s" base region-text))
-         (base base)
-         (t ""))))))
+        (cons (cond
+               ((and base region-text) (format "%s\n\n%s" base region-text))
+               (base base)
+               (t ""))
+              truncated)))))
+
+(declare-function agent-fleet-attach-prefill-prompt "agent-fleet-attach"
+                  (pane-id initial-text))
 
 ;;;###autoload
 (defun agent-fleet-prompt-dwim (agent)
-  "Send a task reference built from the current buffer to AGENT.
-Gathers a lightweight reference — file path (relative to the
-agent's project root when possible), the active region's line
-range, the symbol near point, and the selected text when small
-(see `agent-fleet-prompt-dwim-max-region-chars').  Prefers an agent
-in the same Project as the current buffer; when exactly one exists
-it is selected automatically.  The built reference is pre-filled into
-`read-string' for review or editing before submission via
-`agent-fleet-prompt'.  Does not save user files or copy an entire
+  "Attach to AGENT and prefill a compose buffer with the buffer context.
+Gathers a lightweight reference — file path (relative to the agent's
+project root when possible), the active region's line range, the symbol
+near point, and the selected text when small enough
+\(see `agent-fleet-prompt-dwim-max-region-lines').  AGENT is selected
+scoped to the same Project as the current buffer when one exists (no
+auto-selection; you confirm the target).  The reference (and selected
+text) are prefilled into the attach compose child frame when supported;
+you type the task there and press C-c C-c to paste (reference+task) into
+the attach terminal (no Enter), then submit.  Without child-frame support,
+the context is pasted directly into the live terminal without Enter so you
+can finish the task there.  Does not save user files or copy an entire
 buffer by default."
   (interactive
    (progn
@@ -426,13 +436,26 @@ buffer by default."
      ;; its own ensure for non-interactive callers and race-safe reuse.
      (agent-fleet--ensure-connected)
      (list (agent-fleet-prompt-dwim--read-agent))))
+  (agent-fleet--ensure-connected)
   (let* ((struct (agent-fleet--find-agent agent))
-       (root (and struct (herdr-agent-cwd struct))))
-    (agent-fleet--ensure-connected)
-    (let ((text (read-string "Task: "
-                             (agent-fleet-prompt-dwim--context root))))
-      (unless (string-empty-p text)
-        (agent-fleet-prompt agent text)))))
+         (root (and struct (herdr-agent-cwd struct))))
+    (unless struct
+      (user-error "No agent %S" agent))
+    (let* ((context (agent-fleet-prompt-dwim--context root))
+           (reference (car context))
+           ;; Keep the task visually and semantically separate from both a
+           ;; bare file reference and verbatim selected source.  Empty
+           ;; context stays empty so the fallback does not inject whitespace.
+           (initial-text (if (string-empty-p reference)
+                             ""
+                           (concat reference "\n\n"))))
+      (when (cdr context)
+        (message "agent-fleet: selected text exceeds a context limit; text omitted"))
+      ;; `agent-fleet-attach' is autoloaded, so calling it loads the attach
+      ;; feature and makes the public prefill presentation API available.
+      (agent-fleet-attach agent)
+      (agent-fleet-attach-prefill-prompt
+       (herdr-agent-id struct) initial-text))))
 
 (provide 'agent-fleet-project)
 ;;; agent-fleet-project.el ends here

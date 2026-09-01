@@ -96,6 +96,8 @@
 (declare-function agent-fleet-display--aux-run "agent-fleet-display" (thunk &optional parameters))
 (declare-function agent-fleet-display--aux-close "agent-fleet-display" (child))
 (declare-function agent-fleet-display--make-outcome "agent-fleet-display" (opened &optional value buffer))
+(declare-function agent-fleet-display-child-frame-available-p
+                  "agent-fleet-display" (&optional parent-frame))
 ;; text-mode-map is loaded on demand by (text-mode); declared here so the
 ;; compose keymap byte-compiles without a top-level require.
 (defvar text-mode-map)
@@ -504,6 +506,74 @@ Acts on the pane id owned by this buffer, so no selection prompt is needed."
     (unless (string-empty-p text)
       (agent-fleet-prompt pane-id text))))
 
+(defun agent-fleet-attach--compose-open (pane-id &optional initial-text)
+  "Open a compose child frame for PANE-ID, prefilling INITIAL-TEXT.
+C-c C-c pastes the composed text into the live attach terminal for
+PANE-ID (bracketed paste, no Enter) and closes the frame; the user
+then presses Enter to submit.  C-c C-k closes without pasting.
+INITIAL-TEXT is inserted at the start of the compose buffer so a caller
+\(e.g. `agent-fleet-prompt-dwim') can prefill a context reference and the
+user appends the task before submitting.  Acts on PANE-ID, so no
+selection prompt is needed.  Clears `quit-flag' because ghostel sets
+`inhibit-quit' in terminal buffers, so a C-g that opens this frame left
+a quit-flag this command would otherwise inherit."
+  (require 'agent-fleet-display nil t)
+  (setq quit-flag nil)
+  (let* ((agent (agent-fleet--find-agent pane-id))
+         (name (or (and agent (herdr-agent-display-name agent)) pane-id))
+         (scale agent-fleet-attach-compose-frame-scale))
+    (agent-fleet-display--aux-run
+     (lambda ()
+       (let ((buf (agent-fleet-attach--compose-buffer-for-frame
+                   (selected-frame))))
+         (with-current-buffer buf
+           (erase-buffer)
+           (text-mode)
+           (use-local-map (agent-fleet-attach--compose-map))
+           (setq-local agent-fleet-attach--compose-pane-id pane-id)
+           (when (and initial-text (not (string-empty-p initial-text)))
+             (insert initial-text))
+           (setq-local header-line-format
+                       (concat "  Compose prompt: "
+                               (propertize name 'face 'bold)
+                               (propertize
+                                "  —  C-c C-c paste · C-c C-k abort"
+                                'face 'shadow))))
+         (set-window-buffer nil buf))
+       (agent-fleet-display--make-outcome t))
+     (list (cons 'width scale)
+           (cons 'height scale)
+           (cons 'name (format "agent-fleet compose: %s" name))))))
+
+(defun agent-fleet-attach-prefill-prompt (pane-id initial-text)
+  "Present INITIAL-TEXT for the live attach terminal owned by PANE-ID.
+When a native child frame is available, open the compose editor with
+INITIAL-TEXT prefilled.  Otherwise paste INITIAL-TEXT directly into the
+live Ghostel terminal using bracketed paste, without sending Enter, and
+leave that terminal selected for the user to finish and submit the task.
+
+An empty INITIAL-TEXT is not pasted in the fallback path.  Signal a
+`user-error' when fallback is needed but no live attach buffer exists.
+Return `child-frame' or `terminal' to describe the presentation used.
+This is the public attach-facing presentation API used by
+`agent-fleet-prompt-dwim'; callers do not need to depend on the private
+compose implementation."
+  (require 'agent-fleet-display nil t)
+  (if (agent-fleet-display-child-frame-available-p)
+      (progn
+        (agent-fleet-attach--compose-open pane-id initial-text)
+        'child-frame)
+    (unless (string-empty-p (or initial-text ""))
+      (let ((buf (agent-fleet-attach--live-buffer-for-pane pane-id)))
+        (unless buf
+          (user-error "No live attach buffer for pane %s" (or pane-id "?")))
+        (with-current-buffer buf
+          (ghostel-paste-string initial-text))))
+    (message (if (string-empty-p (or initial-text ""))
+                 "agent-fleet: child frames unavailable; attached without buffer context"
+               "agent-fleet: child frames unavailable; context pasted into terminal (press Enter to submit)"))
+    'terminal))
+
 (defun agent-fleet-attach-prompt-in-child-frame ()
   "Open a child frame to compose a prompt for this buffer's agent.
 In the ghostel terminal, C-g normally reaches the CLI tool which
@@ -516,35 +586,7 @@ closes the frame; the user then presses Enter to submit.  C-c C-k
 closes without pasting.  Acts on the pane id owned by this buffer,
 so no selection prompt is needed."
   (interactive)
-  (require 'agent-fleet-display nil t)
-  ;; ghostel sets inhibit-quit t in terminal buffers, so C-g sets
-  ;; quit-flag instead of running keyboard-quit.  Clear it so our
-  ;; command runs uninterrupted.
-  (setq quit-flag nil)
-  (let* ((pane-id (agent-fleet-attach--current-pane-id))
-         (scale agent-fleet-attach-compose-frame-scale)
-         (agent (agent-fleet--find-agent pane-id))
-         (name (or (and agent (herdr-agent-display-name agent)) pane-id)))
-    (agent-fleet-display--aux-run
-     (lambda ()
-       (let ((buf (agent-fleet-attach--compose-buffer-for-frame
-                   (selected-frame))))
-         (with-current-buffer buf
-           (erase-buffer)
-           (text-mode)
-           (use-local-map (agent-fleet-attach--compose-map))
-           (setq-local agent-fleet-attach--compose-pane-id pane-id)
-           (setq-local header-line-format
-                       (concat "  Compose prompt: "
-                               (propertize name 'face 'bold)
-                               (propertize
-                                "  —  C-c C-c paste · C-c C-k abort"
-                                'face 'shadow))))
-         (set-window-buffer nil buf))
-       (agent-fleet-display--make-outcome t))
-     (list (cons 'width scale)
-           (cons 'height scale)
-           (cons 'name (format "agent-fleet compose: %s" name))))))
+  (agent-fleet-attach--compose-open (agent-fleet-attach--current-pane-id)))
 
 (defun agent-fleet-attach--compose-map ()
   "Return a keymap for the compose buffer.
