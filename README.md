@@ -122,11 +122,11 @@ fails.
 | `w` | Show worktree status |
 | `d` | Open the working-tree diff |
 | `m` | Open Magit status |
-| `a` | Attach to the live terminal |
+| `a` / `RET` | Attach to the live terminal |
 | `!` | Jump to the next agent needing attention (`blocked`; prefix adds `done`) |
 | `h` | Open the transient help menu |
-| `p` / `k` | Move up a row |
-| `n` / `j` | Move down a row |
+| `p` / `k` / `↑` | Move up a row (skips the project-group separator) |
+| `n` / `j` / `↓` | Move down a row (skips the project-group separator) |
 | `q` | Close the dashboard window or frame |
 
 The dashboard normally opens in an ordinary Emacs window. It can instead use

@@ -31,9 +31,10 @@
 ;;     event-driven; NO timer polling.  The buffer rebuilds only when an
 ;;        `agent-fleet-agent-{started,status-changed,exited}-hook' fires.
 ;;     columns Project / Agent / Kind / State / Task; row keys
-;;        o s i x r g P T w d m a N h q (`a' = live attach;
+;;        o s i x r g P T w d m a N h q (`a'/`RET' = live attach;
 ;;        `N' = new agent; `o' = inspect output; `h' = transient command help;
-;;        `q' closes the display container; `p'/`n'/`j'/`k' navigate rows up/down).
+;;        `q' closes the display container; `p'/`n'/`j'/`k'/arrows navigate
+;;        rows up/down, skipping the project-group separator).
 ;;     one face per status; blocked is the most prominent.
 ;;     optional notifications on working→blocked / working→done, gated by
 ;;        `agent-fleet-notify-on'.
@@ -781,6 +782,7 @@ Unlike the row actions, this does not act on the agent at point."
             ("T" . agent-fleet-dashboard--toggle-task-filter)
             ("!" . agent-fleet-dashboard--next-needs-attention)
             ("a" . agent-fleet-dashboard--attach)
+            ("RET" . agent-fleet-dashboard--attach)
             ("N" . agent-fleet-dashboard--new)
             ("h" . agent-fleet-dashboard-help)
             ("q" . agent-fleet-dashboard--quit)))
@@ -788,14 +790,16 @@ Unlike the row actions, this does not act on the agent at point."
 The shared actions (inspect/prompt/interrupt/kill/rename/worktree/diff/
 magit) are sourced from `agent-fleet-action-registry' so the dashboard and
 attach surfaces share one key->command source; the rest (refresh/filters/
-attention/attach/new/help/quit) are dashboard-only.")
+attention/attach/new/help/quit) are dashboard-only.  `RET' is an alias of
+`a' (attach the agent at point).")
 
 (defconst agent-fleet-dashboard--retired-bindings
-  '("RET")
+  '()
   "Former dashboard bindings that must be removed when the map is reloaded.
 `agent-fleet-mode-map' is defined with `defvar', so an Emacs session that
 loads a newer agent-fleet keeps the old map object.  Listing removed keys
-here prevents obsolete commands from surviving that in-place upgrade.")
+here prevents obsolete commands from surviving that in-place upgrade.
+Empty for now (`RET' was retired, then rebound to attach).")
 
 (defconst agent-fleet-dashboard--navigation-keys
   '(("p"  . agent-fleet-dashboard--previous-line)
