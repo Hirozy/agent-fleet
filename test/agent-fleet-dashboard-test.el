@@ -952,6 +952,35 @@ following `pane.agent_status_changed' (dotted per-pane kind) event."
     (should (eq 'agent-fleet-unknown-face (get-text-property 0 'face cell)))))
 
 
+;;; --- Navigation skips separator rows --------------------------------
+
+(ert-deftest agent-fleet-dashboard-navigation-skips-separator ()
+  "n/p (and the arrow keys) step over `:separator' rows so point always
+rests on a real agent row."
+  (with-temp-buffer
+    (agent-fleet-mode)
+    (setq tabulated-list-entries
+          (list (list "w1:p1" (vector "p" "a" "k" "S" "t"))
+                (list :separator (vector "──" "──" "──" "──" "──"))
+                (list "w1:p2" (vector "p" "b" "k" "S" "t"))))
+    (tabulated-list-init-header)
+    (tabulated-list-print t)
+    (goto-char (point-min))
+    (should (equal "w1:p1" (tabulated-list-get-id)))
+    ;; n steps over the separator onto the second agent row.
+    (agent-fleet-dashboard--next-line)
+    (should (equal "w1:p2" (tabulated-list-get-id)))
+    ;; p steps back over the separator onto the first agent row.
+    (agent-fleet-dashboard--previous-line)
+    (should (equal "w1:p1" (tabulated-list-get-id)))
+    ;; If point rests on the separator (e.g. a raw line move), n skips it.
+    (goto-char (point-min))
+    (forward-line 1)            ; raw move onto the separator row
+    (should (eq (tabulated-list-get-id) :separator))
+    (agent-fleet-dashboard--next-line)
+    (should (equal "w1:p2" (tabulated-list-get-id)))))
+
+
 ;;; --- Column fallbacks ----------------------------------------------
 
 (ert-deftest agent-fleet-dashboard-columns ()

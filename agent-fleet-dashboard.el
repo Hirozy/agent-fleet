@@ -400,6 +400,32 @@ point at `point-min' in the not-found case)."
     (agent-fleet-dashboard--goto-id
      agent-fleet-dashboard--highlighted-agent)))
 
+(defun agent-fleet-dashboard--forward-row (n)
+  "Move N lines (negative = up), skipping `:separator' rows.
+The dashboard inserts a `:separator' entry to divide project groups; plain
+`next-line'/`previous-line' land point on it (a non-agent row with no id).
+These motions step over separators so n/p and the arrow keys always rest on
+a real agent row (or a buffer edge).  `hl-line' follows via its
+post-command hook."
+  (let ((step (if (< n 0) -1 1))
+        (left (abs n)))
+    (while (> left 0)
+      (forward-line step)
+      (cl-decf left)
+      (while (and (not (if (< step 0) (bobp) (eobp)))
+                  (eq (tabulated-list-get-id) :separator))
+        (forward-line step)))))
+
+(defun agent-fleet-dashboard--next-line (&optional arg)
+  "Move down ARG (default 1) rows, skipping `:separator' rows."
+  (interactive "p")
+  (agent-fleet-dashboard--forward-row (or arg 1)))
+
+(defun agent-fleet-dashboard--previous-line (&optional arg)
+  "Move up ARG (default 1) rows, skipping `:separator' rows."
+  (interactive "p")
+  (agent-fleet-dashboard--forward-row (- (or arg 1))))
+
 
 (defun agent-fleet-dashboard--next-needs-attention (&optional include-done)
   "Move point to the next agent needing attention, wrapping past point.
@@ -772,11 +798,14 @@ loads a newer agent-fleet keeps the old map object.  Listing removed keys
 here prevents obsolete commands from surviving that in-place upgrade.")
 
 (defconst agent-fleet-dashboard--navigation-keys
-  '(("p" . previous-line)
-    ("k" . previous-line)
-    ("n" . next-line)
-    ("j" . next-line))
-  "Reserved up/down row-navigation keys for `agent-fleet-mode'.")
+  '(("p"  . agent-fleet-dashboard--previous-line)
+    ("k"  . agent-fleet-dashboard--previous-line)
+    ("n"  . agent-fleet-dashboard--next-line)
+    ("j"  . agent-fleet-dashboard--next-line)
+    ("<up>"   . agent-fleet-dashboard--previous-line)
+    ("<down>" . agent-fleet-dashboard--next-line))
+  "Reserved up/down row-navigation keys for `agent-fleet-mode'.
+These skip `:separator' rows so point always rests on a real agent row.")
 
 (defvaralias 'agent-fleet-dashboard-mode-map 'agent-fleet-mode-map
   "Compatibility alias for the dashboard mode map's former name.")
