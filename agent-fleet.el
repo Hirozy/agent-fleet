@@ -1176,7 +1176,7 @@ usable before `agent-fleet-parallel' is loaded."
              title))
       "—"))
 
-(defun agent-fleet-agent-candidates ()
+(defun agent-fleet-agent-candidates (&optional filter)
   "Return cached agents as candidate property lists for completion.
 Each element is a plist with keys `:agent' (the struct), `:pane-id',
 `:name' (the `herdr-agent-display-name' identity), `:label' (that
@@ -1188,29 +1188,32 @@ identical information (no Workspace-vs-Project drift).  Any completion
 UI -- or a separate `consult-agent-fleet' package built on
 `consult--read' with an `:annotate' function and the
 `consult--lookup-cdr' lookup -- can show the same fields from this
-data.  Returns nil when no agents are cached."
+data.  FILTER, when non-nil, is a predicate on a candidate entry; only
+entries satisfying it are kept (used by `agent-fleet-prompt-dwim' to
+scope to same-Project agents).  Returns nil when no agents are cached."
   (let* ((agents (herdr-agents))
          (counts (let ((h (make-hash-table :test 'equal)))
                    (dolist (a agents)
                      (let ((n (herdr-agent-display-name a)))
                        (puthash n (1+ (gethash n h 0)) h)))
-                   h)))
-    (mapcar
-     (lambda (agent)
-       (let* ((p (agent-fleet--presentation-for-agent agent))
-              (name (agent-fleet-agent-presentation-name p))
-              (pane-id (agent-fleet-agent-presentation-pane-id p))
-              (label (if (> (gethash name counts 0) 1)
-                         (format "%s  [%s]" name pane-id)
-                       name)))
-         (list :agent agent
-               :pane-id pane-id
-               :name name
-               :label label
-               :kind (agent-fleet-agent-presentation-kind p)
-               :task (agent-fleet-agent-presentation-task p)
-               :project (agent-fleet-agent-presentation-project p))))
-     agents)))
+                   h))
+         (all (mapcar
+               (lambda (agent)
+                 (let* ((p (agent-fleet--presentation-for-agent agent))
+                        (name (agent-fleet-agent-presentation-name p))
+                        (pane-id (agent-fleet-agent-presentation-pane-id p))
+                        (label (if (> (gethash name counts 0) 1)
+                                   (format "%s  [%s]" name pane-id)
+                                 name)))
+                   (list :agent agent
+                         :pane-id pane-id
+                         :name name
+                         :label label
+                         :kind (agent-fleet-agent-presentation-kind p)
+                         :task (agent-fleet-agent-presentation-task p)
+                         :project (agent-fleet-agent-presentation-project p))))
+               agents)))
+    (if filter (cl-remove-if-not filter all) all)))
 
 (defun agent-fleet-agent-candidate-suffix (entry)
   "Return the kind/task/project suffix for candidate ENTRY.
@@ -1295,17 +1298,19 @@ shows the kind/task/project suffix.  Other actions delegate to
   "Minibuffer history for `agent-fleet-read-agent-name'.")
 
 ;;;###autoload
-(defun agent-fleet-read-agent-name (prompt)
+(defun agent-fleet-read-agent-name (prompt &optional filter)
   "Read an agent pane id from the minibuffer, completing over cached agents.
 Each candidate is the agent identity (`herdr-agent-display-name',
 disambiguated with the pane id in brackets when two agents share one); its
 kind, task, and project appear as a completion annotation (the same fields
 the dashboard shows) via the `agent-fleet-agent' category, so any
 `completing-read' UI -- the native *Completions* buffer, Vertico+Marginalia,
-Embark -- displays them without `consult'.  Returns the pane id so it
-round-trips through `agent-fleet--find-agent'.  Signal `user-error' when no
-agent is cached."
-  (let* ((entries (agent-fleet-agent-candidates))
+Embark -- displays them without `consult'.  FILTER, when non-nil, is a
+predicate on a candidate entry passed to `agent-fleet-agent-candidates'
+\(used by `agent-fleet-prompt-dwim' to scope to same-Project agents).
+Returns the pane id so it round-trips through `agent-fleet--find-agent'.
+Signal `user-error' when no agent is cached."
+  (let* ((entries (agent-fleet-agent-candidates filter))
          (agent-fleet--completion-candidates
           (mapcar (lambda (entry)
                     (cons (plist-get entry :label)

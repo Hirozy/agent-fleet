@@ -389,12 +389,11 @@ used for provisioning — the body does not prompt a second time."
                   (lambda (call) (assoc "wait" (cadr call))) calls)))))
 
 (ert-deftest agent-fleet-interactive-prompt-dwim ()
-  "prompt-dwim auto-selects the single same-Project agent, builds a
-context string from the buffer, pre-fills read-string, and submits
-via agent-fleet-prompt.  With no same-Project agent it falls back to
-the unfiltered reader."
+  "prompt-dwim reads a same-Project agent, attaches to it, and prefills the
+compose buffer with the buffer context (file + symbol).  With no same-Project
+agent it falls back to the unfiltered reader."
   (let ((herdr-model--cache (agent-fleet-interactive-test--session))
-        initial-input prompted)
+        attached presented)
     (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
               ((symbol-function 'agent-fleet-project-current)
                (lambda () 'fake-project))
@@ -406,13 +405,13 @@ the unfiltered reader."
                (lambda (_) (herdr-find-agent "w1:p1")))
               ((symbol-function 'agent-fleet-project-for-agent)
                (lambda (_) "/repo"))
-              ;; read-string captures the pre-filled context as its initial.
-              ((symbol-function 'read-string)
-               (lambda (_prompt &optional initial &rest _)
-                 (setq initial-input initial)
-                 "edited task"))
-              ((symbol-function 'agent-fleet-prompt)
-               (lambda (agent text) (setq prompted (list agent text)))))
+              ((symbol-function 'agent-fleet-read-agent-name)
+               (lambda (_prompt &optional _filter) "w1:p1"))
+              ((symbol-function 'agent-fleet-attach)
+               (lambda (target) (push (list 'attach target) attached)))
+              ((symbol-function 'agent-fleet-attach-prefill-prompt)
+               (lambda (pane-id initial)
+                 (push (list 'present pane-id initial) presented))))
       ;; Use a temp file buffer so buffer-file-name is set; the context
       ;; builder makes the path relative to "/repo".
       (let* ((dir (make-temp-file "af-dwim-interactive" t))
@@ -422,18 +421,24 @@ the unfiltered reader."
             (with-current-buffer buf
               (insert "(defun foo ()")
               (goto-char 8)            ; on 'foo'
-              ;; Exactly one same-Project agent → no selection prompt.
               (call-interactively #'agent-fleet-prompt-dwim)
-              (should initial-input)
-              ;; The context carries the relative file path and symbol.
-              (should (string-match-p "src.el" initial-input))
-              (should (string-match-p "(symbol: foo)" initial-input))
-              ;; The (possibly edited) text and auto-selected pane-id reach prompt.
-              (should (equal prompted '("w1:p1" "edited task"))))
+              ;; Attach the selected agent.
+              (should (equal '((attach "w1:p1")) attached))
+              ;; Presentation receives the context (relative path + symbol)
+              ;; with a blank line ready for the task.
+              (should (= 1 (length presented)))
+              (should (equal "w1:p1" (cadr (car presented))))
+              (should (string-match-p "src.el" (caddr (car presented))))
+              (should (string-match-p "(symbol: foo)" (caddr (car presented))))
+              (should (string-suffix-p "\n\n" (caddr (car presented)))))
           (kill-buffer buf)
           (when (file-exists-p dir) (delete-directory dir t))))))
-    ;; Fallback: no same-Project agents → unfiltered reader is called.
-    (let ((read-called nil))
+    ;; Fallback: no same-Project agents → unfiltered reader is called.  Keep
+    ;; this branch inside its own cache binding: the first scenario above
+    ;; deliberately uses a temporary file buffer and has already finished its
+    ;; dynamic bindings by this point.
+    (let ((herdr-model--cache (agent-fleet-interactive-test--session))
+          (read-called nil))
       (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
                 ((symbol-function 'agent-fleet-project-current)
                  (lambda () nil))
@@ -442,33 +447,37 @@ the unfiltered reader."
                 ((symbol-function 'agent-fleet-project-agents)
                  (lambda (&rest _) nil))
                 ((symbol-function 'agent-fleet-read-agent-name)
-                 (lambda (_prompt) (setq read-called t) "w1:p1"))
+                 (lambda (_prompt &optional _filter)
+                   (setq read-called t) "w1:p1"))
                 ((symbol-function 'agent-fleet--find-agent)
                  (lambda (_) (herdr-find-agent "w1:p1")))
                 ((symbol-function 'agent-fleet-project-for-agent)
                  (lambda (_) "/repo"))
-                ((symbol-function 'read-string)
-                 (lambda (&rest _) ""))
-                ((symbol-function 'agent-fleet-prompt) #'ignore))
-        (call-interactively #'agent-fleet-prompt-dwim)
-        (should read-called))))
+                ((symbol-function 'agent-fleet-attach) #'ignore)
+                ((symbol-function 'agent-fleet-attach-prefill-prompt) #'ignore))
+        (with-temp-buffer
+          (call-interactively #'agent-fleet-prompt-dwim)
+          (should read-called)))))
 
 (ert-deftest agent-fleet-interactive-prompt-dwim-connects-before-candidates ()
-  "Prompt DWIM establishes an on-demand connection before reading candidates.
-This protects a first invocation with an empty cache from failing before the
-interactive target reader gets a chance to see the freshly connected agents."
+  "Prompt DWIM establishes an on-demand connection before reading candidates,
+and again before attaching/composing.  Protects a first invocation with an
+empty cache from failing before the interactive reader sees freshly
+connected agents."
   (let (calls)
     (cl-letf (((symbol-function 'agent-fleet--ensure-connected)
                (lambda () (setq calls (append calls '(ensure)))))
               ((symbol-function 'agent-fleet-prompt-dwim--read-agent)
                (lambda () (setq calls (append calls '(read-agent))) "w1:p1"))
               ((symbol-function 'agent-fleet--find-agent)
-               (lambda (_) nil))
-              ((symbol-function 'read-string)
-               (lambda (&rest _) (setq calls (append calls '(read-task))) "")))
+               (lambda (_) (make-herdr-agent :id "w1:p1" :cwd "/repo")))
+              ((symbol-function 'agent-fleet-attach)
+               (lambda (_) (setq calls (append calls '(attach)))))
+              ((symbol-function 'agent-fleet-attach-prefill-prompt)
+               (lambda (&rest _) (setq calls (append calls '(present))))))
       (with-temp-buffer
         (call-interactively #'agent-fleet-prompt-dwim)))
-    (should (equal '(ensure read-agent ensure read-task) calls))))
+    (should (equal '(ensure read-agent ensure attach present) calls))))
 
 (ert-deftest agent-fleet-interactive-wait-and-input ()
   "Wait/send-keys/interrupt consume minibuffer input and dispatch correctly.
@@ -953,6 +962,73 @@ the lifecycle runs in batch."
             (call-interactively #'agent-fleet-attach--compose-abort))
           (should-not calls)
           (should aux-closed))))))
+
+
+(ert-deftest agent-fleet-interactive-attach-compose-prefills-initial-text ()
+  "Compose inserts initial text exactly and leaves point ready at its end."
+  (let ((herdr-model--cache (agent-fleet-interactive-test--session))
+        (frame (selected-frame))
+        compose-buf)
+    (unwind-protect
+        (cl-letf (((symbol-function 'set-window-buffer) #'ignore)
+                  ((symbol-function 'agent-fleet-display--aux-run)
+                   (lambda (thunk &optional _parameters) (funcall thunk))))
+          (agent-fleet-attach--compose-open "w1:p1" "src.el:1\n\n")
+          (setq compose-buf
+                (gethash frame agent-fleet-attach--compose-buffers))
+          (should (buffer-live-p compose-buf))
+          (with-current-buffer compose-buf
+            (should (equal "src.el:1\n\n" (buffer-string)))
+            (should (= (point) (point-max)))
+            (should (equal "w1:p1" agent-fleet-attach--compose-pane-id))))
+      (remhash frame agent-fleet-attach--compose-buffers)
+      (when (buffer-live-p compose-buf)
+        (kill-buffer compose-buf)))))
+
+
+(ert-deftest agent-fleet-interactive-attach-prefill-uses-child-frame ()
+  "The generic prefill API uses compose when child frames are available."
+  (let (opened looked-up)
+    (cl-letf (((symbol-function 'agent-fleet-display-child-frame-available-p)
+               (lambda (&optional _) t))
+              ((symbol-function 'agent-fleet-attach--compose-open)
+               (lambda (pane-id initial-text)
+                 (setq opened (list pane-id initial-text))))
+              ((symbol-function 'agent-fleet-attach--live-buffer-for-pane)
+               (lambda (&rest _)
+                 (setq looked-up t)
+                 nil)))
+      (should (eq 'child-frame
+                  (agent-fleet-attach-prefill-prompt
+                   "w1:p1" "src.el:1\n\n")))
+      (should (equal '("w1:p1" "src.el:1\n\n") opened))
+      (should-not looked-up))))
+
+
+(ert-deftest agent-fleet-interactive-attach-prefill-falls-back-to-terminal ()
+  "Without child frames, prefill pastes into the terminal without Enter."
+  (let ((attach-buf (generate-new-buffer " *af-prefill-fallback*"))
+        pasted sent-key)
+    (unwind-protect
+        (cl-letf (((symbol-function 'agent-fleet-display-child-frame-available-p)
+                   (lambda (&optional _) nil))
+                  ((symbol-function 'agent-fleet-attach--live-buffer-for-pane)
+                   (lambda (pane-id)
+                     (should (equal "w1:p1" pane-id))
+                     attach-buf))
+                  ((symbol-function 'ghostel-paste-string)
+                   (lambda (text)
+                     (should (eq (current-buffer) attach-buf))
+                     (setq pasted text)))
+                  ((symbol-function 'ghostel-send-key)
+                   (lambda (&rest args) (setq sent-key args))))
+          (should (eq 'terminal
+                      (agent-fleet-attach-prefill-prompt
+                       "w1:p1" "src.el:1\n\n")))
+          (should (equal "src.el:1\n\n" pasted))
+          (should-not sent-key))
+      (when (buffer-live-p attach-buf)
+        (kill-buffer attach-buf)))))
 
 
 (ert-deftest agent-fleet-interactive-attach-compose-isolated-per-frame ()

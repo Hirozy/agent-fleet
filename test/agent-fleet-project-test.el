@@ -204,16 +204,16 @@ Git common-root rule used for each agent cwd."
       (when (file-exists-p repo) (delete-directory repo t)))))
 
 (ert-deftest agent-fleet-prompt-dwim-prefers-and-disambiguates-linked-agents ()
-  "Prompt DWIM offers both same-Project linked-worktree agents distinctly.
-The completion collection is built from public candidate descriptors, so two
-agents with the same name can still be selected independently."
+  "Prompt DWIM scopes the reader to same-Project linked-worktree agents.
+The filter passed to `agent-fleet-read-agent-name' keeps both
+linked-worktree agents (same canonical Project) and drops agents in
+other projects; the user always confirms (no auto-selection)."
   (let* ((repo (agent-fleet-project-test--make-git-repo))
          (worktree nil)
-         choices)
+         filter)
     (unwind-protect
         (progn
-          (setq worktree
-                (agent-fleet-project-test--add-linked-worktree repo))
+          (setq worktree (agent-fleet-project-test--add-linked-worktree repo))
           (with-agent-fleet-mock path server
             (herdr-mock-create-pane
              server `(:pane_id "w1:p2" :workspace_id "w1" :agent "claude"
@@ -225,22 +225,28 @@ agents with the same name can still be selected independently."
                        :agent_status "idle" :name "same"
                        :cwd ,worktree :terminal_id "term_p3" :tab_id "w1:t1"
                        :focused nil :revision 0))
+            ;; A third agent in a different project — must be filtered out.
+            (herdr-mock-create-pane
+             server `(:pane_id "w2:p1" :workspace_id "w2" :agent "codex"
+                       :agent_status "idle" :name "other"
+                       :cwd "/no/such/project" :terminal_id "term_p4"
+                       :tab_id "w2:t1" :focused nil :revision 0))
             (agent-fleet-test--pump)
             (cl-letf (((symbol-function 'agent-fleet-project-current)
                        (lambda () worktree))
-                      ((symbol-function 'completing-read)
-                       (lambda (_prompt collection &rest _)
-                         (setq choices collection)
-                         ;; Select the second disambiguated candidate.  The
-                         ;; real `completing-read' returns its display string,
-                         ;; not the alist cons cell.
-                         (car (cadr collection)))))
-              (should (equal "w1:p3"
-                             (agent-fleet-prompt-dwim--read-agent))))
-            (should (= 2 (length choices)))
-            (should-not (equal (car choices) (cadr choices)))
-            (should (string-match-p "w1:p2" (car (car choices))))
-            (should (string-match-p "w1:p3" (car (cadr choices))))))
+                      ((symbol-function 'agent-fleet-read-agent-name)
+                       (lambda (_prompt &optional flt)
+                         (setq filter flt)
+                         (let ((ids (mapcar
+                                     (lambda (e) (plist-get e :pane-id))
+                                     (agent-fleet-agent-candidates flt))))
+                           (should (member "w1:p2" ids))
+                           (should (member "w1:p3" ids))
+                           (should-not (member "w2:p1" ids))
+                           (should (= 2 (length ids))))
+                         "w1:p3")))
+              (should (equal "w1:p3" (agent-fleet-prompt-dwim--read-agent)))
+              (should filter))))
       (when (and worktree (file-exists-p worktree))
         (delete-directory worktree t))
       (when (file-exists-p repo) (delete-directory repo t)))))
@@ -439,7 +445,7 @@ between it and POINT-POS.  The buffer is not selected for display."
     (unwind-protect
         (with-current-buffer buf
           ;; No symbol at point (point is on 'l' of "line"), no region.
-          (let ((text (agent-fleet-prompt-dwim--context dir)))
+          (let ((text (car (agent-fleet-prompt-dwim--context dir))))
             (should (string-prefix-p (file-truename (buffer-file-name buf)) text))))
       (kill-buffer buf)
       (when (file-exists-p dir) (delete-directory dir t)))))
@@ -452,7 +458,7 @@ between it and POINT-POS.  The buffer is not selected for display."
                dir "src.el" "x" 1)))
     (unwind-protect
         (with-current-buffer buf
-          (should (string-prefix-p "src.el" (agent-fleet-prompt-dwim--context root))))
+          (should (string-prefix-p "src.el" (car (agent-fleet-prompt-dwim--context root)))))
       (kill-buffer buf)
       (when (file-exists-p dir) (delete-directory dir t)))))
 
@@ -473,7 +479,7 @@ between it and POINT-POS.  The buffer is not selected for display."
           (set-mark 1)
           (setq mark-active t)
           (setq deactivate-mark nil)
-          (let ((text (agent-fleet-prompt-dwim--context root)))
+          (let ((text (car (agent-fleet-prompt-dwim--context root))))
             (should (string-prefix-p "src.el:1" text))
             (should-not (string-match-p "(symbol: beta)" text))
             ;; The verbatim region text is appended after a blank line.
@@ -482,27 +488,50 @@ between it and POINT-POS.  The buffer is not selected for display."
       (when (file-exists-p dir) (delete-directory dir t)))))
 
 (ert-deftest agent-fleet-prompt-dwim-context-large-region-omits-text ()
-  "A region above the size limit keeps the line range but drops the text."
+  "A region above the line limit keeps the line range but drops the text."
   (let* ((dir (make-temp-file "af-dwim" t))
          (root (file-truename dir))
-         (big (make-string (* 2 agent-fleet-prompt-dwim-max-region-chars) ?x))
-         (content (format "line\n%s\n" big))
+         (content (mapconcat #'identity
+                              '("one" "two" "three" "four" "five") "\n"))
          (buf (agent-fleet-project-test--with-context-buffer
                dir "src.el" content 1 1))
-         (agent-fleet-prompt-dwim-max-region-chars
-          agent-fleet-prompt-dwim-max-region-chars)
+         (agent-fleet-prompt-dwim-max-region-lines 3)
          (transient-mark-mode t))
     (unwind-protect
         (with-current-buffer buf
-          ;; Select the entire buffer as a region.
+          ;; Select the entire buffer as a region (5 lines > the 3-line limit).
           (goto-char (point-max))
           (set-mark (point-min))
           (setq mark-active t)
           (setq deactivate-mark nil)
-          (let ((text (agent-fleet-prompt-dwim--context root)))
-            (should (string-prefix-p "src.el:1-" text))
-            ;; No verbatim text appended (the big string is not present).
-            (should-not (string-match-p (regexp-quote big) text))))
+          (let ((ctx (agent-fleet-prompt-dwim--context root)))
+            ;; The reference keeps the line range; verbatim text is omitted.
+            (should (string-prefix-p "src.el:1-" (car ctx)))
+            (should (cdr ctx))            ; truncated flag set
+            (should-not (string-match-p "one\n" (car ctx)))))
+      (kill-buffer buf)
+      (when (file-exists-p dir) (delete-directory dir t)))))
+
+(ert-deftest agent-fleet-prompt-dwim-context-long-line-omits-text ()
+  "A region above the character limit is omitted even when it is one line."
+  (let* ((dir (make-temp-file "af-dwim" t))
+         (root (file-truename dir))
+         (content "abcdefghij")
+         (buf (agent-fleet-project-test--with-context-buffer
+               dir "src.el" content 1 1))
+         (agent-fleet-prompt-dwim-max-region-lines 50)
+         (agent-fleet-prompt-dwim-max-region-chars 4)
+         (transient-mark-mode t))
+    (unwind-protect
+        (with-current-buffer buf
+          (goto-char (point-max))
+          (set-mark (point-min))
+          (setq mark-active t)
+          (setq deactivate-mark nil)
+          (let ((ctx (agent-fleet-prompt-dwim--context root)))
+            (should (string-prefix-p "src.el:1" (car ctx)))
+            (should (cdr ctx))
+            (should-not (string-match-p "abcdefghij" (car ctx)))))
       (kill-buffer buf)
       (when (file-exists-p dir) (delete-directory dir t)))))
 
@@ -511,7 +540,7 @@ between it and POINT-POS.  The buffer is not selected for display."
   (with-temp-buffer
     (insert "(defun foo ()")
     (goto-char 8)                  ; on 'foo'
-    (let ((text (agent-fleet-prompt-dwim--context nil)))
+    (let ((text (car (agent-fleet-prompt-dwim--context nil))))
       (should (string-match-p "(symbol: foo)" text)))))
 
 (provide 'agent-fleet-project-test)
