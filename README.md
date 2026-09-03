@@ -418,24 +418,68 @@ agent-fleet-attach-*` and signal a clear error outside an attach buffer.
 
 ### Composing prompts with C-g
 
-Inside an attach buffer, `C-g` is bound to
-`agent-fleet-attach-prompt-in-child-frame`. This intercepts the key
-**before** it reaches the PTY: instead of letting the CLI tool
-(Claude Code, Codex) launch `$EDITOR`, an auxiliary child frame opens
-with a text buffer for composing a multi-line prompt.
+Inside an attach buffer, `C-g` is handled by Agent Fleet. With the optional
+editor bridge disabled (the default), it opens
+`agent-fleet-attach-prompt-in-child-frame`, preserving the local compose
+workflow. With the bridge enabled, Agent Fleet arms a one-shot route and sends
+`Ctrl-G` to the exact Herdr pane. The CLI can then export its complete draft
+to the file passed to `$EDITOR`; that file is opened by Emacs in an Agent Fleet
+editor buffer in a new right-side window. The attach window remains visible.
+
+Enable the bridge explicitly after configuring the agent environment:
+
+```elisp
+;; This is optional, but must happen before the bridge starts the server.
+(setq server-name "agent-fleet")
+;; Enabling the bridge starts this Emacs's server by default.
+(agent-fleet-editor-bridge-mode 1)
+```
+
+The agent process must inherit `EDITOR` and `VISUAL` pointing to an
+`emacsclient` command for this same Emacs server **before the agent starts**.
+For example:
+
+```sh
+export EDITOR="emacsclient --quiet --socket-name agent-fleet"
+export VISUAL="$EDITOR"
+```
+
+Use the matching `--socket-name` when `server-name` is customized. Agent Fleet
+recommends `--quiet` because the normal `Waiting for Emacs...` status line is
+written into the agent PTY and some full-screen agent UIs do not erase it when
+the editor exits. If an agent accepts only a bare executable name in `EDITOR`,
+point it at a wrapper script that executes `emacsclient --quiet` with the
+matching socket name and forwards `"$@"`.
+
+Agent Fleet does not alter an existing `server-name`, inject environment variables into
+already-running agents, or start a server during ordinary package loading or
+connection. Agents started before this environment was configured must be
+restarted. The editor bridge is intended for agents and Emacs on the same
+host with a shared filesystem.
 
 | Key | Action |
 |---|---|
-| `C-g` | Open the compose child frame |
-| `C-c C-c` | Paste the text into the terminal (bracketed paste) |
-| `C-c C-k` | Close the frame without pasting |
+| `C-g` (bridge disabled) | Open the Agent Fleet compose child frame |
+| `C-g` (bridge enabled) | Send `Ctrl-G` and route the CLI editor file |
+| `C-c C-c` (editor view) | Save, release `emacsclient`, and close the view |
+| `C-c C-k` (editor view) | Discard unsaved edits and release `emacsclient` successfully |
+| `C-c C-a S` | Open the independent Agent Fleet compose child frame |
 
-The text is pasted into the agent's ghostel terminal via bracketed paste
-(so multi-line prompts stay atomic) but Enter is **not** pressed — the
-user reviews the text and presses Enter manually to submit. To send a
-literal `C-g` to the terminal (e.g. to interrupt a running command), use
-`C-q C-g` (`ghostel-send-next-key`), or switch to char mode where all
-keys pass through to the PTY.
+The editor bridge does not use a child frame and works in graphical and
+terminal Emacs. It creates a dedicated side window rather than replacing the
+attach window or reusing an unrelated existing window. If the frame cannot
+accommodate a separate side window, the editor request is aborted and the CLI
+is released. Finishing or aborting deletes the side window and returns focus
+to the attach window. The route accepts one server file visit only, expires
+after `agent-fleet-editor-route-timeout`, and cannot distinguish simultaneous
+`C-g` requests from multiple agents; a second pending request is rejected.
+
+In the bridge-disabled compose workflow, text is pasted into the agent's
+Ghostel terminal via bracketed paste (so multi-line prompts stay atomic) but
+Enter is **not** pressed — the user reviews the text and presses Enter manually
+to submit. In the bridge workflow, the CLI owns restoring its draft after the
+editor exits; Agent Fleet does not scrape terminal output or inject Enter.
+`C-c C-a S` remains available regardless of bridge state.
 
 ### Evil and evil-escape
 
@@ -535,6 +579,20 @@ groups; set them with `setq` or <kbd>M-x customize-group RET agent-fleet</kbd>.
 | `agent-fleet-prompt-dwim-max-region-lines` | `50` | Maximum selected-region lines included verbatim by `agent-fleet-prompt-dwim`; larger regions send reference-only context |
 | `agent-fleet-prompt-dwim-max-region-chars` | `4000` | Secondary character ceiling for selected text, retained for compatibility and very long single-line regions |
 
+### External editor bridge
+
+| Option | Default | Meaning |
+|---|---|---|
+| `agent-fleet-editor-auto-start-server` | `t` | When enabling the bridge, start this Emacs's built-in server if it does not own one; never changes or stops an existing server |
+| `agent-fleet-editor-route-timeout` | `30.0` | One-shot seconds to wait for the next `$EDITOR` server file visit |
+| `agent-fleet-editor-side-window-width` | `0.5` | Width of the right-side editor window, as a frame fraction or column count |
+
+The bridge is opt-in: run `M-x agent-fleet-editor-bridge-mode` and enable it.
+It lazily loads `server`; ordinary Agent Fleet load/connect has no server side
+effect. Set `agent-fleet-editor-auto-start-server` to `nil` when the server
+must be started manually. The `EDITOR`/`VISUAL` values must be inherited by
+the agent before startup and must invoke `emacsclient` for the same server.
+
 ### Dashboard
 
 | Option | Default | Meaning |
@@ -573,6 +631,7 @@ Emacs
   |
   +-- agent-fleet-dashboard.el  live dashboard and contextual actions
   +-- agent-fleet-attach.el     interactive terminal attach
+  +-- agent-fleet-editor.el     optional $EDITOR/server bridge for attaches
   +-- agent-fleet-display.el    shared child-frame presentation lifecycle
   +-- agent-fleet-project.el    logical project/codebase mapping
   +-- agent-fleet-worktree.el   isolated checkout management

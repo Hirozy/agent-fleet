@@ -98,6 +98,8 @@
 (declare-function agent-fleet-display--make-outcome "agent-fleet-display" (opened &optional value buffer))
 (declare-function agent-fleet-display-child-frame-available-p
                   "agent-fleet-display" (&optional parent-frame))
+(declare-function agent-fleet-editor-arm-current-attach
+                  "agent-fleet-editor" ())
 ;; text-mode-map is loaded on demand by (text-mode); declared here so the
 ;; compose keymap byte-compiles without a top-level require.
 (defvar text-mode-map)
@@ -588,6 +590,21 @@ so no selection prompt is needed."
   (interactive)
   (agent-fleet-attach--compose-open (agent-fleet-attach--current-pane-id)))
 
+(defun agent-fleet-attach--ctrl-g ()
+  "Handle C-g according to the optional external-editor bridge.
+When `agent-fleet-editor-bridge-mode' is enabled, arm a one-shot route and
+send Ctrl-G to the exact Herdr pane so the CLI can invoke its `$EDITOR'.
+Otherwise preserve the historical Agent Fleet compose child-frame command.
+The editor module is loaded only for the enabled path; ordinary attach and
+core Agent Fleet startup do not load it or start an Emacs server."
+  (interactive)
+  (if (and (boundp 'agent-fleet-editor-bridge-mode)
+           agent-fleet-editor-bridge-mode)
+      (progn
+        (require 'agent-fleet-editor)
+        (agent-fleet-editor-arm-current-attach))
+    (agent-fleet-attach-prompt-in-child-frame)))
+
 (defun agent-fleet-attach--compose-map ()
   "Return a keymap for the compose buffer.
 Layered on top of `text-mode-map' so all standard editing keys work;
@@ -793,11 +810,12 @@ autoload form carries every binding before `agent-fleet-attach' loads."
 (defvar-keymap agent-fleet-attach-mode-map
   :doc "Keymap for `agent-fleet-attach-mode', active in attach buffers.
 Bind `agent-fleet-attach-command-map' to a prefix key of your choice.
-C-g is bound to `agent-fleet-attach-prompt-in-child-frame' so it
-intercepts the key before the CLI tool can launch $EDITOR — the
-prompt is composed in an auxiliary child frame instead.  To send a
-literal C-g to the terminal, use \\[ghostel-send-next-key] (C-q)."
-  "C-g" #'agent-fleet-attach-prompt-in-child-frame)
+C-g is handled by `agent-fleet-attach--ctrl-g'.  With the optional editor
+bridge enabled it arms the next Emacs server file visit and sends Ctrl-G to
+the pane; otherwise it opens the historical Agent Fleet compose child frame.
+To send a literal C-g to the terminal without the bridge, use
+\\[ghostel-send-next-key] (C-q)."
+  "C-g" #'agent-fleet-attach--ctrl-g)
 
 (define-minor-mode agent-fleet-attach-mode
   "Buffer-local minor mode for attach terminal buffers.

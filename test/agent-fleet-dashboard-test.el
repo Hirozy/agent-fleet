@@ -1226,6 +1226,35 @@ either opens a child frame or signals."
        :type 'user-error))
     (should-not ran)))
 
+(ert-deftest agent-fleet-dashboard-delayed-refocus-does-not-steal-focus ()
+  "An old child-close callback must not focus over a newer child."
+  (let ((current 'old-child)
+        (selections nil)
+        (raised nil)
+        idle-function
+        idle-args)
+    (cl-letf (((symbol-function 'frame-live-p) (lambda (&rest _) t))
+              ((symbol-function 'selected-frame) (lambda () current))
+              ((symbol-function 'select-frame-set-input-focus)
+               (lambda (frame)
+                 (setq current frame)
+                 (push frame selections)))
+              ((symbol-function 'raise-frame)
+               (lambda (frame) (push frame raised)))
+              ((symbol-function 'run-with-idle-timer)
+               (lambda (_seconds _repeat function &rest args)
+                 (setq idle-function function
+                       idle-args args))))
+      (agent-fleet-display--refocus-frame 'origin)
+      (should (eq current 'origin))
+      ;; A newer auxiliary child becomes current before the idle callback
+      ;; scheduled by the previous child deletion gets a chance to run.
+      (setq current 'new-child)
+      (apply idle-function idle-args)
+      (should (eq current 'new-child))
+      (should (equal selections '(origin)))
+      (should-not raised))))
+
 (ert-deftest agent-fleet-dashboard-aux-run-nil-closes-new-child ()
   "A nil thunk result closes a child created this call and refocuses origin.
 An empty new child must not linger."
