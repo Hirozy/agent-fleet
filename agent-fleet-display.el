@@ -28,9 +28,10 @@
 ;;
 ;; This module depends only on Emacs primitives.  It does NOT depend on
 ;; Magit, worktree, attach, the dashboard buffer, or any Herdr RPC.
-;; Feature modules call `agent-fleet-display--aux-run' to open a view
-;; in an auxiliary child frame; the dashboard calls the capability and
-;; centering helpers for its own child-frame backend.
+;; Feature modules call `agent-fleet-display--aux-run' for the selected
+;; origin, or `agent-fleet-display-aux-run-at-origin' when an asynchronous
+;; workflow recorded an explicit origin.  The dashboard calls the capability
+;; and centering helpers for its own child-frame backend.
 
 ;;; Code:
 
@@ -144,7 +145,6 @@ explicitly so the child is reliably centered within its parent."
   (setq agent-fleet-display--centered-children
         (assq-delete-all frame agent-fleet-display--centered-children)))
 
-
 ;;; --- Auxiliary child frame -----------------------------------------
 
 ;; An auxiliary child frame floats over an attached terminal's parent
@@ -215,20 +215,47 @@ its own origin.  This prevents a child of a child."
      ((and aux-origin (frame-live-p aux-origin)) aux-origin)
      (t (agent-fleet-display--parent-frame frame)))))
 
+(defun agent-fleet-display-origin-frame (&optional frame)
+  "Return the stable non-child presentation origin for FRAME.
+FRAME defaults to the selected frame.  This is the public origin resolver for
+feature modules that must record a destination before asynchronous work."
+  (agent-fleet-display--aux-origin-frame frame))
+
 (defun agent-fleet-display--aux-frame-for-origin (origin)
   "Return the live auxiliary child frame for ORIGIN, or nil."
   (let ((child (gethash origin agent-fleet-display--aux-frames)))
     (and (frame-live-p child) child)))
+
+(defun agent-fleet-display-auxiliary-frame-for-origin (&optional origin)
+  "Return the live auxiliary frame owned by ORIGIN, or nil.
+ORIGIN defaults to the non-child frame associated with the selected frame.
+This small query is intended for feature modules that need to inspect or
+reuse the one auxiliary frame owned by an origin."
+  (agent-fleet-display--aux-frame-for-origin
+   (agent-fleet-display--aux-origin-frame (or origin (selected-frame)))))
 
 (defun agent-fleet-display--refocus-frame (frame)
   "Select and raise FRAME after a child-frame deletion."
   (when (frame-live-p frame)
     (select-frame-set-input-focus frame)
     (run-with-idle-timer 0 nil
-                          (lambda ()
-                            (when (frame-live-p frame)
-                              (raise-frame frame)
-                              (select-frame-set-input-focus frame))))))
+                         (lambda ()
+                           ;; Do not let a delayed refocus from an older child
+                           ;; steal focus from a newer child (or from another
+                           ;; frame the user selected in the meantime).
+                           (when (and (frame-live-p frame)
+                                      (eq (selected-frame) frame))
+                             (raise-frame frame)
+                             (select-frame-set-input-focus frame))))))
+
+(defun agent-fleet-display--raise-frame (frame)
+  "Raise FRAME after selecting it when the window system permits.
+Selecting a reused child frame does not reliably raise it on every window
+system, notably when another frame was focused after the previous view.  A
+best-effort raise keeps asynchronous editor/output views visible without
+making frame presentation fail on window systems that reject the operation."
+  (when (frame-live-p frame)
+    (ignore-errors (raise-frame frame))))
 
 (defun agent-fleet-display--aux-focus-origin (origin)
   "Return input focus to ORIGIN when it is a live frame."
@@ -252,6 +279,7 @@ display lands in it.  Signal a `user-error' when Emacs cannot create it."
             (let ((child (window-frame window)))
               (modify-frame-parameters child private)
               (select-frame-set-input-focus child)
+              (agent-fleet-display--raise-frame child)
               (agent-fleet-display--center-child-frame child origin)
               (puthash origin child agent-fleet-display--aux-frames)
               child)
@@ -270,6 +298,10 @@ display lands in it.  Signal a `user-error' when Emacs cannot create it."
     (when (and origin (eq mapped child))
       (remhash origin agent-fleet-display--aux-frames))
     (agent-fleet-display--aux-focus-origin origin)))
+
+(defun agent-fleet-display-close-auxiliary-frame (child)
+  "Close auxiliary CHILD and return focus to its recorded origin."
+  (agent-fleet-display--aux-close child))
 
 (defun agent-fleet-display--aux-forget (frame)
   "Forget FRAME from auxiliary reuse tracking when it is deleted."
@@ -317,6 +349,12 @@ domain return value (may be nil).  BUFFER is the optional destination
 buffer, for callers that want to inspect it."
   (list :opened (if opened t) :value value :buffer buffer))
 
+(defun agent-fleet-display-make-outcome (opened &optional value buffer)
+  "Return an explicit presentation outcome for a feature view.
+OPENED, VALUE, and BUFFER have the same meanings as in the auxiliary display
+runner's outcome contract."
+  (agent-fleet-display--make-outcome opened value buffer))
+
 (defun agent-fleet-display--outcome-opened-p (outcome)
   "Return non-nil if OUTCOME marks the view as opened.
 A non-outcome value (a plain return from a thunk that has not been
@@ -337,11 +375,11 @@ migrated) is treated as opened when non-nil, for backward compatibility."
       (plist-get outcome :buffer)
     nil))
 
-(defun agent-fleet-display--aux-run (thunk &optional parameters)
-  "Run THUNK in an auxiliary child frame and enforce its lifecycle.
-Resolve the current origin to a non-child parent frame, ensure one
-auxiliary child for it (creating and selecting it when absent), run
-THUNK with that child selected, and apply the close contract:
+(defun agent-fleet-display-aux-run-at-origin (origin thunk &optional parameters)
+  "Run THUNK in an auxiliary child frame owned by ORIGIN.
+ORIGIN is normalized to a non-child parent frame.  Ensure one auxiliary
+child for it (creating and selecting it when absent), run THUNK with that
+child selected, and apply the close contract:
 
 - when the outcome's `:opened' is non-nil, keep the child and
   return the outcome;
@@ -357,10 +395,13 @@ PARAMETERS, when non-nil, is a frame-parameter alist merged on top of
 and centered — e.g. `((width . 0.5) (height . 0.5))' for a half-size
 frame instead of the default full-fill.
 
-A non-outcome return value is treated as opened when non-nil (backward
-compat).  Signal a `user-error' when child frames are unsupported; an
-explicit `-in-child-frame' command never falls back to an ordinary buffer."
-  (let* ((origin (agent-fleet-display--aux-origin-frame))
+Origins may be recorded before an asynchronous server visit, which is why
+this entry point accepts an explicit origin instead of relying on the
+currently selected frame.  A non-outcome return value is treated as opened
+when non-nil (backward compat).  Signal a `user-error' when child frames are
+unsupported; an explicit `-in-child-frame' command never falls back to an
+ordinary buffer."
+  (let* ((origin (agent-fleet-display--aux-origin-frame origin))
          (reason (agent-fleet-display--child-frame-unavailable-reason origin)))
     (if reason
         (user-error "agent-fleet: %s" reason)
@@ -372,13 +413,10 @@ explicit `-in-child-frame' command never falls back to an ordinary buffer."
                                 agent-fleet-display--aux-frame-parameters
                                 parameters)
                              agent-fleet-display--aux-frame-parameters)))
-        ;; Reapply presentation parameters when reusing a frame.  Besides
-        ;; keeping live frames aligned with customization/reloads, this grows
-        ;; auxiliary frames created by older versions that inherited the
-        ;; dashboard's compact dimensions.
         (modify-frame-parameters child frame-params)
         (agent-fleet-display--center-child-frame child origin)
         (select-frame-set-input-focus child)
+        (agent-fleet-display--raise-frame child)
         (condition-case err
             (let* ((result (funcall thunk))
                    (opened (agent-fleet-display--outcome-opened-p result)))
@@ -400,6 +438,14 @@ explicit `-in-child-frame' command never falls back to an ordinary buffer."
                (agent-fleet-display--aux-close child)
              (select-frame-set-input-focus child))
            (signal (car err) (cdr err))))))))
+
+(defun agent-fleet-display--aux-run (thunk &optional parameters)
+  "Run THUNK in an auxiliary child frame and enforce its lifecycle.
+Resolve the current origin to a non-child parent frame, then delegate to
+`agent-fleet-display-aux-run-at-origin'."
+  (agent-fleet-display-aux-run-at-origin
+   (agent-fleet-display--aux-origin-frame)
+   thunk parameters))
 
 
 ;;; --- Frame hooks ---------------------------------------------------
