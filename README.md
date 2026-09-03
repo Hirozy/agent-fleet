@@ -426,36 +426,56 @@ workflow. With the bridge enabled, Agent Fleet arms a one-shot route and sends
 to the file passed to `$EDITOR`; that file is opened by Emacs in an Agent Fleet
 editor buffer in a new right-side window. The attach window remains visible.
 
-Enable the bridge explicitly after configuring the agent environment:
+#### Configure `emacsclient` as the agent editor
+
+Choose the Emacs server name before enabling the bridge. The custom name is
+optional, but it makes the matching `emacsclient` command unambiguous:
 
 ```elisp
-;; This is optional, but must happen before the bridge starts the server.
+;; Set this before any Emacs server is started.
 (setq server-name "agent-fleet")
-;; Enabling the bridge starts this Emacs's server by default.
+;; The bridge starts this Emacs's server by default.
 (agent-fleet-editor-bridge-mode 1)
 ```
 
-The agent process must inherit `EDITOR` and `VISUAL` pointing to an
-`emacsclient` command for this same Emacs server **before the agent starts**.
-For example:
+Set `EDITOR` and `VISUAL` in the environment that Herdr uses to start agents.
+The socket name must exactly match the Emacs `server-name` above:
 
 ```sh
 export EDITOR="emacsclient --quiet --socket-name agent-fleet"
 export VISUAL="$EDITOR"
 ```
 
-Use the matching `--socket-name` when `server-name` is customized. Agent Fleet
-recommends `--quiet` because the normal `Waiting for Emacs...` status line is
-written into the agent PTY and some full-screen agent UIs do not erase it when
-the editor exits. If an agent accepts only a bare executable name in `EDITOR`,
-point it at a wrapper script that executes `emacsclient --quiet` with the
-matching socket name and forwards `"$@"`.
+Export these variables before starting Herdr, or configure them in the service
+environment used to launch Herdr. Restart Herdr when necessary, and restart any
+agent that was already running: changing the variables in a shell or in Emacs
+cannot update an existing process's environment.
 
-Agent Fleet does not alter an existing `server-name`, inject environment variables into
-already-running agents, or start a server during ordinary package loading or
-connection. Agents started before this environment was configured must be
-restarted. The editor bridge is intended for agents and Emacs on the same
-host with a shared filesystem.
+Use `--quiet` to prevent `emacsclient` from writing `Waiting for Emacs...` into
+the agent PTY. Do **not** use `--no-wait` or `-n`: the editor process must wait
+until `C-c C-c` or `C-c C-k` releases it, otherwise the agent may read the
+draft before editing is complete.
+
+If the agent accepts only an executable path rather than an `EDITOR` command
+with arguments, create a wrapper such as `agent-fleet-emacsclient`:
+
+```sh
+#!/bin/sh
+exec emacsclient --quiet --socket-name agent-fleet "$@"
+```
+
+Make the wrapper executable and set both variables to its absolute path:
+
+```sh
+chmod +x /path/to/agent-fleet-emacsclient
+export EDITOR=/path/to/agent-fleet-emacsclient
+export VISUAL="$EDITOR"
+```
+
+Agent Fleet does not alter an existing `server-name`, inject environment
+variables into Herdr or its agents, or start a server during ordinary package
+loading or connection. The editor bridge is intended for agents and Emacs on
+the same host with a shared filesystem.
 
 | Key | Action |
 |---|---|
