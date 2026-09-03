@@ -18,6 +18,7 @@
 (require 'agent-fleet-magit)
 (require 'agent-fleet-parallel)
 (require 'agent-fleet-attach)
+(require 'agent-fleet-editor)
 (require 'agent-fleet-dashboard)
 
 
@@ -95,6 +96,10 @@
     (agent-fleet-attach-magit-in-buffer . agent-fleet-interactive-attach-current-agent)
     (agent-fleet-attach-diff-in-child-frame . agent-fleet-interactive-attach-current-agent)
     (agent-fleet-attach-diff-in-buffer . agent-fleet-interactive-attach-current-agent)
+    (agent-fleet-attach--ctrl-g . agent-fleet-interactive-attach-ctrl-g)
+    (agent-fleet-editor-arm-current-attach . agent-fleet-interactive-editor-bridge)
+    (agent-fleet-editor-submit . agent-fleet-interactive-editor-buffer)
+    (agent-fleet-editor-abort . agent-fleet-interactive-editor-buffer)
     (agent-fleet-dashboard--quit . agent-fleet-interactive-dashboard-display-backends)
     (agent-fleet-dashboard--refresh . agent-fleet-interactive-dashboard-refresh-and-filters)
     (agent-fleet-dashboard--toggle-project-filter . agent-fleet-interactive-dashboard-refresh-and-filters)
@@ -118,6 +123,8 @@
   '((agent-fleet-mode . agent-fleet-interactive-dashboard-entry-and-mode)
     (agent-fleet-attach-mode . agent-fleet-interactive-attach-current-agent)
     (agent-fleet-attach-menu . agent-fleet-interactive-attach-current-agent)
+    (agent-fleet-editor-bridge-mode . agent-fleet-interactive-editor-bridge)
+    (agent-fleet-editor-buffer-mode . agent-fleet-interactive-editor-buffer)
     (agent-fleet-dashboard-help . agent-fleet-interactive-dashboard-help))
   "Mode and transient prefix commands.")
 
@@ -1517,6 +1524,52 @@ navigation commands; the real skip behavior is exercised in
   (cl-letf (((symbol-function 'agent-fleet-dashboard--forward-row) #'ignore))
     (call-interactively #'agent-fleet-dashboard--next-line)
     (call-interactively #'agent-fleet-dashboard--previous-line)))
+
+(ert-deftest agent-fleet-interactive-attach-ctrl-g ()
+  "C-g keeps the legacy compose path when the bridge is disabled."
+  (let ((agent-fleet-editor-bridge-mode nil)
+        (called nil))
+    (cl-letf (((symbol-function 'agent-fleet-attach-prompt-in-child-frame)
+               (lambda () (setq called t))))
+      (call-interactively #'agent-fleet-attach--ctrl-g))
+    (should called)))
+
+(ert-deftest agent-fleet-interactive-editor-bridge ()
+  "The editor bridge mode and attach arming command are interactive."
+  (let ((agent-fleet-editor-bridge-mode nil)
+        (armed nil)
+        (sent nil))
+    (cl-letf (((symbol-function 'agent-fleet-editor--ensure-server)
+               (lambda () t))
+              ((symbol-function 'agent-fleet-editor--disable)
+               (lambda () nil))
+              ((symbol-function 'agent-fleet-attach--current-pane-id)
+               (lambda () "w1:p1"))
+              ((symbol-function 'agent-fleet-editor--record-origin)
+               (lambda () nil))
+              ((symbol-function 'agent-fleet-editor--arm-route)
+               (lambda (&rest _) (setq armed t) 'route))
+              ((symbol-function 'agent-fleet-send-keys)
+               (lambda (&rest _) (setq sent t))))
+      (call-interactively #'agent-fleet-editor-bridge-mode)
+      (should agent-fleet-editor-bridge-mode)
+      (call-interactively #'agent-fleet-editor-arm-current-attach)
+      (should armed)
+      (should sent)
+      (call-interactively #'agent-fleet-editor-bridge-mode)
+      (should-not agent-fleet-editor-bridge-mode))))
+
+(ert-deftest agent-fleet-interactive-editor-buffer ()
+  "The editor buffer mode and completion commands are interactive."
+  (with-temp-buffer
+    (call-interactively #'agent-fleet-editor-buffer-mode)
+    (should agent-fleet-editor-buffer-mode)
+    (should-error (call-interactively #'agent-fleet-editor-submit)
+                  :type 'user-error)
+    (should-error (call-interactively #'agent-fleet-editor-abort)
+                  :type 'user-error)
+    (call-interactively #'agent-fleet-editor-buffer-mode)
+    (should-not agent-fleet-editor-buffer-mode)))
 
 (ert-deftest agent-fleet-interactive-dashboard-row-actions ()
   "Every dashboard row command resolves point, reads input and delegates once."

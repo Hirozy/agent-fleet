@@ -1107,11 +1107,11 @@ is pending must not call `herdr-connect' and rediscover a different socket."
 
 (ert-deftest agent-fleet-core-does-not-load-features ()
   "Requiring `agent-fleet' loads only the core control plane.
-Feature modules (dashboard, attach, magit, worktree, parallel) are NOT
-loaded by a bare `require', while their public entry points and the prefix
-map remain available through generated autoloads.  This is verified in a
-fresh Emacs subprocess so the already-loaded test environment does not
-mask the result."
+Feature modules (dashboard, attach, editor, magit, worktree, parallel) and
+Emacs's server library are NOT loaded by a bare `require', while public entry
+points and the prefix map remain available through generated autoloads.  This
+is verified in a fresh Emacs subprocess so the already-loaded test environment
+does not mask the result."
   (skip-unless (executable-find "emacs"))
   (let* ((dir (or (file-name-directory (locate-library "agent-fleet"))
                   default-directory))
@@ -1124,6 +1124,7 @@ mask the result."
                             "      (seq-filter (lambda (f)\n"
                             "        (string-prefix-p \"agent-fleet\" (symbol-name f)))\n"
                             "      features))\n"
+                            "    :server-loaded (featurep 'server)\n"
                             "    :dashboard-command (commandp 'agent-fleet)\n"
                             "    :attach-command (commandp 'agent-fleet-attach)\n"
                             "    :command-map (boundp 'agent-fleet-command-map))))\n"))))
@@ -1142,7 +1143,9 @@ mask the result."
           (should (member "agent-fleet" feats))
           (should-not (member "agent-fleet-dashboard" feats))
           (should-not (member "agent-fleet-attach" feats))
+          (should-not (member "agent-fleet-editor" feats))
           (should-not (member "agent-fleet-magit" feats))
+          (should-not (plist-get result :server-loaded))
           (should (plist-get result :dashboard-command))
           (should (plist-get result :attach-command))
           (should (plist-get result :command-map)))
