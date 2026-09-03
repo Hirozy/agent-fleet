@@ -137,6 +137,18 @@ Each entry is (KIND-SYMBOL EXECUTABLE DISPLAY-NAME).  Used by
                        (string :tag "Display name")))
   :group 'agent-fleet)
 
+(defcustom agent-fleet-agent-editor-command "emacsclient --quiet"
+  "Command assigned to EDITOR and VISUAL for newly provisioned agent panes.
+
+Agent Fleet passes this value through Herdr's pane-provisioning `env' field;
+it never changes Emacs's global `process-environment'.  Set this to nil to
+omit EDITOR and VISUAL.  A caller-supplied existing pane and the root pane
+returned by `worktree.create' retain their existing environment because the
+corresponding Herdr RPCs do not accept environment overrides."
+  :type '(choice (const :tag "Do not set EDITOR or VISUAL" nil)
+                 (string :tag "Editor command"))
+  :group 'agent-fleet)
+
 (defcustom agent-fleet-default-read-source 'recent_unwrapped
   "Default `agent.read' source.
 `recent_unwrapped' ignores soft wrapping and is best for log/agent
@@ -369,6 +381,21 @@ Delegates to `herdr-connection-state': `connected', `reconnecting',
 
 ;;; --- Pane provisioning (for agent.start) ----------------------------
 
+(defun agent-fleet--editor-environment-param ()
+  "Return an RPC `env' parameter for the configured agent editor.
+Return nil when `agent-fleet-agent-editor-command' is nil.  Signal a typed
+error for an invalid non-nil value before any provisioning RPC is issued."
+  (let ((command agent-fleet-agent-editor-command))
+    (cond
+     ((null command) nil)
+     ((and (stringp command) (not (string-empty-p command)))
+      `(("env" . (("EDITOR" . ,command)
+                   ("VISUAL" . ,command)))))
+     (t
+      (signal 'agent-fleet-error
+              (list :hint "agent editor command must be a non-empty string or nil"
+                    :value command))))))
+
 (defun agent-fleet--extract-pane-id (result)
   "Extract a pane id from a pane.split / tab.create / pane.current RESULT.
   Tolerant of several result shapes: top-level :pane_id, nested :pane or
@@ -415,10 +442,11 @@ carries `:text' directly.  Falls back to RESULT itself."
   "Create a workspace and return its workspace/root-pane provisioning data.
 The live `workspace_created' result contains `:workspace', `:tab', and
 `:root_pane'.  Reusing that root pane avoids immediately creating a redundant
-second tab.  Returns `(:workspace-id WS :pane-id PANE)' or signals."
-  (let* ((params (if cwd
-                     `(("focus" . ,(if focus t :false)) ("cwd" . ,cwd))
-                   `(("focus" . ,(if focus t :false)))))
+second tab.  The configured agent editor environment is assigned to the root
+pane.  Returns `(:workspace-id WS :pane-id PANE)' or signals."
+  (let* ((params `(("focus" . ,(if focus t :false))
+                   ,@(and cwd `(("cwd" . ,cwd)))
+                   ,@(agent-fleet--editor-environment-param)))
          (res (herdr-request "workspace.create" params))
          (workspace (or (plist-get res :workspace)
                         (and (plist-get res :workspace_id) res)))
@@ -498,8 +526,9 @@ Splits the focused pane (agent.start needs an interactive
 shell pane); if there is no pane to split, creates a fresh tab.  With
 FORCE-TAB non-nil, always creates a fresh tab — interactive starts use
 this so each new agent gets its own switchable tab instead of crowding
-an existing pane.  Returns the new pane id.  Signals
-`agent-fleet-provisioning-failed'."
+an existing pane.  Newly created panes receive the configured
+`agent-fleet-agent-editor-command' as EDITOR and VISUAL.  Returns the new pane
+id.  Signals `agent-fleet-provisioning-failed'."
   (let* ((focused (herdr-focused-pane))
          ;; The globally focused pane may belong to another project.  Split a
          ;; pane only when it is in the requested workspace; otherwise choose
@@ -517,7 +546,8 @@ an existing pane.  Returns the new pane id.  Signals
                          ("workspace_id" . ,workspace-id)
                          ("target_pane_id" . ,(herdr-pane-id target))
                          ("focus" . ,(if focus t :false))
-                         ,@(and cwd `(("cwd" . ,cwd)))))
+                         ,@(and cwd `(("cwd" . ,cwd)))
+                         ,@(agent-fleet--editor-environment-param)))
                (res (herdr-request "pane.split" params)))
           (or (agent-fleet--extract-pane-id res)
               ;; Some servers return only a layout; the new pane was
@@ -531,7 +561,8 @@ an existing pane.  Returns the new pane id.  Signals
       ;; fresh pane.
       (let* ((params `(("workspace_id" . ,workspace-id)
                        ("focus" . ,(if focus t :false))
-                       ,@(and cwd `(("cwd" . ,cwd)))))
+                       ,@(and cwd `(("cwd" . ,cwd)))
+                       ,@(agent-fleet--editor-environment-param)))
              (res (herdr-request "tab.create" params)))
         (or (agent-fleet--extract-pane-id res)
             (agent-fleet--extract-pane-id
@@ -616,6 +647,11 @@ Herdr creates a git worktree (a separate checkout of the repo at CWD) and
 provisions a fresh workspace + root pane there, so the agent works in
 isolation.  CWD is required in this mode (a worktree needs a
 source repo); BRANCH/BASE optionally override Herdr's default branch.
+
+Ordinary panes provisioned for this command receive
+`agent-fleet-agent-editor-command' as both EDITOR and VISUAL.  An explicitly
+reused PANE and a worktree root pane retain their existing environment because
+their Herdr operations do not support an environment override.
 
 When called interactively, the user is always prompted to pick the
 workspace the agent starts in (unless :workspace/:pane/:worktree is given
