@@ -88,6 +88,32 @@ check mere occurrence."
 
 ;;; --- Start ----------------------------------------------------------
 
+(ert-deftest agent-fleet-editor-environment-param-default ()
+  "The default editor command populates both variables without global mutation."
+  (let ((agent-fleet-agent-editor-command "emacsclient --quiet")
+        (before (copy-sequence process-environment)))
+    (should
+     (equal '(("env" . (("EDITOR" . "emacsclient --quiet")
+                         ("VISUAL" . "emacsclient --quiet"))))
+            (agent-fleet--editor-environment-param)))
+    (should (equal before process-environment))))
+
+(ert-deftest agent-fleet-editor-environment-param-can-be-disabled ()
+  "A nil editor command omits the provisioning environment parameter."
+  (let ((agent-fleet-agent-editor-command nil))
+    (should-not (agent-fleet--editor-environment-param))))
+
+(ert-deftest agent-fleet-editor-environment-param-rejects-empty-command ()
+  "An invalid editor command fails before a provisioning request is issued."
+  (let ((agent-fleet-agent-editor-command "")
+        (herdr-model--cache (herdr-model--empty-session))
+        (requested nil))
+    (cl-letf (((symbol-function 'herdr-request)
+               (lambda (&rest _args) (setq requested t))))
+      (should-error (agent-fleet--provision-pane "w1" nil nil)
+                    :type 'agent-fleet-error))
+    (should-not requested)))
+
 (ert-deftest agent-fleet-provision-pane-stays-in-requested-workspace ()
   "A globally focused pane in another workspace is never split."
   (let ((session (herdr-model-parse-snapshot
@@ -114,17 +140,23 @@ check mere occurrence."
       (should (equal "w2"
                      (alist-get "workspace_id" split-params nil nil #'equal)))
       (should (equal "w2:p1"
-                     (alist-get "target_pane_id" split-params nil nil #'equal))))))
+                     (alist-get "target_pane_id" split-params nil nil #'equal)))
+      (let ((env (alist-get "env" split-params nil nil #'equal)))
+        (should (equal "emacsclient --quiet"
+                       (alist-get "EDITOR" env nil nil #'equal)))
+        (should (equal "emacsclient --quiet"
+                       (alist-get "VISUAL" env nil nil #'equal)))))))
 
 (ert-deftest agent-fleet-provision-pane-uses-tab-root-pane-envelope ()
-  "tab.create uses its root_pane and never an unrelated pane.current."
+  "tab.create uses its root_pane, with editor env, and never pane.current."
   (let ((herdr-model--cache (herdr-model--empty-session))
-        methods)
+        methods tab-params)
     (cl-letf (((symbol-function 'herdr-request)
-               (lambda (method &optional _params &rest _keys)
+               (lambda (method &optional params &rest _keys)
                  (push method methods)
                  (pcase method
                    ("tab.create"
+                    (setq tab-params params)
                     '(:type "tab_created"
                       :tab (:tab_id "w9:t1" :workspace_id "w9")
                       :root_pane (:pane_id "w9:p1" :workspace_id "w9"
@@ -132,19 +164,25 @@ check mere occurrence."
                    ("pane.current" '(:pane_id "wrong:pane"))))))
       (should (equal "w9:p1"
                      (agent-fleet--provision-pane "w9" "/repo" nil))))
-    (should (equal '("tab.create") (nreverse methods)))))
+    (should (equal '("tab.create") (nreverse methods)))
+    (let ((env (alist-get "env" tab-params nil nil #'equal)))
+      (should (equal "emacsclient --quiet"
+                     (alist-get "EDITOR" env nil nil #'equal)))
+      (should (equal "emacsclient --quiet"
+                     (alist-get "VISUAL" env nil nil #'equal))))))
 
 (ert-deftest agent-fleet-start-reuses-new-workspace-root-pane ()
-  "workspace.create's root pane is the agent target; no extra tab is made."
+  "workspace.create's root pane gets editor env and is the agent target."
   (let ((herdr-model--cache (herdr-model--empty-session))
         (agent-fleet-agent-started-hook nil)
-        methods start-params)
+        methods start-params workspace-params)
     (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
               ((symbol-function 'herdr-request)
                (lambda (method &optional params &rest _keys)
                  (push method methods)
                  (pcase method
                    ("workspace.create"
+                    (setq workspace-params params)
                     '(:type "workspace_created"
                       :workspace (:workspace_id "new" :label "repo")
                       :tab (:tab_id "new:t1" :workspace_id "new")
@@ -161,6 +199,11 @@ check mere occurrence."
                (agent-fleet-start 'codex :name "root" :cwd "/repo"))))
     (should (equal "new:p1" (alist-get "pane_id" start-params nil nil
                                         #'equal)))
+    (let ((env (alist-get "env" workspace-params nil nil #'equal)))
+      (should (equal "emacsclient --quiet"
+                     (alist-get "EDITOR" env nil nil #'equal)))
+      (should (equal "emacsclient --quiet"
+                     (alist-get "VISUAL" env nil nil #'equal))))
     (should (equal '("workspace.create" "agent.start")
                    (nreverse methods)))))
 

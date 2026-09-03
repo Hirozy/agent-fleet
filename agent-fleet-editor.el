@@ -28,11 +28,12 @@
 ;; file visit, sends C-g to the exact Herdr pane, and displays the file in a
 ;; right-side window while keeping the recorded attach window visible.
 ;;
-;; The bridge is deliberately opt-in.  The agent process must already have
-;; EDITOR/VISUAL set to an `emacsclient' command for this Emacs server before
-;; the agent starts.  The route is a short-lived association between one
-;; attach buffer and the next server file visit; it is not a general server
-;; multiplexer and cannot disambiguate two simultaneous C-g requests.
+;; The bridge is deliberately opt-in.  Agent Fleet assigns EDITOR/VISUAL when
+;; it provisions an ordinary agent pane; agents started in caller-owned panes
+;; or `worktree.create' root panes inherit their existing environment.  The
+;; route is a short-lived association between one attach buffer and the next
+;; server file visit; it is not a general server multiplexer and cannot
+;; disambiguate two simultaneous C-g requests.
 
 ;;; Code:
 

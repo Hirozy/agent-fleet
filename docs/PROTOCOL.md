@@ -344,7 +344,7 @@ Provisioning / teardown (used by `agent-fleet-start` / `-kill`):
 |---|---|---|
 | `workspace.create` | `{cwd?, focus?, label?, env?}` | `workspace_created` → `{workspace: WorkspaceInfo, tab: TabInfo, root_pane: PaneInfo}` |
 | `pane.split` | `{workspace_id?, target_pane_id?, direction, ratio?, cwd?, focus?, right_click?, env?}` | `pane_info` → `{pane: PaneInfo}` |
-| `tab.create` | `{workspace_id, cwd?}` | `tab_created` → `{tab: TabInfo, root_pane: PaneInfo}` |
+| `tab.create` | `{workspace_id?, cwd?, focus?, label?, env?}` | `tab_created` → `{tab: TabInfo, root_pane: PaneInfo}` |
 | `pane.current` | `{}` | `pane_info` → `{pane: PaneInfo}` (focused pane) |
 | `pane.close` | `{pane_id}` | `ok` → `{}` — also drives `pane_closed` removal + exited hook |
 
@@ -361,6 +361,9 @@ Notes:
 - **`tab.create` returns `root_pane`.** The result carries `:tab` (TabInfo)
   and `:root_pane` (a shell PaneInfo at the tab cwd); the client targets
   `root_pane.pane_id` for `agent.start` — no separate `pane.split`.
+- **Provisioning `env` is a string-to-string object.** `workspace.create`,
+  `pane.split`, and `tab.create` apply it to the newly created shell pane.
+  `agent.start` and `worktree.create` do not accept an `env` field.
 
 - **`wait` field** on `agent.prompt` makes submit+wait a single atomic RPC,
   avoiding the race where the agent finishes between a separate prompt and
