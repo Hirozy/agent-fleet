@@ -428,54 +428,36 @@ editor buffer in a new right-side window. The attach window remains visible.
 
 #### Configure `emacsclient` as the agent editor
 
-Choose the Emacs server name before enabling the bridge. The custom name is
-optional, but it makes the matching `emacsclient` command unambiguous:
+When Agent Fleet provisions a new pane for an agent, it sets both `EDITOR` and
+`VISUAL` to `emacsclient --quiet` by default. No global environment change is
+required. Enable the bridge before using the agent's external-editor action:
 
 ```elisp
-;; Set this before any Emacs server is started.
-(setq server-name "agent-fleet")
-;; The bridge starts this Emacs's server by default.
 (agent-fleet-editor-bridge-mode 1)
 ```
 
-Set `EDITOR` and `VISUAL` in the environment that Herdr uses to start agents.
-The socket name must exactly match the Emacs `server-name` above:
+The default command connects to Emacs's default server. If this Emacs uses a
+custom server name, configure a matching command before creating the agent:
 
-```sh
-export EDITOR="emacsclient --quiet --socket-name agent-fleet"
-export VISUAL="$EDITOR"
+```elisp
+;; Set the server name before any Emacs server is started.
+(setq server-name "agent-fleet"
+      agent-fleet-agent-editor-command
+      "emacsclient --quiet --socket-name agent-fleet")
+(agent-fleet-editor-bridge-mode 1)
 ```
-
-Export these variables before starting Herdr, or configure them in the service
-environment used to launch Herdr. Restart Herdr when necessary, and restart any
-agent that was already running: changing the variables in a shell or in Emacs
-cannot update an existing process's environment.
 
 Use `--quiet` to prevent `emacsclient` from writing `Waiting for Emacs...` into
 the agent PTY. Do **not** use `--no-wait` or `-n`: the editor process must wait
 until `C-c C-c` or `C-c C-k` releases it, otherwise the agent may read the
 draft before editing is complete.
 
-If the agent accepts only an executable path rather than an `EDITOR` command
-with arguments, create a wrapper such as `agent-fleet-emacsclient`:
-
-```sh
-#!/bin/sh
-exec emacsclient --quiet --socket-name agent-fleet "$@"
-```
-
-Make the wrapper executable and set both variables to its absolute path:
-
-```sh
-chmod +x /path/to/agent-fleet-emacsclient
-export EDITOR=/path/to/agent-fleet-emacsclient
-export VISUAL="$EDITOR"
-```
-
-Agent Fleet does not alter an existing `server-name`, inject environment
-variables into Herdr or its agents, or start a server during ordinary package
-loading or connection. The editor bridge is intended for agents and Emacs on
-the same host with a shared filesystem.
+Environment injection applies to panes created through `workspace.create`,
+`pane.split`, or `tab.create`. An explicitly reused `:pane` and the root pane
+returned by `worktree.create` retain their existing environment because those
+Herdr operations do not expose an environment override. Agent Fleet never
+mutates Emacs's global `process-environment`. The editor bridge is intended for
+agents and Emacs on the same host with a shared filesystem.
 
 | Key | Action |
 |---|---|
@@ -603,6 +585,7 @@ groups; set them with `setq` or <kbd>M-x customize-group RET agent-fleet</kbd>.
 
 | Option | Default | Meaning |
 |---|---|---|
+| `agent-fleet-agent-editor-command` | `"emacsclient --quiet"` | Command assigned to `EDITOR` and `VISUAL` when Agent Fleet provisions a new agent pane; nil disables injection |
 | `agent-fleet-editor-auto-start-server` | `t` | When enabling the bridge, start this Emacs's built-in server if it does not own one; never changes or stops an existing server |
 | `agent-fleet-editor-route-timeout` | `30.0` | One-shot seconds to wait for the next `$EDITOR` server file visit |
 | `agent-fleet-editor-side-window-width` | `0.5` | Width of the right-side editor window, as a frame fraction or column count |
@@ -610,8 +593,8 @@ groups; set them with `setq` or <kbd>M-x customize-group RET agent-fleet</kbd>.
 The bridge is opt-in: run `M-x agent-fleet-editor-bridge-mode` and enable it.
 It lazily loads `server`; ordinary Agent Fleet load/connect has no server side
 effect. Set `agent-fleet-editor-auto-start-server` to `nil` when the server
-must be started manually. The `EDITOR`/`VISUAL` values must be inherited by
-the agent before startup and must invoke `emacsclient` for the same server.
+must be started manually. `agent-fleet-agent-editor-command` must invoke
+`emacsclient` for that same server.
 
 ### Dashboard
 
