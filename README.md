@@ -407,7 +407,8 @@ editor bridge disabled (the default), it opens
 workflow. With the bridge enabled, Agent Fleet arms a one-shot route and sends
 `Ctrl-G` to the exact Herdr pane. The CLI can then export its complete draft
 to the file passed to `$EDITOR`; that file is opened by Emacs in an Agent Fleet
-editor buffer in a new right-side window. The attach window remains visible.
+editor buffer in a newly created standalone graphical frame. The attach frame
+and window remain unchanged.
 
 #### Configure `emacsclient` as the agent editor
 
@@ -450,14 +451,16 @@ agents and Emacs on the same host with a shared filesystem.
 | `C-c C-k` (editor view) | Discard unsaved edits and release `emacsclient` successfully |
 | `C-c C-a S` | Open the independent Agent Fleet compose child frame |
 
-The editor bridge does not use a child frame and works in graphical and
-terminal Emacs. It creates a dedicated side window rather than replacing the
-attach window or reusing an unrelated existing window. If the frame cannot
-accommodate a separate side window, the editor request is aborted and the CLI
-is released. Finishing or aborting deletes the side window and returns focus
-to the attach window. The route accepts one server file visit only, expires
-after `agent-fleet-editor-route-timeout`, and cannot distinguish simultaneous
-`C-g` requests from multiple agents; a second pending request is rejected.
+The editor bridge requires a graphical attach frame because it creates a
+dedicated standalone operating-system frame rather than replacing the attach
+window or reusing an unrelated window. If the frame cannot be created or the
+editor frame/window is lost, the editor request is aborted and the CLI is
+released. The exact hint `C-c C-c submit, C-c C-k abort` appears in the
+editor frame's header line. Finishing or aborting closes the editor frame and
+returns focus to the attach window. The route accepts one server file visit
+only, expires after `agent-fleet-editor-route-timeout`, and cannot distinguish
+simultaneous `C-g` requests from multiple agents; a second pending request is
+rejected.
 
 In the bridge-disabled compose workflow, text is pasted into the agent's
 Ghostel terminal via bracketed paste (so multi-line prompts stay atomic) but
@@ -571,7 +574,7 @@ groups; set them with `setq` or <kbd>M-x customize-group RET agent-fleet</kbd>.
 | `agent-fleet-agent-editor-command` | `"emacsclient --quiet"` | Command assigned to `EDITOR` and `VISUAL` when Agent Fleet provisions a new agent pane; nil disables injection |
 | `agent-fleet-editor-auto-start-server` | `t` | When enabling the bridge, start this Emacs's built-in server if it does not own one; never changes or stops an existing server |
 | `agent-fleet-editor-route-timeout` | `30.0` | One-shot seconds to wait for the next `$EDITOR` server file visit |
-| `agent-fleet-editor-side-window-width` | `0.5` | Width of the right-side editor window, as a frame fraction or column count |
+| `agent-fleet-editor-frame-parameters` | `((name . "Agent Fleet Editor") (width . 100) (height . 35) (minibuffer . t))` | Parameters for the standalone editor frame; any `parent-frame` entry is ignored |
 
 The bridge is opt-in: run `M-x agent-fleet-editor-bridge-mode` and enable it.
 It lazily loads `server`; ordinary Agent Fleet load/connect has no server side
