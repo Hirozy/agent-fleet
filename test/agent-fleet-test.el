@@ -1403,10 +1403,10 @@ and annotation, with clean-label candidates (no inlined suffix)."
                   (agent-fleet-action-dashboard-bindings)))
   (should (member '("m" . agent-fleet-dashboard--magit)
                   (agent-fleet-action-dashboard-bindings)))
-  ;; Attach: flat list incl both child-frame/buffer variants.
-  (should (member '("o" . agent-fleet-attach-inspect-in-child-frame)
+  ;; Attach: flat list, one buffer binding per view action; prompt keeps two.
+  (should (member '("o" . agent-fleet-attach-inspect-in-buffer)
                   (agent-fleet-action-attach-bindings)))
-  (should (member '("O" . agent-fleet-attach-inspect-in-buffer)
+  (should (member '("S" . agent-fleet-attach-prompt-in-child-frame)
                   (agent-fleet-action-attach-bindings))))
 
 

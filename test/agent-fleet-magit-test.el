@@ -186,25 +186,6 @@ lambda, so this runs without Magit installed."
           (should (file-equal-p root (car captured))))
       (when (file-exists-p repo) (delete-directory repo t)))))
 
-(ert-deftest agent-fleet-magit-child-frame-preserves-domain-values ()
-  "Child-frame status and diff return the exact values produced by Magit."
-  (let ((repo (agent-fleet-magit-test--make-git-repo)))
-    (unwind-protect
-        (let ((agent (make-herdr-agent :id "x" :cwd repo)))
-          (cl-letf (((symbol-function 'agent-fleet-magit--available-p)
-                     (lambda () t))
-                    ((symbol-function 'magit-status)
-                     (lambda (_root) 'status-domain-value))
-                    ((symbol-function 'magit-diff-working-tree)
-                     (lambda (&rest _) 'diff-domain-value))
-                    ((symbol-function 'agent-fleet-display--aux-run)
-                     (lambda (thunk) (funcall thunk))))
-            (should (eq 'status-domain-value
-                        (agent-fleet-magit-status-in-child-frame agent)))
-            (should (eq 'diff-domain-value
-                        (agent-fleet-magit-diff-in-child-frame agent)))))
-      (when (file-exists-p repo) (delete-directory repo t)))))
-
 (ert-deftest agent-fleet-magit-nil-domain-value-still-marks-view-opened ()
   "A normal nil Magit return is preserved but is not presentation failure."
   (let ((repo (agent-fleet-magit-test--make-git-repo)))

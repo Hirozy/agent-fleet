@@ -510,8 +510,8 @@ leaf commands fail fast instead of acting on nil."
       (kill-buffer buf))))
 
 (ert-deftest agent-fleet-attach-inspect-acts-on-current-agent ()
-  "`agent-fleet-attach-inspect-in-child-frame' calls
-`agent-fleet-show-output-in-child-frame' with the buffer's pane id and no
+  "`agent-fleet-attach-inspect-in-buffer' calls
+`agent-fleet-show-output-in-buffer' with the buffer's pane id and no
 line count (called as a function, so no prefix arg) — no selection prompt,
 no `agent-fleet-read-agent-name'."
   (let ((buf (generate-new-buffer " *af-inspect*"))
@@ -519,10 +519,10 @@ no `agent-fleet-read-agent-name'."
     (unwind-protect
         (with-current-buffer buf
           (setq-local agent-fleet-attach-pane-id "w1:p2")
-          (cl-letf (((symbol-function #'agent-fleet-show-output-in-child-frame)
+          (cl-letf (((symbol-function #'agent-fleet-show-output-in-buffer)
                      (lambda (agent &optional _lines _source)
                        (push agent captured))))
-            (agent-fleet-attach-inspect-in-child-frame)))  ; lines nil
+            (agent-fleet-attach-inspect-in-buffer)))  ; lines nil
       (kill-buffer buf))
     (should (equal '("w1:p2") captured))))
 
@@ -564,31 +564,24 @@ buffer's pane id — no selection prompt."
 
 (ert-deftest agent-fleet-attach-mode-map-binds-prefix ()
   "`agent-fleet-attach-command-map' holds the single-key bindings:
-lowercase view keys (`o'/`d'/`m'/`w') open an auxiliary child frame,
-uppercase (`O'/`D'/`M'/`W') open an ordinary buffer, and the control
-keys (`s'/`k'/`i'/`x'/`r') plus `h'/`?' reach the transient menu.
-The mode map is empty by default; the user binds the command map to
-a prefix key."
+view keys (`o'/`d'/`m'/`w') open an ordinary buffer, `S' opens the
+compose child frame, and the control keys (`s'/`k'/`i'/`x'/`r') plus
+`h'/`?' reach the transient menu.  The mode map is empty by default;
+the user binds the command map to a prefix key."
   (should (keymapp agent-fleet-attach-mode-map))
   (let ((map agent-fleet-attach-command-map))
-    (should (eq #'agent-fleet-attach-inspect-in-child-frame
-                (lookup-key map (kbd "o"))))
     (should (eq #'agent-fleet-attach-inspect-in-buffer
-                (lookup-key map (kbd "O"))))
-    (should (eq #'agent-fleet-attach-diff-in-child-frame
-                (lookup-key map (kbd "d"))))
+                (lookup-key map (kbd "o"))))
     (should (eq #'agent-fleet-attach-diff-in-buffer
-                (lookup-key map (kbd "D"))))
-    (should (eq #'agent-fleet-attach-magit-in-child-frame
-                (lookup-key map (kbd "m"))))
+                (lookup-key map (kbd "d"))))
     (should (eq #'agent-fleet-attach-magit-in-buffer
-                (lookup-key map (kbd "M"))))
-    (should (eq #'agent-fleet-attach-worktree-in-child-frame
-                (lookup-key map (kbd "w"))))
+                (lookup-key map (kbd "m"))))
     (should (eq #'agent-fleet-attach-worktree-in-buffer
-                (lookup-key map (kbd "W"))))
+                (lookup-key map (kbd "w"))))
     (should (eq #'agent-fleet-attach-prompt
                 (lookup-key map (kbd "s"))))
+    (should (eq #'agent-fleet-attach-prompt-in-child-frame
+                (lookup-key map (kbd "S"))))
     (should (eq #'agent-fleet-attach-send-keys
                 (lookup-key map (kbd "k"))))
     (should (eq #'agent-fleet-attach-interrupt

@@ -183,7 +183,6 @@ applicable.
 | `M-x agent-fleet-prompt` | Send a prompt |
 | `M-x agent-fleet-prompt-and-wait` | Prompt and wait atomically for done/blocked |
 | `M-x agent-fleet-show-output-in-buffer` | Open output in an ordinary buffer |
-| `M-x agent-fleet-show-output-in-child-frame` | Open output in a child frame |
 | `M-x agent-fleet-wait` | Wait for a specific state |
 | `M-x agent-fleet-send-keys` | Send terminal keys |
 | `M-x agent-fleet-interrupt` | Send `Ctrl-C` |
@@ -244,7 +243,6 @@ Standalone worktree commands:
 - `M-x agent-fleet-worktree-list`
 - `M-x agent-fleet-worktree-open`
 - `M-x agent-fleet-worktree-status-in-buffer`
-- `M-x agent-fleet-worktree-status-in-child-frame`
 - `M-x agent-fleet-worktree-remove`
 - `M-x agent-fleet-worktree-cleanup`
 
@@ -304,38 +302,27 @@ With Magit installed, the dashboard can open the selected agent's checkout:
 
 - Press `m` for Magit status.
 - Press `d` for the working-tree diff.
-- Run `M-x agent-fleet-magit-status-in-buffer`,
-  `M-x agent-fleet-magit-status-in-child-frame`,
-  `M-x agent-fleet-magit-diff-in-buffer`, or
-  `M-x agent-fleet-magit-diff-in-child-frame` directly.
+- Run `M-x agent-fleet-magit-status-in-buffer` or
+  `M-x agent-fleet-magit-diff-in-buffer` directly.
 
 The agent's actual checkout is used, including an isolated Herdr worktree. If
 Magit is unavailable, the commands report how to enable the integration.
 
-## Auxiliary views: buffer or child frame
+## Auxiliary views
 
 Every auxiliary view — recent output, worktree status, Magit status, and the
-working-tree diff — has two explicit presentation commands: an `-in-buffer`
-variant that displays in an ordinary Emacs window, and an `-in-child-frame`
-variant that opens the view inside a native child frame floating over the
-current frame's non-child parent. The view itself is computed once either way;
-only the presentation differs.
+working-tree diff — opens in an ordinary Emacs buffer (`-in-buffer`): a
+read snapshot of the agent's output or a full Magit session on its
+checkout, sized by Emacs's normal window rules.
 
-The child-frame variants exist so a view can be opened from an attached
-terminal without disturbing it: the terminal's window keeps its size, and the
-PTY the agent is writing to is never resized. Repeated opens reuse a single
-auxiliary child frame per parent instead of stacking new ones, and pressing
-`q` inside the view (or `M-x agent-fleet-dashboard-aux-quit`) closes it and
-returns focus to the parent. Magit may split windows inside the child frame,
-never the terminal's frame. Auxiliary child frames fill their parent frame so
-full-screen interfaces such as Magit are not constrained to the dashboard's
-compact dimensions.
-
-The `-in-child-frame` commands are explicit about their runtime requirements:
-they need Emacs 29.1 or newer, a graphical frame, and
-`display-buffer-in-child-frame`. When any requirement is missing they signal a
-clear error instead of silently falling back to an ordinary buffer — use the
-`-in-buffer` variant when that is the presentation you want.
+Native child frames are reserved for two surfaces that benefit from
+floating over the terminal without disturbing its window geometry (and the
+PTY size the agent sees): the dashboard itself (see
+`agent-fleet-dashboard-display`) and the compose editor opened by
+`agent-fleet-attach-prompt-in-child-frame`. Repeated compose opens reuse a
+single auxiliary child frame per parent, and `M-x
+agent-fleet-dashboard-aux-quit` (or `q` inside the compose buffer) closes
+it and returns focus to the parent.
 
 The unsuffixed view names (`M-x agent-fleet-show-output`,
 `M-x agent-fleet-worktree-status`, `M-x agent-fleet-magit-status`, and
@@ -390,14 +377,10 @@ With the prefix above, these keys act on the current agent directly:
 
 | Key | Action |
 |---|---|
-| `C-c C-a o` | Inspect recent output (child frame) |
-| `C-c C-a d` | Open the working-tree diff (Magit, child frame) |
-| `C-c C-a m` | Open Magit status (child frame) |
-| `C-c C-a w` | Show worktree status (child frame) |
-| `C-c C-a O` | Inspect recent output (ordinary buffer) |
-| `C-c C-a D` | Open the working-tree diff (Magit, ordinary buffer) |
-| `C-c C-a M` | Open Magit status (ordinary buffer) |
-| `C-c C-a W` | Show worktree status (ordinary buffer) |
+| `C-c C-a o` | Inspect recent output (buffer) |
+| `C-c C-a d` | Open the working-tree diff (Magit, buffer) |
+| `C-c C-a m` | Open Magit status (buffer) |
+| `C-c C-a w` | Show worktree status (buffer) |
 | `C-c C-a s` | Send a prompt |
 | `C-c C-a S` | Compose a prompt in a child frame |
 | `C-c C-a k` | Send keys |
@@ -406,10 +389,10 @@ With the prefix above, these keys act on the current agent directly:
 | `C-c C-a r` | Rename the agent |
 | `C-c C-a h` | Open the transient action menu |
 
-Lowercase view keys open an auxiliary child frame that floats over the
-terminal's parent frame, so the attached terminal's window geometry — and the
-PTY size the agent sees — never changes when a view opens or closes. Uppercase
-keys take the ordinary buffer path instead, replacing window contents as usual.
+View keys (`o`/`d`/`m`/`w`) open an ordinary buffer; `S` opens the compose
+child frame. The compose child frame floats over the terminal's parent so
+the attached terminal's window geometry — and the PTY size the agent sees
+— never changes while composing.
 
 `C-c` passes through to Emacs in the terminal's char mode, so the prefix
 reaches Emacs rather than the PTY; `h` (or `?`) lists the same actions
