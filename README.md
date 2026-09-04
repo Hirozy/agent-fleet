@@ -500,8 +500,9 @@ silent about why.
 The socket is discovered with the following precedence (highest first):
 a nonempty explicit `herdr-socket-path`; the configured
 `herdr-default-session-name`; the `HERDR_SOCKET_PATH` environment
-variable; the `herdr status` socket line; and the default
-`~/.config/herdr/herdr.sock`. Override the location explicitly with
+variable; and the default `~/.config/herdr/herdr.sock`. The default
+Session is `default`, so normal startup does not invoke `herdr status`.
+Override the location explicitly with
 `herdr-socket-path`, or name a Herdr Session with
 `herdr-default-session-name`:
 
@@ -517,7 +518,10 @@ A Session name must be a safe single path component (no separator or
 NUL, not `.` or `..`). The client only resolves the path; it never
 creates directories or starts Herdr, so a configured Session whose
 socket is missing is a connection error with a `herdr session attach
-NAME` hint. `nil` (the default) preserves the legacy discovery chain.
+NAME` hint. Set `herdr-default-session-name` to `nil` only to use
+`HERDR_SOCKET_PATH` or the default socket path without a named Session;
+the client does not auto-discover a different active Session with
+`herdr status`.
 
 This is a connection-configuration option: changing it does not affect
 an existing connection. Reconnect and every RPC stay pinned to the
@@ -538,8 +542,8 @@ groups; set them with `setq` or <kbd>M-x customize-group RET agent-fleet</kbd>.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `herdr-socket-path` | `nil` | Explicit Herdr Unix socket path; highest discovery precedence. `nil` auto-discovers from `herdr-default-session-name`, then `HERDR_SOCKET_PATH`, `herdr status`, then `~/.config/herdr/herdr.sock` |
-| `herdr-default-session-name` | `nil` | Default Herdr Session name. A valid name resolves to its socket (`default` → `~/.config/herdr/herdr.sock`; other → `~/.config/herdr/sessions/NAME/herdr.sock`). `nil` keeps the legacy discovery chain. Changing it does not affect an existing connection; only the next connect after a disconnect resolves it |
+| `herdr-socket-path` | `nil` | Explicit Herdr Unix socket path; highest discovery precedence. `nil` uses `herdr-default-session-name`, then `HERDR_SOCKET_PATH`, then `~/.config/herdr/herdr.sock` |
+| `herdr-default-session-name` | `"default"` | Default Herdr Session name. A valid name resolves to its socket (`default` → `~/.config/herdr/herdr.sock`; other → `~/.config/herdr/sessions/NAME/herdr.sock`). `nil` skips named-Session resolution and uses `HERDR_SOCKET_PATH` or the default socket path. Changing it does not affect an existing connection; only the next connect after a disconnect resolves it |
 | `herdr-protocol-request-timeout` | `5.0` | Default timeout in seconds for a synchronous Herdr request |
 | `herdr-protocol-ping-timeout` | `3.0` | Timeout in seconds for a `ping` |
 | `herdr-subscription-start-timeout` | `3.0` | Seconds to wait for the `subscription_started` acknowledgement |

@@ -89,14 +89,17 @@ the server is stopped and any live herdr connection is torn down."
     (should (equal (plist-get (plist-get msg :error) :message) "x"))))
 
 (ert-deftest herdr-protocol-empty-socket-settings-are-not-paths ()
-  "Empty custom/environment socket values fall through to discovery."
+  "Empty custom/environment socket values fall through to the default path."
   (let ((herdr-socket-path "")
+        (herdr-default-session-name nil)
         (process-environment (copy-sequence process-environment)))
     (setenv "HERDR_SOCKET_PATH" "")
-    (cl-letf (((symbol-function 'herdr-protocol--socket-path-from-status)
-               (lambda () "/tmp/herdr-discovered.sock")))
-      (should (equal "/tmp/herdr-discovered.sock"
-                     (herdr-protocol-socket-path))))))
+    (cl-letf (((symbol-function 'file-exists-p) (lambda (_path) t)))
+      ;; The exact home directory is not important here; the stubbed
+      ;; existence check lets the final default branch run.
+      (should (string-suffix-p
+               "/.config/herdr/herdr.sock"
+               (herdr-protocol-socket-path))))))
 
 
 ;;; --- Default Session discovery ----------------------------------
@@ -105,6 +108,12 @@ the server is stopped and any live herdr connection is torn down."
   "The special name \"default\" resolves to the legacy base socket."
   (should (equal (expand-file-name "~/.config/herdr/herdr.sock")
                  (herdr-protocol--session-socket-path "default"))))
+
+(ert-deftest herdr-protocol-default-session-name-is-default ()
+  "The package defaults to Herdr's `default' Session.
+This avoids invoking the external `herdr status' command during startup."
+  (should (equal "default"
+                 (default-value 'herdr-default-session-name))))
 
 (ert-deftest herdr-protocol-session-socket-path-named ()
   "A named Session resolves under the sessions/ subdirectory."
@@ -125,18 +134,15 @@ before this low-level resolver runs, so it is not in the bad set.)"
      (herdr-protocol--session-socket-path bad)
      :type 'herdr-connection-error)))
 
-(ert-deftest herdr-protocol-socket-path-nil-preserves-legacy ()
-  "A nil `herdr-default-session-name' keeps the legacy discovery chain:
-the explicit var, then the env var, then `herdr status', then the
-default socket.  Here the env var wins."
+(ert-deftest herdr-protocol-socket-path-nil-uses-environment ()
+  "A nil `herdr-default-session-name' skips named-Session resolution.
+The explicit socket still wins, followed by the environment variable."
   (let ((herdr-socket-path nil)
         (herdr-default-session-name nil)
         (process-environment (copy-sequence process-environment)))
     (setenv "HERDR_SOCKET_PATH" "/tmp/legacy-env.sock")
-    (cl-letf (((symbol-function 'herdr-protocol--socket-path-from-status)
-               (lambda () "/tmp/legacy-status.sock")))
-      (should (equal "/tmp/legacy-env.sock"
-                     (herdr-protocol-socket-path))))))
+    (should (equal "/tmp/legacy-env.sock"
+                   (herdr-protocol-socket-path)))))
 
 (ert-deftest herdr-protocol-socket-path-explicit-overrides-session ()
   "A nonempty explicit `herdr-socket-path' has the highest precedence
@@ -148,17 +154,14 @@ and overrides a configured `herdr-default-session-name'."
     (should (equal "/tmp/explicit.sock"
                    (herdr-protocol-socket-path)))))
 
-(ert-deftest herdr-protocol-socket-path-session-over-env-and-status ()
-  "A configured Session takes precedence over the environment variable
-and `herdr status'.  The Session socket is treated as existing so the
-resolved path is returned."
+(ert-deftest herdr-protocol-socket-path-session-over-env ()
+  "A configured Session takes precedence over the environment variable.
+The Session socket is treated as existing so the resolved path is returned."
   (let ((herdr-socket-path nil)
         (herdr-default-session-name "work")
         (process-environment (copy-sequence process-environment)))
     (setenv "HERDR_SOCKET_PATH" "/tmp/env.sock")
-    (cl-letf (((symbol-function 'herdr-protocol--socket-path-from-status)
-               (lambda () "/tmp/status.sock"))
-              ;; The resolved Session socket need not really exist; the
+    (cl-letf (;; The resolved Session socket need not really exist; the
               ;; existence check is stubbed so the branch succeeds.
               ((symbol-function 'file-exists-p) (lambda (_f) t)))
       (should (equal (expand-file-name
@@ -174,18 +177,16 @@ environment or default socket."
         (herdr-default-session-name "work")
         (process-environment (copy-sequence process-environment)))
     (setenv "HERDR_SOCKET_PATH" "/tmp/env.sock")
-    (cl-letf (((symbol-function 'herdr-protocol--socket-path-from-status)
-               (lambda () "/tmp/status.sock")))
-      (let ((err (should-error (herdr-protocol-socket-path)
-                               :type 'herdr-connection-error))
-            (resolved (expand-file-name
-                       "~/.config/herdr/sessions/work/herdr.sock")))
-        (should (equal 'session-not-running
-                       (plist-get (cdr err) :reason)))
-        (should (equal "work" (plist-get (cdr err) :session)))
-        (should (equal resolved (plist-get (cdr err) :path)))
-        (should (string-match-p "herdr session attach work"
-                                (plist-get (cdr err) :hint)))))))
+    (let ((err (should-error (herdr-protocol-socket-path)
+                             :type 'herdr-connection-error))
+          (resolved (expand-file-name
+                     "~/.config/herdr/sessions/work/herdr.sock")))
+      (should (equal 'session-not-running
+                     (plist-get (cdr err) :reason)))
+      (should (equal "work" (plist-get (cdr err) :session)))
+      (should (equal resolved (plist-get (cdr err) :path)))
+      (should (string-match-p "herdr session attach work"
+                              (plist-get (cdr err) :hint))))))
 
 (ert-deftest herdr-protocol-socket-path-invalid-session-rejects-nonstring ()
   "A non-string configured value (other than nil) is rejected as
