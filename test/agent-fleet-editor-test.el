@@ -50,7 +50,7 @@
     (delete-process process)))
 
 (defun agent-fleet-editor-test--new-request
-    (buffer window &optional presentation)
+    (buffer window &optional presentation presentation-frame presentation-window)
   "Build a minimal active request for BUFFER in WINDOW."
   (list :buffer buffer
         :pane-id "w1:p1"
@@ -58,8 +58,12 @@
         :origin-window window
         :origin-buffer (window-buffer window)
         :presentation presentation
-        :presentation-window (and presentation window)
-        :presentation-created-p (eq presentation 'side-window)
+        :presentation-frame presentation-frame
+        :presentation-window presentation-window
+        :presentation-created-p (eq presentation 'frame)
+        :header-line-local-p nil
+        :header-line-format nil
+        :header-line-saved-p nil
         :finished nil))
 
 (ert-deftest agent-fleet-editor-disabled-does-not-start-server ()
@@ -297,7 +301,12 @@
          (first-request nil)
          (second-request nil))
     (unwind-protect
-        (progn
+        (cl-letf (((symbol-function 'agent-fleet-editor--present-request)
+                   (lambda (request)
+                     (setf (plist-get request :presentation) 'frame
+                           (plist-get request :presentation-frame) 'editor-frame
+                           (plist-get request :presentation-window) 'editor-window
+                           (plist-get request :presentation-created-p) t))))
           (setq first-route (agent-fleet-editor--arm-route "w1:p1" info))
           (agent-fleet-editor--dispatch-server-buffer first-buffer first-route)
           (setq first-request (car agent-fleet-editor--active-requests))
@@ -323,12 +332,13 @@
       (agent-fleet-editor-test--delete-file-buffer second-file second-buffer)
       (agent-fleet-editor-test--stop-process process))))
 
-(ert-deftest agent-fleet-editor-server-window-consume-and-open-side-window ()
+(ert-deftest agent-fleet-editor-server-window-consume-and-open-frame ()
   "A file visit consumes the route without replacing the attach buffer."
   (let* ((file-buffer (agent-fleet-editor-test--make-file-buffer))
          (file (car file-buffer))
          (buffer (cdr file-buffer))
          (origin-window (selected-window))
+         (origin-frame (window-frame origin-window))
          (origin-buffer (window-buffer origin-window))
          (process (agent-fleet-editor-test--live-process))
          (server-process process)
@@ -339,25 +349,54 @@
                  (agent-fleet-editor-test--origin-info origin-buffer
                                                         origin-window)))
          request
-         side-window)
+         editor-frame
+         editor-window)
     (unwind-protect
-        (progn
+        (cl-letf (((symbol-function 'display-graphic-p)
+                   (lambda (&rest _) t))
+                  ((symbol-function 'frame-live-p)
+                   (lambda (&rest _) t))
+                  ((symbol-function 'make-frame)
+                   (lambda (&rest _) (setq editor-frame 'editor-frame)))
+                  ((symbol-function 'frame-selected-window)
+                   (lambda (&rest _) (setq editor-window 'editor-window)))
+                  ((symbol-function 'window-live-p)
+                   (lambda (&rest _) t))
+                  ((symbol-function 'window-frame)
+                   (lambda (window)
+                     (if (eq window editor-window)
+                         editor-frame
+                       origin-frame)))
+                  ((symbol-function 'window-buffer)
+                   (lambda (window)
+                     (if (eq window editor-window)
+                         buffer
+                       origin-buffer)))
+                  ((symbol-function 'set-window-buffer) (lambda (&rest _) nil))
+                  ((symbol-function 'set-window-dedicated-p)
+                   (lambda (&rest _) nil))
+                  ((symbol-function 'select-window) (lambda (&rest _) nil))
+                  ((symbol-function 'select-frame) (lambda (&rest _) nil))
+                  ((symbol-function 'select-frame-set-input-focus)
+                   (lambda (&rest _) nil))
+                  ((symbol-function 'raise-frame) (lambda (&rest _) nil))
+                  ((symbol-function 'delete-frame) (lambda (&rest _) nil)))
           (funcall (plist-get route :dispatcher) buffer)
           (should-not agent-fleet-editor--pending-route)
           (should (eq server-window 'previous))
           (should (eq (window-buffer origin-window) origin-buffer))
-          (setq request agent-fleet-editor--request)
+          (setq request (buffer-local-value 'agent-fleet-editor--request buffer)
+                editor-frame (plist-get request :presentation-frame)
+                editor-window (plist-get request :presentation-window))
           (should request)
-          (setq side-window (plist-get request :presentation-window))
-          (should (window-live-p side-window))
-          (should-not (eq side-window origin-window))
-          (should (eq (window-buffer side-window) buffer))
-          (should (eq (window-parameter side-window 'window-side) 'right))
+          (should (eq (plist-get request :presentation) 'frame))
+          (should (eq (window-buffer origin-window) origin-buffer))
+          (should (equal agent-fleet-editor--header-line-hint
+                         (buffer-local-value 'header-line-format buffer)))
           (should (eq (buffer-local-value 'agent-fleet-editor-buffer-mode
                                           buffer)
                       t))
           (agent-fleet-editor--finish-request request 'abort)
-          (should-not (window-live-p side-window))
           (should (eq (window-buffer origin-window) origin-buffer))
           (should-not (buffer-local-value 'agent-fleet-editor-buffer-mode
                                           buffer)))
@@ -372,97 +411,193 @@
       (agent-fleet-editor-test--delete-file-buffer file buffer)
       (agent-fleet-editor-test--stop-process process))))
 
-(ert-deftest agent-fleet-editor-side-window-keeps-origin-visible ()
-  "Side presentation keeps the attach buffer visible and owns a new window."
-  (let* ((file-buffer (agent-fleet-editor-test--make-file-buffer))
-         (file (car file-buffer))
-         (buffer (cdr file-buffer))
+(ert-deftest agent-fleet-editor-frame-presentation-preserves-origin-and-hint ()
+  "Presentation creates a new frame, focuses it, and installs the exact hint."
+  (let* ((buffer (generate-new-buffer " *af-editor-frame*"))
          (origin-window (selected-window))
+         (origin-frame (window-frame origin-window))
          (origin-buffer (window-buffer origin-window))
          (request (agent-fleet-editor-test--new-request buffer origin-window))
-         side-window
-         (agent-fleet-editor--active-requests (list request)))
+         (created-frame 'editor-frame)
+         (created-window 'editor-window)
+         (make-args nil)
+         (set-buffer-call nil)
+         (focused nil)
+         (raised nil)
+         (selected nil)
+         (deleted nil))
     (unwind-protect
-        (progn
+        (cl-letf (((symbol-function 'display-graphic-p)
+                   (lambda (&rest _) t))
+                  ((symbol-function 'frame-live-p)
+                   (lambda (frame) (or (eq frame origin-frame)
+                                       (eq frame created-frame))))
+                  ((symbol-function 'make-frame)
+                   (lambda (parameters)
+                     (setq make-args parameters)
+                     created-frame))
+                  ((symbol-function 'frame-selected-window)
+                   (lambda (&rest _) created-window))
+                  ((symbol-function 'window-live-p)
+                   (lambda (window) (eq window created-window)))
+                  ((symbol-function 'set-window-buffer)
+                   (lambda (window value)
+                     (setq set-buffer-call (list window value))))
+                  ((symbol-function 'set-window-dedicated-p)
+                   (lambda (&rest _) nil))
+                  ((symbol-function 'select-window)
+                   (lambda (window) (setq selected window)))
+                  ((symbol-function 'select-frame)
+                   (lambda (&rest _) nil))
+                  ((symbol-function 'select-frame-set-input-focus)
+                   (lambda (frame) (setq focused frame)))
+                  ((symbol-function 'raise-frame)
+                   (lambda (frame) (setq raised frame)))
+                  ((symbol-function 'delete-frame)
+                   (lambda (frame &rest _) (setq deleted frame)))
+                  ((symbol-function 'window-frame)
+                   (lambda (window)
+                     (if (eq window created-window)
+                         created-frame
+                       origin-frame))))
+          (agent-fleet-editor--install-header-line request buffer)
           (agent-fleet-editor--present-request request)
-          (setq side-window (plist-get request :presentation-window))
-          (should (window-live-p side-window))
-          (should-not (eq side-window origin-window))
-          (should (eq (window-buffer origin-window) origin-buffer))
-          (should (eq (window-buffer side-window) buffer))
-          (should (eq (window-parameter side-window 'window-side) 'right))
-          (should (eq (window-parameter
-                       side-window 'agent-fleet-editor-request)
-                      request))
-          (agent-fleet-editor--finish-request request 'abort)
-          (should-not (window-live-p side-window))
+          (should (equal '((name . "Agent Fleet Editor")
+                           (width . 100)
+                           (height . 35)
+                           (minibuffer . t))
+                         make-args))
+          (should-not (assq 'parent-frame make-args))
+          (should (eq (plist-get request :presentation) 'frame))
+          (should (eq (plist-get request :presentation-frame) created-frame))
+          (should (eq (plist-get request :presentation-window) created-window))
+          (should (equal (list created-window buffer) set-buffer-call))
+          (should (eq focused created-frame))
+          (should (eq raised created-frame))
+          (should (eq selected created-window))
+          (should-not deleted)
+          (should (equal agent-fleet-editor--header-line-hint
+                         (buffer-local-value 'header-line-format buffer)))
           (should (eq (window-buffer origin-window) origin-buffer)))
-      (agent-fleet-editor-test--delete-file-buffer file buffer))))
-
-(ert-deftest agent-fleet-editor-side-window-refuses-existing-window-reuse ()
-  "Presentation rolls back instead of replacing an existing window."
-  (let* ((buffer (generate-new-buffer " *af-editor-no-reuse*"))
-         (origin-window (selected-window))
-         (request (agent-fleet-editor-test--new-request buffer origin-window))
-         (restored nil))
-    (unwind-protect
-        (cl-letf (((symbol-function 'window-state-get)
-                   (lambda (&rest _) 'saved-state))
-                  ((symbol-function 'display-buffer)
-                   (lambda (&rest _) origin-window))
-                  ((symbol-function 'window-state-put)
-                   (lambda (state &rest _) (setq restored state))))
-          (should-error
-           (agent-fleet-editor--present-request request)
-           :type 'user-error)
-          (should (eq restored 'saved-state))
-          (should-not (plist-get request :presentation)))
+      (agent-fleet-editor--restore-header-line request buffer)
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest agent-fleet-editor-side-window-display-error-rolls-back ()
-  "A display error restores the synchronous pre-display window state."
-  (let* ((buffer (generate-new-buffer " *af-editor-display-error*"))
-         (origin-window (selected-window))
-         (request (agent-fleet-editor-test--new-request buffer origin-window))
-         (restored nil))
+(ert-deftest agent-fleet-editor-header-line-restores-previous-state ()
+  "The temporary key hint preserves inherited and buffer-local header lines."
+  (let* ((buffer (generate-new-buffer " *af-editor-header*"))
+         (window (selected-window))
+         (request (agent-fleet-editor-test--new-request buffer window)))
     (unwind-protect
-        (cl-letf (((symbol-function 'window-state-get)
-                   (lambda (&rest _) 'saved-state))
-                  ((symbol-function 'display-buffer)
-                   (lambda (&rest _) (error "display failed")))
-                  ((symbol-function 'window-state-put)
-                   (lambda (state &rest _) (setq restored state))))
-          (should-error
-           (agent-fleet-editor--present-request request)
-           :type 'error)
-          (should (eq restored 'saved-state))
-          (should-not (plist-get request :presentation)))
+        (with-current-buffer buffer
+          (kill-local-variable 'header-line-format)
+          (agent-fleet-editor--install-header-line request buffer)
+          (should (local-variable-p 'header-line-format buffer))
+          (should (equal header-line-format
+                         "C-c C-c submit, C-c C-k abort"))
+          (agent-fleet-editor--restore-header-line request buffer)
+          (should-not (local-variable-p 'header-line-format buffer))
+          (setq-local header-line-format "Existing header")
+          (agent-fleet-editor--install-header-line request buffer)
+          (should (equal header-line-format
+                         "C-c C-c submit, C-c C-k abort"))
+          (agent-fleet-editor--restore-header-line request buffer)
+          (should (local-variable-p 'header-line-format buffer))
+          (should (equal header-line-format "Existing header")))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest agent-fleet-editor-side-window-server-kill-closes-window ()
-  "Killing the server buffer during release still removes its side window."
-  (let* ((buffer (generate-new-buffer " *af-editor-side-server-kill*"))
-         (origin-window (selected-window))
-         (origin-buffer (window-buffer origin-window))
-         (request (agent-fleet-editor-test--new-request buffer origin-window))
-         side-window
-         (agent-fleet-editor--active-requests (list request)))
+(ert-deftest agent-fleet-editor-nongraphical-presentation-releases-request ()
+  "A non-graphical origin releases the client and restores buffer state."
+  (let* ((buffer (generate-new-buffer " *af-editor-terminal*"))
+         (window (selected-window))
+         (released 0)
+         (agent-fleet-editor--active-requests nil))
     (unwind-protect
         (progn
           (with-current-buffer buffer
-            (setq-local agent-fleet-editor--request request)
-            (agent-fleet-editor-buffer-mode 1))
-          (agent-fleet-editor--present-request request)
-          (setq side-window (plist-get request :presentation-window))
-          (cl-letf (((symbol-function 'agent-fleet-editor--release-server-buffer)
-                     (lambda (request-buffer &rest _)
-                       (kill-buffer request-buffer))))
-            (agent-fleet-editor--finish-request request 'abort))
-          (should-not (buffer-live-p buffer))
-          (should-not (window-live-p side-window))
-          (should (eq (window-buffer origin-window) origin-buffer)))
+            (setq-local header-line-format "Existing header"))
+          (cl-letf (((symbol-function 'display-graphic-p)
+                     (lambda (&rest _) nil))
+                    ((symbol-function 'agent-fleet-editor--release-server-buffer)
+                     (lambda (&rest _) (cl-incf released)))
+                    ((symbol-function 'agent-fleet-editor--focus-origin)
+                     (lambda (&rest _) nil)))
+            (should-error
+             (agent-fleet-editor--start-request
+              (list :pane-id "w1:p1"
+                    :origin-frame (window-frame window)
+                    :origin-window window
+                    :origin-buffer (window-buffer window))
+              buffer)
+             :type 'user-error))
+          (should (= released 1))
+          (should-not agent-fleet-editor--active-requests)
+          (should-not (buffer-local-value 'agent-fleet-editor-buffer-mode
+                                          buffer))
+          (should (equal (buffer-local-value 'header-line-format buffer)
+                         "Existing header")))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest agent-fleet-editor-make-frame-error-releases-request ()
+  "A frame creation failure releases the client without active ownership."
+  (let* ((buffer (generate-new-buffer " *af-editor-make-error*"))
+         (window (selected-window))
+         (released 0)
+         (agent-fleet-editor--active-requests nil))
+    (unwind-protect
+        (cl-letf (((symbol-function 'display-graphic-p)
+                   (lambda (&rest _) t))
+                  ((symbol-function 'make-frame)
+                   (lambda (&rest _) (error "cannot create frame")))
+                  ((symbol-function 'agent-fleet-editor--release-server-buffer)
+                   (lambda (&rest _) (cl-incf released)))
+                  ((symbol-function 'agent-fleet-editor--focus-origin)
+                   (lambda (&rest _) nil)))
+          (should-error
+           (agent-fleet-editor--start-request
+            (list :pane-id "w1:p1"
+                  :origin-frame (window-frame window)
+                  :origin-window window
+                  :origin-buffer (window-buffer window))
+            buffer)
+           :type 'user-error)
+          (should (= released 1))
+          (should-not agent-fleet-editor--active-requests)
+          (should-not (buffer-local-value 'agent-fleet-editor-buffer-mode
+                                          buffer)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest agent-fleet-editor-frame-initialization-error-deletes-frame ()
+  "Failure after frame creation deletes it and restores the attach focus."
+  (let* ((buffer (generate-new-buffer " *af-editor-init-error*"))
+         (window (selected-window))
+         (origin-frame (window-frame window))
+         (request (agent-fleet-editor-test--new-request buffer window))
+         (editor-frame 'editor-frame)
+         deleted
+         refocused)
+    (unwind-protect
+        (cl-letf (((symbol-function 'display-graphic-p)
+                   (lambda (&rest _) t))
+                  ((symbol-function 'make-frame)
+                   (lambda (&rest _) editor-frame))
+                  ((symbol-function 'frame-live-p)
+                   (lambda (frame)
+                     (memq frame (list origin-frame editor-frame))))
+                  ((symbol-function 'frame-selected-window)
+                   (lambda (&rest _) (error "no selected window")))
+                  ((symbol-function 'delete-frame)
+                   (lambda (frame &rest _) (setq deleted frame)))
+                  ((symbol-function 'agent-fleet-editor--focus-origin)
+                   (lambda (value) (setq refocused value))))
+          (should-error (agent-fleet-editor--present-request request)
+                        :type 'user-error)
+          (should (eq deleted editor-frame))
+          (should (eq refocused request))
+          (should-not (plist-get request :presentation)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -484,7 +619,7 @@
                      (lambda (&rest _) (push 'release events)))
                     ((symbol-function 'agent-fleet-editor--close-presentation)
                      (lambda (&rest _) (push 'close events)))
-                    ((symbol-function 'modify-frame-parameters)
+                    ((symbol-function 'select-frame-set-input-focus)
                      (lambda (&rest _) nil)))
             (call-interactively #'agent-fleet-editor-submit))
           (should (equal '(save release close) (nreverse events)))
@@ -518,7 +653,7 @@
                        (setq done (list buf for-killing))))
                     ((symbol-function 'save-buffer)
                      (lambda (&rest _) (setq saved t)))
-                    ((symbol-function 'modify-frame-parameters)
+                    ((symbol-function 'select-frame-set-input-focus)
                      (lambda (&rest _) nil)))
             (call-interactively #'agent-fleet-editor-abort))
           (should-not saved)
@@ -579,34 +714,84 @@
         (kill-buffer buffer)))))
 
 (ert-deftest agent-fleet-editor-origin-frame-close-releases-request ()
-  "Deleting the origin frame releases its editor request exactly once."
+  "Deleting the origin releases the request and closes its editor frame."
   (let* ((buffer (generate-new-buffer " *af-editor-frame-close*"))
          (window (selected-window))
          (frame (window-frame window))
          (request (agent-fleet-editor-test--new-request buffer window
-                                                        'side-window))
+                                                        'frame 'editor-frame
+                                                        'editor-window))
          (released 0)
+         (deleted nil)
+         (focused nil)
          (agent-fleet-editor--active-requests (list request)))
     (unwind-protect
         (with-current-buffer buffer
           (setq-local agent-fleet-editor--request request)
           (agent-fleet-editor-buffer-mode 1)
           (cl-letf (((symbol-function 'agent-fleet-editor--release-server-buffer)
-                     (lambda (&rest _) (cl-incf released))))
+                     (lambda (&rest _) (cl-incf released)))
+                    ((symbol-function 'frame-live-p)
+                     (lambda (candidate)
+                       (memq candidate (list frame 'editor-frame))))
+                    ((symbol-function 'delete-frame)
+                     (lambda (candidate &rest _) (setq deleted candidate)))
+                    ((symbol-function 'select-frame-set-input-focus)
+                     (lambda (&rest _) (setq focused t))))
             (agent-fleet-editor--frame-deleted frame))
           (should (= released 1))
+          (should (eq deleted 'editor-frame))
+          (should-not focused)
           (should (plist-get request :finished))
           (should-not agent-fleet-editor-buffer-mode))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
-(ert-deftest agent-fleet-editor-side-window-loss-aborts-request ()
-  "Deleting or repurposing the editor side window releases its client."
-  (let* ((buffer (generate-new-buffer " *af-editor-side-window-lost*"))
+(ert-deftest agent-fleet-editor-manual-frame-close-aborts-once ()
+  "Closing the standalone editor frame aborts, releases, and refocuses once."
+  (let* ((buffer (generate-new-buffer " *af-editor-manual-close*"))
          (window (selected-window))
-         (frame (window-frame window))
+         (origin-frame (window-frame window))
+         (editor-frame 'editor-frame)
+         (request (agent-fleet-editor-test--new-request
+                   buffer window 'frame editor-frame 'editor-window))
+         (released 0)
+         (deleted 0)
+         focused
+         selected
+         (agent-fleet-editor--active-requests (list request)))
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq-local agent-fleet-editor--request request)
+          (agent-fleet-editor-buffer-mode 1)
+          (cl-letf (((symbol-function 'agent-fleet-editor--release-server-buffer)
+                     (lambda (&rest _) (cl-incf released)))
+                    ((symbol-function 'delete-frame)
+                     (lambda (&rest _) (cl-incf deleted)))
+                    ((symbol-function 'select-frame-set-input-focus)
+                     (lambda (frame) (setq focused frame)))
+                    ((symbol-function 'select-window)
+                     (lambda (target) (setq selected target))))
+            (agent-fleet-editor--frame-deleted editor-frame)
+            (agent-fleet-editor--frame-deleted editor-frame))
+          (should (= released 1))
+          (should (= deleted 0))
+          (should (eq focused origin-frame))
+          (should (eq selected window))
+          (should (plist-get request :finished))
+          (should-not agent-fleet-editor--active-requests)
+          (should-not agent-fleet-editor-buffer-mode))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest agent-fleet-editor-editor-frame-loss-aborts-request ()
+  "Deleting or repurposing the editor frame/window releases its client."
+  (let* ((buffer (generate-new-buffer " *af-editor-frame-lost*"))
+         (window (selected-window))
+         (frame 'editor-frame)
          (request (agent-fleet-editor-test--new-request buffer window
-                                                        'side-window))
+                                                        'frame frame
+                                                        'editor-window))
          (released 0)
          (agent-fleet-editor--active-requests (list request)))
     (setf (plist-get request :presentation-window) nil)
@@ -615,7 +800,12 @@
           (setq-local agent-fleet-editor--request request)
           (agent-fleet-editor-buffer-mode 1)
           (cl-letf (((symbol-function 'agent-fleet-editor--release-server-buffer)
-                     (lambda (&rest _) (cl-incf released))))
+                     (lambda (&rest _) (cl-incf released)))
+                    ((symbol-function 'frame-live-p)
+                     (lambda (candidate) (eq candidate frame)))
+                    ((symbol-function 'delete-frame) (lambda (&rest _) nil))
+                    ((symbol-function 'agent-fleet-editor--focus-origin)
+                     (lambda (&rest _) nil)))
             (agent-fleet-editor--window-state-changed frame))
           (should (= released 1))
           (should (plist-get request :finished))
@@ -630,7 +820,8 @@
          (window (selected-window))
          (frame (window-frame window))
          (request (agent-fleet-editor-test--new-request buffer window
-                                                        'side-window))
+                                                        'frame 'editor-frame
+                                                        'editor-window))
          (agent-fleet-editor--active-requests (list request)))
     (unwind-protect
         (with-current-buffer buffer
@@ -649,11 +840,12 @@
         (kill-buffer buffer)))))
 
 (ert-deftest agent-fleet-editor-close-error-clears-presentation-state ()
-  "A side-window close error cannot leave presentation ownership behind."
+  "An editor-frame close error cannot leave presentation ownership behind."
   (let* ((buffer (generate-new-buffer " *af-editor-close-error*"))
          (window (selected-window))
          (request (agent-fleet-editor-test--new-request buffer window
-                                                        'side-window))
+                                                        'frame 'editor-frame
+                                                        'editor-window))
          (agent-fleet-editor--active-requests (list request)))
     (unwind-protect
         (with-current-buffer buffer
@@ -661,15 +853,16 @@
           (agent-fleet-editor-buffer-mode 1)
           (cl-letf (((symbol-function 'agent-fleet-editor--release-server-buffer)
                      (lambda (&rest _) nil))
-                    ((symbol-function 'set-window-parameter)
-                     (lambda (&rest _) nil))
-                    ((symbol-function 'set-window-dedicated-p)
-                     (lambda (&rest _) nil))
-                    ((symbol-function 'delete-window)
-                     (lambda (&rest _) (error "window close failed"))))
+                    ((symbol-function 'frame-live-p)
+                     (lambda (frame) (eq frame 'editor-frame)))
+                    ((symbol-function 'delete-frame)
+                     (lambda (&rest _) (error "frame close failed")))
+                    ((symbol-function 'agent-fleet-editor--focus-origin)
+                     (lambda (&rest _) nil)))
             (should-error (agent-fleet-editor--finish-request request 'abort)))
           (should (plist-get request :finished))
           (should-not (plist-get request :presentation))
+          (should-not (plist-get request :presentation-frame))
           (should-not (plist-get request :presentation-window))
           (should-not (plist-get request :presentation-created-p))
           (should-not agent-fleet-editor--active-requests)
@@ -713,8 +906,8 @@
          (released nil)
          (closed nil))
     (unwind-protect
-        (cl-letf (((symbol-function 'agent-fleet-editor--present-in-side-window)
-                   (lambda (&rest _) (error "side window failed")))
+        (cl-letf (((symbol-function 'agent-fleet-editor--present-in-frame)
+                   (lambda (&rest _) (error "frame presentation failed")))
                   ((symbol-function 'agent-fleet-editor--release-server-buffer)
                    (lambda (&rest _) (setq released t)))
                   ((symbol-function 'agent-fleet-editor--close-presentation)

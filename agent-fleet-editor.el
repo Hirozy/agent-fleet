@@ -26,7 +26,8 @@
 ;; prompt draft after C-g.  Agent Fleet does not implement an editor helper or
 ;; parse terminal output: it arms a one-shot route for the next Emacs server
 ;; file visit, sends C-g to the exact Herdr pane, and displays the file in a
-;; right-side window while keeping the recorded attach window visible.
+;; newly created standalone graphical frame while keeping the recorded attach
+;; frame and window unchanged.
 ;;
 ;; The bridge is deliberately opt-in.  Agent Fleet assigns EDITOR/VISUAL when
 ;; it provisions an ordinary agent pane; agents started in caller-owned panes
@@ -78,14 +79,23 @@ seconds when arming a route."
   :type 'number
   :group 'agent-fleet-editor)
 
-(defcustom agent-fleet-editor-side-window-width 0.5
-  "Width of the external-editor side window.
+(defcustom agent-fleet-editor-frame-parameters
+  '((name . "Agent Fleet Editor")
+    (width . 100)
+    (height . 35)
+    (minibuffer . t))
+  "Frame parameters for standalone external-editor frames.
 
-A floating-point value between zero and one is interpreted as a fraction of
-the frame width; an integer specifies a column count.  The editor bridge uses
-a right-side window and never replaces the attach window."
-  :type 'number
+The bridge always creates a top-level frame with `make-frame'; any configured
+`parent-frame' parameter is ignored so that this presentation cannot become a
+child frame."
+  :type '(repeat (cons (symbol :tag "Parameter")
+                       (sexp :tag "Value")))
   :group 'agent-fleet-editor)
+
+(defconst agent-fleet-editor--header-line-hint
+  "C-c C-c submit, C-c C-k abort"
+  "The exact instruction shown in an active external-editor buffer.")
 
 (defvar agent-fleet-editor--pending-route nil
   "The one pending external-editor route, or nil.")
@@ -279,6 +289,33 @@ visit that arrives while a route is pending."
    (t
     (switch-to-buffer buffer))))
 
+(defun agent-fleet-editor--install-header-line (request buffer)
+  "Install the editor hint in BUFFER and save its previous local state.
+The previous value is restored by `agent-fleet-editor--restore-header-line',
+including the distinction between an inherited and a buffer-local value."
+  (with-current-buffer buffer
+    (setf (plist-get request :header-line-local-p)
+          (local-variable-p 'header-line-format buffer)
+          (plist-get request :header-line-format)
+          (and (local-variable-p 'header-line-format buffer)
+               header-line-format)
+          (plist-get request :header-line-saved-p) t)
+    (setq-local header-line-format agent-fleet-editor--header-line-hint)))
+
+(defun agent-fleet-editor--restore-header-line (request buffer)
+  "Restore the header-line state saved for REQUEST in BUFFER.
+This operation is idempotent and is safe when BUFFER has already been
+killed."
+  (when (plist-get request :header-line-saved-p)
+    (unwind-protect
+        (when (buffer-live-p buffer)
+          (with-current-buffer buffer
+            (if (plist-get request :header-line-local-p)
+                (setq-local header-line-format
+                            (plist-get request :header-line-format))
+              (kill-local-variable 'header-line-format))))
+      (setf (plist-get request :header-line-saved-p) nil))))
+
 (defun agent-fleet-editor--remove-request-hooks (buffer)
   "Remove editor lifecycle hooks from BUFFER."
   (when (buffer-live-p buffer)
@@ -300,31 +337,40 @@ whether to save BUFFER before releasing it."
       (when server-buffer-clients
         (server-buffer-done buffer for-killing)))))
 
-(defun agent-fleet-editor--close-presentation (request &optional deleting-frame)
-  "Close or restore REQUEST's editor presentation, idempotently.
-When DELETING-FRAME is non-nil, the origin frame and its side window are
-already being deleted."
+(defun agent-fleet-editor--focus-origin (request)
+  "Return focus to REQUEST's recorded origin when it is still usable."
+  (let ((origin-window (plist-get request :origin-window))
+        (origin-frame (plist-get request :origin-frame)))
+    (cond
+     ((window-live-p origin-window)
+      (select-frame-set-input-focus (window-frame origin-window))
+      (select-window origin-window))
+     ((frame-live-p origin-frame)
+      (select-frame-set-input-focus origin-frame)))))
+
+(defun agent-fleet-editor--close-presentation
+    (request &optional deleting-origin deleting-presentation)
+  "Close REQUEST's standalone editor frame and restore the origin focus.
+DELETING-ORIGIN means the recorded origin frame is already being deleted, so
+focus cannot be restored there.  DELETING-PRESENTATION means the editor frame
+is already in its own deletion hook and must not be deleted recursively.
+Regardless of either flag, the request's presentation fields are cleared in
+an `unwind-protect' so cleanup remains idempotent."
   (unwind-protect
       (pcase (plist-get request :presentation)
-        ('side-window
-         (let ((window (plist-get request :presentation-window)))
-           (when (and (not deleting-frame)
-                      (window-live-p window)
+        ('frame
+         (let ((frame (plist-get request :presentation-frame)))
+           (when (and (not deleting-presentation)
+                      (frame-live-p frame)
                       (plist-get request :presentation-created-p))
-             (set-window-parameter window 'agent-fleet-editor-request nil)
-             (set-window-dedicated-p window nil)
-             (delete-window window))
-           (unless deleting-frame
-             (let ((origin-window (plist-get request :origin-window))
-                   (origin-frame (plist-get request :origin-frame)))
-               (cond
-                ((window-live-p origin-window)
-                 (select-frame-set-input-focus
-                  (window-frame origin-window))
-                 (select-window origin-window))
-                ((frame-live-p origin-frame)
-                 (select-frame-set-input-focus origin-frame))))))))
+             (delete-frame frame)))))
+    ;; Focus restoration is best-effort cleanup.  In particular, a failed
+    ;; `delete-frame' must not prevent the request from dropping ownership or
+    ;; from trying to return the user to the attach frame.
+    (unless deleting-origin
+      (ignore-errors (agent-fleet-editor--focus-origin request)))
     (setf (plist-get request :presentation) nil
+          (plist-get request :presentation-frame) nil
           (plist-get request :presentation-window) nil
           (plist-get request :presentation-created-p) nil)))
 
@@ -334,11 +380,13 @@ already being deleted."
         (delq request agent-fleet-editor--active-requests)))
 
 (defun agent-fleet-editor--finish-request
-    (request status &optional from-killing deleting-frame)
+    (request status &optional from-killing deleting-origin deleting-presentation)
   "Finish REQUEST with STATUS, returning non-nil on the first finish.
 STATUS is `submit' or `abort'.  Submission saves first; a save error leaves
 the request and presentation active so the user can retry.  Once marked
-finished, release happens before presentation cleanup."
+finished, release happens before presentation cleanup.  DELETING-ORIGIN and
+DELETING-PRESENTATION identify a frame whose deletion hook is performing the
+cleanup, preventing an attempt to focus or delete that frame recursively."
   (unless (plist-get request :finished)
     (let ((buffer (plist-get request :buffer)))
       (when (eq status 'submit)
@@ -352,7 +400,8 @@ finished, release happens before presentation cleanup."
       ;; presentation state.  Even if one cleanup operation signals, the
       ;; request cannot be retried or stranded as an active route.
       (setf (plist-get request :finished) t)
-      (agent-fleet-editor--unregister-request request deleting-frame)
+      (agent-fleet-editor--unregister-request request deleting-origin)
+      (agent-fleet-editor--restore-header-line request buffer)
       (agent-fleet-editor--remove-request-hooks buffer)
       ;; Keep this ordering: save, release emacsclient, then close/restore the
       ;; Agent Fleet presentation.  A direct kill uses FOR-KILLING so the
@@ -363,7 +412,8 @@ finished, release happens before presentation cleanup."
              buffer from-killing)
           (error (setq cleanup-error err)))
         (condition-case err
-            (agent-fleet-editor--close-presentation request deleting-frame)
+            (agent-fleet-editor--close-presentation
+             request deleting-origin deleting-presentation)
           (error (unless cleanup-error (setq cleanup-error err))))
         (when cleanup-error
           (signal (car cleanup-error) (cdr cleanup-error))))
@@ -408,6 +458,7 @@ Bound to C-c C-k in `agent-fleet-editor-buffer-mode'."
     (let ((request agent-fleet-editor--request))
       (setf (plist-get request :finished) t)
       (agent-fleet-editor--unregister-request request)
+      (agent-fleet-editor--restore-header-line request (current-buffer))
       (agent-fleet-editor--remove-request-hooks (current-buffer))
       ;; The server already released the waiting client before this hook.
       (condition-case err
@@ -417,79 +468,96 @@ Bound to C-c C-k in `agent-fleet-editor-buffer-mode'."
                   (error-message-string err)))))))
 
 (defun agent-fleet-editor--frame-deleted (frame)
-  "Abort active editor requests when their origin FRAME is deleted."
+  "Abort active editor requests when their origin or editor FRAME is deleted.
+The active request owns the presentation frame, so no separate frame registry
+is needed."
   (dolist (request (copy-sequence agent-fleet-editor--active-requests))
     (when (and (listp request)
-               (eq frame (plist-get request :origin-frame))
-               (not (plist-get request :finished)))
-      (condition-case err
-          (agent-fleet-editor--finish-request request 'abort nil t)
-        (error
-         (message "agent-fleet: editor cleanup during frame deletion failed: %s"
-                  (error-message-string err))))))
+               (not (plist-get request :finished))
+               (or (eq frame (plist-get request :origin-frame))
+                   (eq frame (plist-get request :presentation-frame))))
+      (let ((deleting-origin (eq frame (plist-get request :origin-frame)))
+            (deleting-presentation
+             (eq frame (plist-get request :presentation-frame))))
+        (condition-case err
+            (agent-fleet-editor--finish-request
+             request 'abort nil deleting-origin deleting-presentation)
+          (error
+           (message "agent-fleet: editor cleanup during frame deletion failed: %s"
+                    (error-message-string err)))))))
   nil)
 
-(defun agent-fleet-editor--window-state-changed (_frame)
-  "Abort requests whose owned side window was deleted or repurposed."
+(defun agent-fleet-editor--window-state-changed (frame)
+  "Abort requests whose standalone editor frame or window was lost."
   (dolist (request (copy-sequence agent-fleet-editor--active-requests))
-    (when (and (eq (plist-get request :presentation) 'side-window)
+    (when (and (eq (plist-get request :presentation) 'frame)
+               (eq frame (plist-get request :presentation-frame))
                (not (plist-get request :finished)))
       (let ((window (plist-get request :presentation-window))
             (buffer (plist-get request :buffer)))
-        (unless (and (window-live-p window)
-                     (eq (window-parameter
-                          window 'agent-fleet-editor-request)
-                         request)
+        (unless (and (frame-live-p frame)
+                     (window-live-p window)
+                     (eq (window-frame window) frame)
                      (eq (window-buffer window) buffer))
           (condition-case err
               (agent-fleet-editor--finish-request request 'abort)
             (error
              (message
-              "agent-fleet: editor cleanup after side-window loss failed: %s"
+              "agent-fleet: editor cleanup after frame/window loss failed: %s"
               (error-message-string err))))))))
   nil)
 
-(defun agent-fleet-editor--present-in-side-window (request)
-  "Present REQUEST in a new right-side window of its recorded origin frame."
+(defun agent-fleet-editor--present-in-frame (request)
+  "Present REQUEST in a newly created standalone graphical frame.
+The frame is created from the recorded origin display and never receives a
+`parent-frame' parameter, so it is an independent operating-system frame.
+All operations that can fail happen before the request takes ownership of the
+frame; a failed presentation therefore deletes the newly created frame before
+signalling a diagnostic."
   (let* ((origin (plist-get request :origin-frame))
-         (buffer (plist-get request :buffer)))
+         (buffer (plist-get request :buffer))
+         frame)
     (unless (frame-live-p origin)
       (user-error "The attach frame no longer exists"))
-    (let* ((root (frame-root-window origin))
-           (before-windows (window-list origin 'no-minibuf))
-           (before-state (window-state-get root t))
-           window)
-      (condition-case err
-          (setq window
+    (unless (display-graphic-p origin)
+      (user-error
+       "Cannot open the external editor frame: the attach frame is not graphical"))
+    (condition-case err
+        (let (window)
+          (setq frame
                 (with-selected-frame origin
-                  (display-buffer
-                   buffer
-                   `((display-buffer-in-side-window)
-                     (side . right)
-                     (slot . 0)
-                     (window-width
-                      . ,agent-fleet-editor-side-window-width)))))
-        (error
-         (window-state-put before-state root)
-         (signal (car err) (cdr err))))
-      ;; `display-buffer-in-side-window' may reuse an existing window when the
-      ;; frame cannot accommodate another one.  Rolling back synchronously is
-      ;; safe here and guarantees that the attach window remains visible.
-      (unless (and (window-live-p window)
-                   (not (memq window before-windows)))
-        (window-state-put before-state root)
-        (user-error "Could not create a separate editor side window"))
-      (setf (plist-get request :presentation) 'side-window
-            (plist-get request :presentation-window) window
-            (plist-get request :presentation-created-p) t)
-      (set-window-parameter window 'agent-fleet-editor-request request)
-      (set-window-dedicated-p window t)
-      (select-frame-set-input-focus origin)
-      (select-window window))))
+                  (make-frame
+                   (assq-delete-all
+                    'parent-frame
+                    (copy-tree agent-fleet-editor-frame-parameters)))))
+          (unless (frame-live-p frame)
+            (error "make-frame returned no live frame"))
+          (setq window (frame-selected-window frame))
+          (unless (window-live-p window)
+            (error "the new frame has no live selected window"))
+          (with-selected-frame frame
+            (set-window-buffer window buffer)
+            (set-window-dedicated-p window t)
+            (select-window window))
+          (select-frame-set-input-focus frame)
+          (ignore-errors (raise-frame frame))
+          (setf (plist-get request :presentation) 'frame
+                (plist-get request :presentation-frame) frame
+                (plist-get request :presentation-window) window
+                (plist-get request :presentation-created-p) t))
+      (error
+       ;; The request does not own FRAME until the final `setf' above, so a
+       ;; presentation failure can clean it up without invoking request
+       ;; lifecycle hooks recursively.
+       (when (frame-live-p frame)
+         (ignore-errors (delete-frame frame)))
+       (ignore-errors (agent-fleet-editor--focus-origin request))
+       (user-error "Could not open the external editor frame: %s"
+                   (error-message-string err))))))
 
 (defun agent-fleet-editor--present-request (request)
-  "Present REQUEST beside its attach window without hiding the agent."
-  (agent-fleet-editor--present-in-side-window request))
+  "Present REQUEST in a standalone frame without changing its attach window."
+  (agent-fleet-editor--present-in-frame request))
 
 (defun agent-fleet-editor--start-request (route buffer)
   "Create and present a request from ROUTE and server BUFFER."
@@ -499,12 +567,17 @@ Bound to C-c C-k in `agent-fleet-editor-buffer-mode'."
                                :origin-window (plist-get route :origin-window)
                                :origin-buffer (plist-get route :origin-buffer)
                                :presentation nil
+                               :presentation-frame nil
                                :presentation-window nil
                                :presentation-created-p nil
+                               :header-line-local-p nil
+                               :header-line-format nil
+                               :header-line-saved-p nil
                                :finished nil)
                          route)))
     (push request agent-fleet-editor--active-requests)
     (with-current-buffer buffer
+      (agent-fleet-editor--install-header-line request buffer)
       (setq-local agent-fleet-editor--request request)
       ;; Keep the server's own kill hook ahead of this cleanup hook.  If it
       ;; already releases the buffer, this hook remains idempotent.
