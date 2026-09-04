@@ -77,19 +77,11 @@
 ;; already-required `agent-fleet' base, so it needs no declaration.  Each
 ;; is declared here so `agent-fleet-attach' byte-compiles without a top-level
 ;; `require' of these modules.
-(declare-function agent-fleet-show-output-in-child-frame
-                  "agent-fleet-dashboard" (agent &optional lines source))
 (declare-function agent-fleet-magit-status-in-buffer
-                  "agent-fleet-magit" (target))
-(declare-function agent-fleet-magit-status-in-child-frame
                   "agent-fleet-magit" (target))
 (declare-function agent-fleet-magit-diff-in-buffer
                   "agent-fleet-magit" (target))
-(declare-function agent-fleet-magit-diff-in-child-frame
-                  "agent-fleet-magit" (target))
 (declare-function agent-fleet-worktree-status-in-buffer
-                  "agent-fleet-worktree" (target))
-(declare-function agent-fleet-worktree-status-in-child-frame
                   "agent-fleet-worktree" (target))
 ;; Auxiliary child-frame lifecycle (agent-fleet-display).  Loaded lazily so
 ;; the command-map leaves can byte-compile without a top-level require.
@@ -469,22 +461,6 @@ acting on nil."
   (or agent-fleet-attach-pane-id
       (user-error "Not in an agent-fleet attach buffer")))
 
-(defun agent-fleet-attach-inspect-in-child-frame (&optional lines)
-  "Show this buffer's agent output as a read snapshot in an auxiliary child frame.
-Acts on the agent whose terminal this buffer drives
-(`agent-fleet-attach-pane-id'), so no selection prompt is needed.  With a
-prefix arg, prompt for the line count; otherwise the default
-`agent-fleet-default-read-lines' is used.  Signal a `user-error' when
-child frames are unsupported; there is no silent buffer fallback (use
-`agent-fleet-attach-inspect-in-buffer' for that)."
-  (interactive "P")
-  (require 'agent-fleet-display nil t)
-  (let ((pane-id (agent-fleet-attach--current-pane-id)))
-    (agent-fleet-show-output-in-child-frame pane-id
-                             (and lines
-                                  (read-number "Lines: "
-                                               agent-fleet-default-read-lines)))))
-
 (defun agent-fleet-attach-inspect-in-buffer (&optional lines)
   "Show this buffer's agent output as a read snapshot in an ordinary buffer.
 Acts on the agent whose terminal this buffer drives
@@ -685,18 +661,6 @@ this buffer, so no selection prompt is needed."
     (unless (or (null name) (string-empty-p name))
       (agent-fleet-rename pane-id name))))
 
-(defun agent-fleet-attach-diff-in-child-frame ()
-  "Show this buffer's agent working-tree diff in an auxiliary child frame.
-Acts on the agent whose terminal this buffer drives
-(`agent-fleet-attach-pane-id'), so no selection prompt is needed.  Signal a
-`user-error' when child frames are unsupported; there is no silent buffer
-fallback (use `agent-fleet-attach-diff-in-buffer' for that).  `user-error's
-if Magit is not installed."
-  (interactive)
-  (require 'agent-fleet-magit nil t)
-  (agent-fleet-magit-diff-in-child-frame
-   (agent-fleet-attach--current-pane-id)))
-
 (defun agent-fleet-attach-diff-in-buffer ()
   "Show this buffer's agent working-tree diff in an ordinary buffer.
 Acts on the agent whose terminal this buffer drives
@@ -707,18 +671,6 @@ Acts on the agent whose terminal this buffer drives
   (agent-fleet-magit-diff-in-buffer
    (agent-fleet-attach--current-pane-id)))
 
-(defun agent-fleet-attach-magit-in-child-frame ()
-  "Open Magit status for this buffer's agent in an auxiliary child frame.
-Acts on the agent whose terminal this buffer drives
-(`agent-fleet-attach-pane-id'), so no selection prompt is needed.  Signal a
-`user-error' when child frames are unsupported; there is no silent buffer
-fallback (use `agent-fleet-attach-magit-in-buffer' for that).  `user-error's
-if Magit is not installed."
-  (interactive)
-  (require 'agent-fleet-magit nil t)
-  (agent-fleet-magit-status-in-child-frame
-   (agent-fleet-attach--current-pane-id)))
-
 (defun agent-fleet-attach-magit-in-buffer ()
   "Open Magit status for this buffer's agent in an ordinary buffer.
 Acts on the agent whose terminal this buffer drives
@@ -727,17 +679,6 @@ Acts on the agent whose terminal this buffer drives
   (interactive)
   (require 'agent-fleet-magit nil t)
   (agent-fleet-magit-status-in-buffer
-   (agent-fleet-attach--current-pane-id)))
-
-(defun agent-fleet-attach-worktree-in-child-frame ()
-  "Show this buffer's agent worktree status in an auxiliary child frame.
-Acts on the agent whose terminal this buffer drives
-(`agent-fleet-attach-pane-id'), so no selection prompt is needed.  Signal a
-`user-error' when child frames are unsupported; there is no silent buffer
-fallback (use `agent-fleet-attach-worktree-in-buffer' for that)."
-  (interactive)
-  (require 'agent-fleet-worktree nil t)
-  (agent-fleet-worktree-status-in-child-frame
    (agent-fleet-attach--current-pane-id)))
 
 (defun agent-fleet-attach-worktree-in-buffer ()
@@ -753,11 +694,8 @@ Acts on the agent whose terminal this buffer drives
   "Act on the agent this attach buffer is driving.
 Each entry acts on the pane id owned by this buffer
 (`agent-fleet-attach-pane-id'), so no selection prompt is needed.  Bound to
-`C-c C-a h' or `C-c C-a ?' in attach buffers.  The view entries are split
-by presentation: the \"child frame\" group opens an auxiliary child frame
-over the terminal parent, leaving its window geometry untouched; the
-\"buffer\" group opens an ordinary buffer.  Lowercase keys select the
-child frame, uppercase the buffer."
+`C-c C-a h' or `C-c C-a ?' in attach buffers.  The view entries open an
+ordinary buffer; the compose prompt (`S') opens an auxiliary child frame."
   [["Agent"
     ("s" "Prompt"            agent-fleet-attach-prompt)
     ("S" "Prompt (compose)"  agent-fleet-attach-prompt-in-child-frame)
@@ -765,16 +703,11 @@ child frame, uppercase the buffer."
     ("i" "Interrupt"         agent-fleet-attach-interrupt)
     ("x" "Kill"              agent-fleet-attach-kill)
     ("r" "Rename"            agent-fleet-attach-rename)]
-   ["View (child frame)"
-    ("o" "Inspect output"    agent-fleet-attach-inspect-in-child-frame)
-    ("d" "Working-tree diff" agent-fleet-attach-diff-in-child-frame)
-    ("m" "Magit status"      agent-fleet-attach-magit-in-child-frame)
-    ("w" "Worktree status"   agent-fleet-attach-worktree-in-child-frame)]
-   ["View (buffer)"
-    ("O" "Inspect output"    agent-fleet-attach-inspect-in-buffer)
-    ("D" "Working-tree diff" agent-fleet-attach-diff-in-buffer)
-    ("M" "Magit status"      agent-fleet-attach-magit-in-buffer)
-    ("W" "Worktree status"   agent-fleet-attach-worktree-in-buffer)]])
+   ["View"
+    ("o" "Inspect output"    agent-fleet-attach-inspect-in-buffer)
+    ("d" "Working-tree diff" agent-fleet-attach-diff-in-buffer)
+    ("m" "Magit status"      agent-fleet-attach-magit-in-buffer)
+    ("w" "Worktree status"   agent-fleet-attach-worktree-in-buffer)]])
 
 ;;;###autoload
 (defvar-keymap agent-fleet-attach-command-map
@@ -782,27 +715,22 @@ child frame, uppercase the buffer."
 Bound to `C-c C-a' in `agent-fleet-attach-mode-map'.  You can rebind it
 there, e.g. (keymap-set agent-fleet-attach-mode-map \"C-c C-f\"
 \\='agent-fleet-attach-command-map).
-Lowercase repo/view keys (`o'/`w'/`m'/`d') open an auxiliary child frame
-over the terminal parent, leaving its window geometry untouched; uppercase
-(`O'/`W'/`M'/`D') open an ordinary buffer.  The shared action keys mirror
-`agent-fleet-action-registry' (verified by
-`agent-fleet-action-registry-attach-sync'); `k' (send keys) and `h'/`?'
-(menu) are attach-only.  This map is literal (not dolist-generated) so its
-autoload form carries every binding before `agent-fleet-attach' loads."
-  "o" #'agent-fleet-attach-inspect-in-child-frame
-  "O" #'agent-fleet-attach-inspect-in-buffer
+View keys (`o'/`w'/`m'/`d') open an ordinary buffer; `S' opens the compose
+child frame.  The shared action keys mirror `agent-fleet-action-registry'
+(verified by `agent-fleet-action-registry-attach-sync'); `k' (send keys)
+and `h'/`?' (menu) are attach-only.  This map is literal (not
+dolist-generated) so its autoload form carries every binding before
+`agent-fleet-attach' loads."
+  "o" #'agent-fleet-attach-inspect-in-buffer
   "s" #'agent-fleet-attach-prompt
   "S" #'agent-fleet-attach-prompt-in-child-frame
   "k" #'agent-fleet-attach-send-keys
   "i" #'agent-fleet-attach-interrupt
   "x" #'agent-fleet-attach-kill
   "r" #'agent-fleet-attach-rename
-  "d" #'agent-fleet-attach-diff-in-child-frame
-  "D" #'agent-fleet-attach-diff-in-buffer
-  "m" #'agent-fleet-attach-magit-in-child-frame
-  "M" #'agent-fleet-attach-magit-in-buffer
-  "w" #'agent-fleet-attach-worktree-in-child-frame
-  "W" #'agent-fleet-attach-worktree-in-buffer
+  "d" #'agent-fleet-attach-diff-in-buffer
+  "m" #'agent-fleet-attach-magit-in-buffer
+  "w" #'agent-fleet-attach-worktree-in-buffer
   "h" #'agent-fleet-attach-menu
   "?" #'agent-fleet-attach-menu)
 

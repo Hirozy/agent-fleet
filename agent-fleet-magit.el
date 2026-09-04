@@ -54,10 +54,9 @@
 (declare-function magit-status "magit-status" (&optional directory))
 (declare-function magit-diff-working-tree "magit-diff" (&optional range args files))
 
-;; The auxiliary child-frame presentation API lives in the display
-;; module, which loads before this feature; declared here so byte-compilation
-;; does not warn, and required at runtime by the `-in-child-frame' entries.
-(declare-function agent-fleet-display--aux-run "agent-fleet-display" (thunk))
+;; The presentation-outcome API lives in the display module, which loads
+;; before this feature; declared here so byte-compilation does not warn,
+;; and required at runtime by the `-in-buffer' entry points.
 (declare-function agent-fleet-display--make-outcome "agent-fleet-display" (opened &optional value buffer))
 (declare-function agent-fleet-display--outcome-value "agent-fleet-display" (outcome))
 
@@ -169,22 +168,6 @@ reinvent).  `user-error's if Magit is not installed."
    (agent-fleet-magit--status-outcome target)))
 
 ;;;###autoload
-(defun agent-fleet-magit-status-in-child-frame (target)
-  "Open Magit status on TARGET's checkout in an auxiliary child frame.
-Opens Magit inside a native child frame that floats over the terminal's
-parent frame, leaving its window geometry untouched; Magit may split
-windows inside the child, but never the terminal parent.  TARGET is an
-agent name, pane id, symbol, or `herdr-agent' struct.  Signal a
-`user-error' when child frames are unsupported; there is no silent
-buffer fallback (use `agent-fleet-magit-status-in-buffer' for that).
-`user-error's if Magit is not installed."
-  (interactive (list (agent-fleet-read-agent-name "Magit status for agent")))
-  (require 'agent-fleet-display nil t)
-  (agent-fleet-display--outcome-value
-   (agent-fleet-display--aux-run
-    (lambda () (agent-fleet-magit--status-outcome target)))))
-
-;;;###autoload
 (defun agent-fleet-magit-diff-in-buffer (target)
   "Show TARGET's working-tree diff in an ordinary buffer.
 Opens `magit-diff-working-tree' scoped to TARGET's checkout -- the
@@ -194,22 +177,6 @@ and pressing `d' there.  `user-error's if Magit is not installed."
   (interactive (list (agent-fleet-read-agent-name "Diff for agent")))
   (agent-fleet-display--outcome-value
    (agent-fleet-magit--diff-outcome target)))
-
-;;;###autoload
-(defun agent-fleet-magit-diff-in-child-frame (target)
-  "Show TARGET's working-tree diff in an auxiliary child frame.
-Opens `magit-diff-working-tree' scoped to TARGET's checkout inside a
-native child frame that floats over the terminal's parent frame, leaving
-its window geometry untouched.  TARGET is an agent name, pane id, symbol,
-or `herdr-agent' struct.  Signal a `user-error' when child frames are
-unsupported; there is no silent buffer fallback (use
-`agent-fleet-magit-diff-in-buffer' for that).  `user-error's if Magit is
-not installed."
-  (interactive (list (agent-fleet-read-agent-name "Diff for agent")))
-  (require 'agent-fleet-display nil t)
-  (agent-fleet-display--outcome-value
-   (agent-fleet-display--aux-run
-    (lambda () (agent-fleet-magit--diff-outcome target)))))
 
 ;;;###autoload
 (define-obsolete-function-alias 'agent-fleet-magit-status
