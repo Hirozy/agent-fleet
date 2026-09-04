@@ -202,37 +202,33 @@ of the dependency graph and must not become core startup dependencies.
   configuration, or compatibility changes. Put plans and design rationale in
   dedicated documents, not in this rules file.
 
-## Claude delegation
+## Luna-worker delegation
 
-You are the primary orchestrator and reviewer.
+The primary agent owns planning, task decomposition, review, and final
+verification.
 
-For substantial implementation tasks, prefer delegating the actual
-implementation to Claude Code when appropriate.
-
-Use the `claude` CLI in non-interactive mode:
-
-```text
-claude -p "<task>"
-```
+For substantial implementation tasks, delegate the actual implementation to a
+Luna-worker when one is available. If no Luna-worker is available, the primary
+agent implements the task directly while following the same review and
+verification requirements.
 
 Responsibilities:
 
-- Codex owns planning, task decomposition, review, and final verification.
-- Claude owns implementation when a task is delegated to it.
-- Give Claude a narrow, self-contained task with:
+- The Luna-worker owns implementation when a task is delegated to it.
+- Give the Luna-worker a narrow, self-contained task with:
   - objective
   - relevant files/modules
   - constraints
   - acceptance criteria
   - tests to run
-- Allow Claude to inspect and modify the current working tree.
-- Do not modify the same files concurrently while Claude is working.
-- After Claude finishes:
+- Allow the Luna-worker to inspect and modify the current working tree.
+- Do not modify the same files concurrently while the Luna-worker is working.
+- After the Luna-worker finishes:
   1. inspect `git diff`
   2. review the implementation independently
   3. run relevant tests
-  4. fix small issues directly or delegate another bounded task to Claude
-- Never accept Claude's implementation without review.
+  4. fix small issues directly or delegate another bounded task to the Luna-worker
+- Never accept a Luna-worker implementation without independent review.
 
 ## Verification rules
 
