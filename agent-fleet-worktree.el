@@ -56,13 +56,6 @@
 (require 'herdr-model)
 (require 'agent-fleet)
 
-;; The auxiliary child-frame presentation API lives in the display
-;; module, which loads before this feature; declared here so byte-compilation
-;; does not warn, and required at runtime by the `-in-child-frame' entry.
-(declare-function agent-fleet-display--aux-run "agent-fleet-display" (thunk))
-(declare-function agent-fleet-display--make-outcome "agent-fleet-display" (opened &optional value buffer))
-(declare-function agent-fleet-display--outcome-value "agent-fleet-display" (outcome))
-
 
 ;;; --- Fetch helper ---------------------------------------------------
 
@@ -260,8 +253,8 @@ Ensure the connection, resolve TARGET, fetch `worktree.list', and when a
 worktree is open for the agent's workspace, render its metadata into the
 view buffer.  Return the worktree struct, or nil and message when none is
 open.  Display is the caller's responsibility -- this is the shared
-operation behind the `-in-buffer' and `-in-child-frame' presentation
-commands, so the fetch runs exactly once regardless of presentation."
+operation behind the worktree presentation commands, so the fetch runs
+exactly once regardless of presentation."
   (agent-fleet--ensure-connected)
   (let* ((agent (or (agent-fleet--find-agent target)
                     (signal 'agent-fleet-target-not-found (list :agent target))))
@@ -294,27 +287,6 @@ messages when no worktree is open for the workspace."
     (when wt
       (pop-to-buffer (get-buffer agent-fleet-worktree-buffer-name)))
     wt))
-
-;;;###autoload
-(defun agent-fleet-worktree-status-in-child-frame (target)
-  "Show the worktree for TARGET's workspace in an auxiliary child frame.
-Opens the read-only worktree view inside a native child frame that floats
-over the terminal's parent frame, leaving its window geometry untouched.
-TARGET is an agent name, pane id, symbol, or `herdr-agent' struct.
-Signal a `user-error' when child frames are unsupported; there is no
-silent buffer fallback (use `agent-fleet-worktree-status-in-buffer' for
-that).  Returns the worktree struct, or nil and messages when no worktree
-is open for the workspace."
-  (interactive
-   (list (agent-fleet-read-agent-name "Worktree status for agent")))
-  (require 'agent-fleet-display nil t)
-  (agent-fleet-display--outcome-value
-   (agent-fleet-display--aux-run
-    (lambda ()
-      (let ((wt (agent-fleet-worktree--status-op target)))
-        (when wt
-          (set-window-buffer nil (get-buffer agent-fleet-worktree-buffer-name)))
-        (agent-fleet-display--make-outcome (if wt t) wt))))))
 
 ;;;###autoload
 (define-obsolete-function-alias 'agent-fleet-worktree-status

@@ -70,12 +70,6 @@
 ;; load time).  The module is loaded on demand via autoload or explicit
 ;; `require'; the core control plane works without it.
 (declare-function agent-fleet-attach "agent-fleet-attach" (target &optional takeover))
-;; The auxiliary child-frame presentation API lives in the display
-;; module, declared here so byte-compilation does not warn, and required
-;; at runtime by `-in-child-frame' view commands.
-(declare-function agent-fleet-display--aux-run "agent-fleet-display" (thunk))
-(declare-function agent-fleet-display--make-outcome "agent-fleet-display" (opened &optional value buffer))
-(declare-function agent-fleet-display--outcome-value "agent-fleet-display" (outcome))
 ;; `agent-fleet-parallel' is another one-way feature module.  The
 ;; candidate builder surfaces a parallel task's title, so it calls
 ;; these; `declare-function' keeps the module out of the require graph.
@@ -872,8 +866,7 @@ Returns a PaneReadResult plist: (:pane_id :workspace_id :tab_id :source
 :format :text :revision :truncated), unwrapped from the `pane_read'
 envelope.  Defaults to `recent_unwrapped' output, which ignores soft wrapping
 and is best for logs.  This is a Lisp data API, not a command: to view an
-agent's output interactively, use `agent-fleet-show-output-in-buffer' or
-`agent-fleet-show-output-in-child-frame'."
+agent's output interactively, use `agent-fleet-show-output-in-buffer'."
   (agent-fleet--ensure-connected)
   (agent-fleet--unwrap-read
    (herdr-request "agent.read"
@@ -1378,9 +1371,9 @@ Ensure the connection, resolve AGENT, run `agent.read', and fill the
 read-only `*Agent Output: <name>*' buffer with the text.  Return
 \(BUFFER . RES), where RES is the `agent.read' result plist; signal
 `agent-fleet-target-not-found' when AGENT is unknown.  Display is the
-caller's responsibility -- this is the shared operation behind the
-`-in-buffer' and `-in-child-frame' presentation commands, so the read
-runs exactly once regardless of presentation."
+caller's responsibility -- this is the shared operation behind the output
+presentation commands, so the read runs exactly once regardless of
+presentation."
   (agent-fleet--ensure-connected)
   (let* ((struct (or (agent-fleet--find-agent agent)
                      (signal 'agent-fleet-target-not-found
@@ -1415,28 +1408,6 @@ count."
   (let ((pair (agent-fleet--show-output-op agent lines source)))
     (pop-to-buffer (car pair))
     (cdr pair)))
-
-;;;###autoload
-(defun agent-fleet-show-output-in-child-frame (agent &optional lines source)
-  "Read AGENT's recent output and show it in an auxiliary child frame.
-Opens `*Agent Output: <name>*' from `agent.read' inside a native child
-frame that floats over the terminal's parent frame, leaving its window
-geometry untouched.  With a prefix arg, prompt for the line count.
-Signal a `user-error' when child frames are unsupported; there is no
-silent buffer fallback (use `agent-fleet-show-output-in-buffer' for that)."
-  (interactive
-   (list (agent-fleet-read-agent-name "Show output for agent")
-         (and current-prefix-arg
-              (read-number "Lines: " agent-fleet-default-read-lines))))
-  (require 'agent-fleet-display nil t)
-  (agent-fleet-display--outcome-value
-   (agent-fleet-display--aux-run
-    (lambda ()
-      (let ((pair (agent-fleet--show-output-op agent lines source)))
-        (when (cdr pair)
-          (set-window-buffer nil (car pair)))
-        (agent-fleet-display--make-outcome
-         (if (cdr pair) t) (cdr pair) (car pair)))))))
 
 ;;;###autoload
 (define-obsolete-function-alias 'agent-fleet-show-output
@@ -1635,8 +1606,7 @@ agent manifests.  See the environment checks above."
 (defconst agent-fleet-action-registry
   '((inspect :label "Inspect output"
      :dashboard ("o" . agent-fleet-dashboard--inspect)
-     :attach (("o" . agent-fleet-attach-inspect-in-child-frame)
-              ("O" . agent-fleet-attach-inspect-in-buffer)))
+     :attach (("o" . agent-fleet-attach-inspect-in-buffer)))
     (prompt :label "Prompt"
      :dashboard ("s" . agent-fleet-dashboard--prompt)
      :attach (("s" . agent-fleet-attach-prompt)
@@ -1652,23 +1622,23 @@ agent manifests.  See the environment checks above."
      :attach (("r" . agent-fleet-attach-rename)))
     (worktree :label "Worktree status"
      :dashboard ("w" . agent-fleet-dashboard--worktree)
-     :attach (("w" . agent-fleet-attach-worktree-in-child-frame)
-              ("W" . agent-fleet-attach-worktree-in-buffer)))
+     :attach (("w" . agent-fleet-attach-worktree-in-buffer)))
     (diff :label "Working-tree diff"
      :dashboard ("d" . agent-fleet-dashboard--diff)
-     :attach (("d" . agent-fleet-attach-diff-in-child-frame)
-              ("D" . agent-fleet-attach-diff-in-buffer)))
+     :attach (("d" . agent-fleet-attach-diff-in-buffer)))
     (magit :label "Magit status"
      :dashboard ("m" . agent-fleet-dashboard--magit)
-     :attach (("m" . agent-fleet-attach-magit-in-child-frame)
-              ("M" . agent-fleet-attach-magit-in-buffer))))
+     :attach (("m" . agent-fleet-attach-magit-in-buffer))))
   "Single source of the agent actions shared by the dashboard and attach
 surfaces (and a future Embark agent menu).
 Each entry is (NAME :label L :dashboard (key . cmd)
 :attach ((key . cmd) ...)).  NAME is the action identity; :label is its
 canonical display string; :dashboard is (key . cmd); :attach is a list of
-(key . cmd) -- one for single actions, two for the child-frame/buffer
-split.  Surface-only actions stay inline in their surfaces.")
+(key . cmd) -- one binding for single actions, two for `prompt' (a plain
+prompt and the compose child frame).  View actions (inspect/diff/magit/
+worktree) open in an ordinary buffer; the dashboard display and the compose
+child frame are the only child-frame presentations.  Surface-only actions
+stay inline in their surfaces.")
 
 (defun agent-fleet-action-label (name)
   "Return the canonical display label for action NAME, or nil.
