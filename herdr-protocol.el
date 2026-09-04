@@ -62,15 +62,14 @@
 (defcustom herdr-socket-path nil
   "Path to the Herdr Unix socket.
 If nil, it is discovered from the `HERDR_SOCKET_PATH' environment
-variable, then the `herdr status' command, then the default
-`~/.config/herdr/herdr.sock'.  A nonempty explicit value has the
-highest discovery precedence and overrides
+variable, then the default Session socket.  A nonempty explicit value has
+the highest discovery precedence and overrides
 `herdr-default-session-name'."
-  :type '(choice (const :tag "Auto-discover" nil)
+  :type '(choice (const :tag "Use configured Session/environment" nil)
                  (file :tag "Socket path"))
   :group 'herdr)
 
-(defcustom herdr-default-session-name nil
+(defcustom herdr-default-session-name "default"
   "Default Herdr Session name used when discovering the socket.
 When non-nil, it must be a safe single path component (no directory
 separator or NUL, not \".\" or \"..\"); see
@@ -80,12 +79,17 @@ separator or NUL, not \".\" or \"..\"); see
 for a configured Session is a `herdr-connection-error' carrying the
 Session name, resolved path, and a `herdr session attach NAME' hint.
 
+The default is the `default' Session.  Set this to nil only when the
+`HERDR_SOCKET_PATH' environment variable or the default socket path should
+be used without a named Session; the client does not invoke `herdr status'
+to discover a different active Session.
+
 This is a connection-configuration option only: changing it does NOT
 affect an existing connection.  Reconnect and every RPC stay pinned to
 the endpoint saved on the connection; only a fresh `herdr-connect' after
 an explicit disconnect resolves the current setting.  Agent Fleet never
 enumerates, switches, creates, or manages Sessions at runtime."
-  :type '(choice (const :tag "Auto-discover (legacy)" nil)
+  :type '(choice (const :tag "Use environment/default socket" nil)
                  (string :tag "Session name"))
   :group 'herdr)
 
@@ -238,25 +242,24 @@ Precedence (highest first):
   2. the configured `herdr-default-session-name' (resolved to its socket;
      see `herdr-protocol--session-socket-path');
   3. the `HERDR_SOCKET_PATH' environment variable;
-  4. the `herdr status' socket line;
-  5. the default `~/.config/herdr/herdr.sock'.
-A nil `herdr-default-session-name' preserves the legacy discovery chain
-(steps 1, 3-5).  Signals `herdr-connection-error' when no usable socket
-is found, or when a configured Session name is invalid or its socket is
-missing."
+  4. the default `~/.config/herdr/herdr.sock'.
+A nil `herdr-default-session-name' skips the Session branch and uses the
+environment variable or the default socket path.  The client does not invoke
+`herdr status' to discover a different active Session.  Signals
+`herdr-connection-error' when no usable socket is found, or when a configured
+Session name is invalid or its socket is missing."
   (or (and (stringp herdr-socket-path)
            (not (string-empty-p herdr-socket-path))
            herdr-socket-path)
       (herdr-protocol--configured-session-socket)
       (let ((env-path (getenv "HERDR_SOCKET_PATH")))
         (and env-path (not (string-empty-p env-path)) env-path))
-      (herdr-protocol--socket-path-from-status)
       (let ((default (expand-file-name "~/.config/herdr/herdr.sock")))
         (if (file-exists-p default)
-            default
+          default
           (signal 'herdr-connection-error
                   (list :reason "no-socket"
-                        :hint "set `herdr-socket-path' or run `herdr'"))))))
+                        :hint "set `herdr-socket-path' or start Herdr's default Session"))))))
 
 (defun herdr-protocol--session-name-valid-p (name)
   "Return non-nil if NAME is a safe single path component for a Session.
@@ -293,7 +296,7 @@ it does not create directories or start Herdr."
 (defun herdr-protocol--configured-session-socket ()
   "Return the socket path for the configured default Session, or nil.
 nil means no Session is configured (`herdr-default-session-name' is nil),
-so callers fall through to the legacy discovery chain.  A non-nil,
+so callers fall through to the environment/default socket path.  A non-nil,
 non-string configured value, or an invalid string name, signals
 `herdr-connection-error' (:reason invalid-session-name).  A valid name
 whose resolved socket is missing signals `herdr-connection-error'
@@ -319,20 +322,6 @@ run: herdr session attach %s"
              (list :reason 'invalid-session-name
                    :session herdr-default-session-name
                    :hint "session name must be a string")))))
-
-(defun herdr-protocol--socket-path-from-status ()
-  "Parse the `socket:' line from `herdr status'.  Return nil if unavailable."
-  (when (executable-find "herdr")
-    (with-temp-buffer
-      (let ((code (call-process "herdr" nil t nil "status")))
-        (when (and (numberp code) (= code 0))
-          (goto-char (point-min))
-          (when (re-search-forward
-                 "^[[:space:]]*socket:[[:space:]]*\\(.+\\)$" nil t)
-            (let ((path (string-trim (match-string 1))))
-              (and (not (string-empty-p path))
-                   (file-exists-p path)
-                   path))))))))
 
 
 ;;; --- Connection primitives -----------------------------------------

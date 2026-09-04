@@ -8,7 +8,8 @@ This document is the spec the Emacs client (`herdr-protocol.el`, `herdr-model.el
 `herdr-events.el`, `herdr.el`) is built against. It is **runtime-verified**, not
 assumed — but Herdr may change between versions, so the client must always:
 
-- discover the socket and protocol version at runtime (`ping`, `herdr status`),
+- discover the socket from the configured endpoint and verify the protocol
+  version at runtime (`ping`),
 - tolerate unknown JSON fields (Herdr protocol clients are expected to be
   forward-compatible),
 - treat `session.snapshot` as the canonical resync; never synthesize a
@@ -24,14 +25,14 @@ assumed — but Herdr may change between versions, so the client must always:
   `herdr-socket-path`; the configured `herdr-default-session-name`
   (`default` → `~/.config/herdr/herdr.sock`; any other valid name →
   `~/.config/herdr/sessions/<name>/herdr.sock`); the `HERDR_SOCKET_PATH`
-  environment variable; the path printed by `herdr status` under
-  `server.socket`; and the default `~/.config/herdr/herdr.sock`. A nil
-  `herdr-default-session-name` keeps the legacy chain (explicit, env,
-  status, default). A missing socket for a configured Session is a
-  connection error; the name must be a safe single path component. The
-  resolved endpoint is saved on the connection and reused by reconnect
-  and every RPC, so a later setting change does not move a live
-  connection.
+  environment variable; and the default `~/.config/herdr/herdr.sock`.
+  The default Session is `default`, so normal startup does not invoke
+  `herdr status`. A nil `herdr-default-session-name` skips named-Session
+  resolution and uses the environment variable or the default socket path.
+  A missing socket for a configured Session is a connection error; the name
+  must be a safe single path component. The resolved endpoint is saved on
+  the connection and reused by reconnect and every RPC, so a later setting
+  change does not move a live connection.
 - **Newline-delimited JSON.** Each message is one UTF-8 JSON object terminated by
   `\n`. A single JSON object may be split across multiple `recv` calls, so a
   client must buffer until the terminating `\n`.
