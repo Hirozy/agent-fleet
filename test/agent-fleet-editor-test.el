@@ -425,7 +425,14 @@
          (focused nil)
          (raised nil)
          (selected nil)
-         (deleted nil))
+         (deleted nil)
+         (agent-fleet-editor-frame-parameters
+          '((name . "Agent Fleet Editor")
+            (parent-frame . configured-child)
+            (width . 100)
+            (parent-frame . duplicate-child)
+            (height . 35)
+            (minibuffer . t))))
     (unwind-protect
         (cl-letf (((symbol-function 'display-graphic-p)
                    (lambda (&rest _) t))
@@ -462,12 +469,14 @@
                        origin-frame))))
           (agent-fleet-editor--install-header-line request buffer)
           (agent-fleet-editor--present-request request)
-          (should (equal '((name . "Agent Fleet Editor")
+          (should (equal '((parent-frame . nil)
+                           (name . "Agent Fleet Editor")
                            (width . 100)
                            (height . 35)
                            (minibuffer . t))
                          make-args))
-          (should-not (assq 'parent-frame make-args))
+          (should (equal '(parent-frame . nil)
+                         (assq 'parent-frame make-args)))
           (should (eq (plist-get request :presentation) 'frame))
           (should (eq (plist-get request :presentation-frame) created-frame))
           (should (eq (plist-get request :presentation-window) created-window))
@@ -567,6 +576,40 @@
           (should-not agent-fleet-editor--active-requests)
           (should-not (buffer-local-value 'agent-fleet-editor-buffer-mode
                                           buffer)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest agent-fleet-editor-setup-error-releases-request ()
+  "A buffer setup error releases the client and clears active state."
+  (let* ((buffer (generate-new-buffer " *af-editor-setup-error*"))
+         (window (selected-window))
+         (released 0)
+         (presented nil)
+         (agent-fleet-editor--active-requests nil)
+         (agent-fleet-editor-buffer-mode-hook
+          (list (lambda () (error "buffer mode setup failed")))))
+    (unwind-protect
+        (progn
+          (with-current-buffer buffer
+            (setq-local header-line-format "Existing header"))
+          (cl-letf (((symbol-function 'agent-fleet-editor--present-request)
+                     (lambda (&rest _) (setq presented t)))
+                    ((symbol-function 'agent-fleet-editor--release-server-buffer)
+                     (lambda (&rest _) (cl-incf released))))
+            (should-error
+             (agent-fleet-editor--start-request
+              (list :pane-id "w1:p1"
+                    :origin-frame (window-frame window)
+                    :origin-window window
+                    :origin-buffer (window-buffer window))
+              buffer)))
+          (should (= released 1))
+          (should-not presented)
+          (should-not agent-fleet-editor--active-requests)
+          (should-not (buffer-local-value 'agent-fleet-editor--request buffer))
+          (should-not (buffer-local-value 'agent-fleet-editor-buffer-mode buffer))
+          (should (equal "Existing header"
+                         (buffer-local-value 'header-line-format buffer))))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
@@ -870,6 +913,48 @@
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 
+(ert-deftest agent-fleet-editor-mode-disable-error-still-cleans-request ()
+  "A mode-disable hook error cannot prevent the remaining cleanup steps."
+  (let* ((buffer (generate-new-buffer " *af-editor-mode-disable-error*"))
+         (window (selected-window))
+         (request (agent-fleet-editor-test--new-request
+                   buffer window 'frame 'editor-frame 'editor-window))
+         (released 0)
+         (closed nil)
+         (agent-fleet-editor--active-requests (list request))
+         (agent-fleet-editor-buffer-mode-hook
+          (list (lambda ()
+                  (when (not agent-fleet-editor-buffer-mode)
+                    (error "buffer mode disable failed"))))))
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq-local agent-fleet-editor--request request)
+          ;; Enabling succeeds; the hook signals only during cleanup.
+          (agent-fleet-editor-buffer-mode 1)
+          (cl-letf (((symbol-function 'agent-fleet-editor--release-server-buffer)
+                     (lambda (&rest _) (cl-incf released)))
+                    ((symbol-function 'agent-fleet-editor--close-presentation)
+                     (lambda (value &rest _)
+                       (setq closed t)
+                       (setf (plist-get value :presentation) nil
+                             (plist-get value :presentation-frame) nil
+                             (plist-get value :presentation-window) nil
+                             (plist-get value :presentation-created-p) nil))))
+            (should-error
+             (agent-fleet-editor--finish-request request 'abort)))
+          (should (= released 1))
+          (should closed)
+          (should (plist-get request :finished))
+          (should-not agent-fleet-editor--active-requests)
+          (should-not agent-fleet-editor--request)
+          (should-not agent-fleet-editor-buffer-mode)
+          (should-not (plist-get request :presentation))
+          (should-not (plist-get request :presentation-frame))
+          (should-not (plist-get request :presentation-window))
+          (should-not (plist-get request :presentation-created-p)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest agent-fleet-editor-mode-disable-cleans-pending-and-active ()
   "Disabling the bridge restores pending routes and aborts active requests."
   (let* ((buffer (generate-new-buffer " *af-editor-disable*"))
@@ -964,6 +1049,44 @@
           (should (plist-get request :finished))
           (should-not agent-fleet-editor-buffer-mode)
           (should-not agent-fleet-editor--active-requests))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
+(ert-deftest agent-fleet-editor-server-done-mode-error-still-closes-presentation ()
+  "A mode-disable error does not orphan the presentation on server completion."
+  (let* ((buffer (generate-new-buffer " *af-editor-server-done-mode-error*"))
+         (window (selected-window))
+         (request (agent-fleet-editor-test--new-request
+                   buffer window 'frame 'editor-frame 'editor-window))
+         (closed nil)
+         (agent-fleet-editor--active-requests (list request))
+         (agent-fleet-editor-buffer-mode-hook
+          (list (lambda ()
+                  (when (not agent-fleet-editor-buffer-mode)
+                    (error "buffer mode disable failed"))))))
+    (unwind-protect
+        (with-current-buffer buffer
+          (setq-local agent-fleet-editor--request request)
+          ;; Enabling succeeds; the hook signals only while server completion
+          ;; disables the local editor mode.
+          (agent-fleet-editor-buffer-mode 1)
+          (cl-letf (((symbol-function 'agent-fleet-editor--close-presentation)
+                     (lambda (value &rest _)
+                       (setq closed t)
+                       (setf (plist-get value :presentation) nil
+                             (plist-get value :presentation-frame) nil
+                             (plist-get value :presentation-window) nil
+                             (plist-get value :presentation-created-p) nil))))
+            (should-not (agent-fleet-editor--server-done)))
+          (should closed)
+          (should (plist-get request :finished))
+          (should-not agent-fleet-editor--active-requests)
+          (should-not agent-fleet-editor--request)
+          (should-not agent-fleet-editor-buffer-mode)
+          (should-not (plist-get request :presentation))
+          (should-not (plist-get request :presentation-frame))
+          (should-not (plist-get request :presentation-window))
+          (should-not (plist-get request :presentation-created-p)))
       (when (buffer-live-p buffer)
         (kill-buffer buffer)))))
 

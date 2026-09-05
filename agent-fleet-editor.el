@@ -86,9 +86,9 @@ seconds when arming a route."
     (minibuffer . t))
   "Frame parameters for standalone external-editor frames.
 
-The bridge always creates a top-level frame with `make-frame'; any configured
-`parent-frame' parameter is ignored so that this presentation cannot become a
-child frame."
+The bridge always creates a top-level frame with `make-frame' and explicitly
+passes a nil `parent-frame' parameter.  Any configured `parent-frame' values
+are ignored so that this presentation cannot become a child frame."
   :type '(repeat (cons (symbol :tag "Parameter")
                        (sexp :tag "Value")))
   :group 'agent-fleet-editor)
@@ -320,11 +320,25 @@ killed."
   "Remove editor lifecycle hooks from BUFFER."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
-      (remove-hook 'kill-buffer-hook #'agent-fleet-editor--buffer-killed t)
-      (remove-hook 'server-done-hook #'agent-fleet-editor--server-done t)
-      (when (bound-and-true-p agent-fleet-editor-buffer-mode)
-        (agent-fleet-editor-buffer-mode -1))
-      (setq-local agent-fleet-editor--request nil))))
+      (let (cleanup-error)
+        ;; Each cleanup step is independent: a user mode hook is allowed to
+        ;; signal while disabling the mode, but it must not prevent the other
+        ;; lifecycle hooks from being removed or the local request from being
+        ;; cleared.  Return the first error after all steps have run so the
+        ;; caller can report it without sacrificing cleanup.
+        (condition-case err
+            (remove-hook 'kill-buffer-hook #'agent-fleet-editor--buffer-killed t)
+          (error (setq cleanup-error err)))
+        (condition-case err
+            (remove-hook 'server-done-hook #'agent-fleet-editor--server-done t)
+          (error (unless cleanup-error (setq cleanup-error err))))
+        (condition-case err
+            (when (bound-and-true-p agent-fleet-editor-buffer-mode)
+              (agent-fleet-editor-buffer-mode -1))
+          (error (unless cleanup-error (setq cleanup-error err))))
+        (setq-local agent-fleet-editor--request nil)
+        (when cleanup-error
+          (signal (car cleanup-error) (cdr cleanup-error)))))))
 
 (defun agent-fleet-editor--release-server-buffer (buffer &optional for-killing)
   "Release BUFFER's waiting server client successfully.
@@ -401,25 +415,34 @@ cleanup, preventing an attempt to focus or delete that frame recursively."
       ;; request cannot be retried or stranded as an active route.
       (setf (plist-get request :finished) t)
       (agent-fleet-editor--unregister-request request deleting-origin)
-      (agent-fleet-editor--restore-header-line request buffer)
-      (agent-fleet-editor--remove-request-hooks buffer)
-      ;; Keep this ordering: save, release emacsclient, then close/restore the
-      ;; Agent Fleet presentation.  A direct kill uses FOR-KILLING so the
-      ;; server API does not recursively try to kill the buffer again.
       (let (cleanup-error)
+        ;; Keep each cleanup step independent.  In particular, a user hook
+        ;; run while disabling the buffer mode must not prevent releasing the
+        ;; waiting server client or closing the editor frame.
+        (condition-case err
+            (agent-fleet-editor--restore-header-line request buffer)
+          (error (setq cleanup-error err)))
+        (condition-case err
+            (agent-fleet-editor--remove-request-hooks buffer)
+          (error (unless cleanup-error (setq cleanup-error err))))
+        ;; Keep this ordering: save, release emacsclient, then close/restore the
+        ;; Agent Fleet presentation.  A direct kill uses FOR-KILLING so the
+        ;; server API does not recursively try to kill the buffer again.
         (condition-case err
             (agent-fleet-editor--release-server-buffer
              buffer from-killing)
-          (error (setq cleanup-error err)))
+          (error (unless cleanup-error (setq cleanup-error err))))
         (condition-case err
             (agent-fleet-editor--close-presentation
              request deleting-origin deleting-presentation)
           (error (unless cleanup-error (setq cleanup-error err))))
+        (condition-case err
+            (when (buffer-live-p buffer)
+              (with-current-buffer buffer
+                (setq-local agent-fleet-editor--request nil)))
+          (error (unless cleanup-error (setq cleanup-error err))))
         (when cleanup-error
           (signal (car cleanup-error) (cdr cleanup-error))))
-      (when (buffer-live-p buffer)
-        (with-current-buffer buffer
-          (setq-local agent-fleet-editor--request nil)))
       t)))
 
 (defun agent-fleet-editor-submit ()
@@ -458,14 +481,31 @@ Bound to C-c C-k in `agent-fleet-editor-buffer-mode'."
     (let ((request agent-fleet-editor--request))
       (setf (plist-get request :finished) t)
       (agent-fleet-editor--unregister-request request)
-      (agent-fleet-editor--restore-header-line request (current-buffer))
-      (agent-fleet-editor--remove-request-hooks (current-buffer))
-      ;; The server already released the waiting client before this hook.
-      (condition-case err
-          (agent-fleet-editor--close-presentation request)
-        (error
-         (message "agent-fleet: editor presentation cleanup failed: %s"
-                  (error-message-string err)))))))
+      (let (cleanup-error)
+        ;; The server already released the waiting client before this hook.
+        ;; Keep the remaining cleanup phases independent: a user header or
+        ;; mode hook must not orphan the standalone editor presentation.
+        (condition-case err
+            (agent-fleet-editor--restore-header-line request (current-buffer))
+          (error (setq cleanup-error err)))
+        (condition-case err
+            (agent-fleet-editor--remove-request-hooks (current-buffer))
+          (error (unless cleanup-error (setq cleanup-error err))))
+        (condition-case err
+            (agent-fleet-editor--close-presentation request)
+          (error (unless cleanup-error (setq cleanup-error err))))
+        ;; `--remove-request-hooks' normally clears this local value.  Keep an
+        ;; explicit final guard in case a buffer-local cleanup operation itself
+        ;; failed before reaching that assignment.
+        (condition-case err
+            (setq-local agent-fleet-editor--request nil)
+          (error (unless cleanup-error (setq cleanup-error err))))
+        (when cleanup-error
+          ;; Do not propagate through `server-done-hook': the server has
+          ;; already completed the client request, so only diagnostics remain.
+          (message "agent-fleet: editor cleanup after server completion failed: %s"
+                   (error-message-string cleanup-error))))))
+  nil)
 
 (defun agent-fleet-editor--frame-deleted (frame)
   "Abort active editor requests when their origin or editor FRAME is deleted.
@@ -509,8 +549,9 @@ is needed."
 
 (defun agent-fleet-editor--present-in-frame (request)
   "Present REQUEST in a newly created standalone graphical frame.
-The frame is created from the recorded origin display and never receives a
-`parent-frame' parameter, so it is an independent operating-system frame.
+The frame is created from the recorded origin display and receives an
+explicit nil `parent-frame' parameter, so it is an independent operating-system
+frame.
 All operations that can fail happen before the request takes ownership of the
 frame; a failed presentation therefore deletes the newly created frame before
 signalling a diagnostic."
@@ -527,9 +568,10 @@ signalling a diagnostic."
           (setq frame
                 (with-selected-frame origin
                   (make-frame
-                   (assq-delete-all
-                    'parent-frame
-                    (copy-tree agent-fleet-editor-frame-parameters)))))
+                   (cons '(parent-frame . nil)
+                         (assq-delete-all
+                          'parent-frame
+                          (copy-tree agent-fleet-editor-frame-parameters))))))
           (unless (frame-live-p frame)
             (error "make-frame returned no live frame"))
           (setq window (frame-selected-window frame))
@@ -576,18 +618,26 @@ signalling a diagnostic."
                                :finished nil)
                          route)))
     (push request agent-fleet-editor--active-requests)
-    (with-current-buffer buffer
-      (agent-fleet-editor--install-header-line request buffer)
-      (setq-local agent-fleet-editor--request request)
-      ;; Keep the server's own kill hook ahead of this cleanup hook.  If it
-      ;; already releases the buffer, this hook remains idempotent.
-      (add-hook 'kill-buffer-hook #'agent-fleet-editor--buffer-killed t t)
-      (add-hook 'server-done-hook #'agent-fleet-editor--server-done t t)
-      (agent-fleet-editor-buffer-mode 1))
     (condition-case err
-        (agent-fleet-editor--present-request request)
+        (progn
+          (with-current-buffer buffer
+            (agent-fleet-editor--install-header-line request buffer)
+            (setq-local agent-fleet-editor--request request)
+            ;; Keep the server's own kill hook ahead of this cleanup hook.  If
+            ;; it already releases the buffer, this hook remains idempotent.
+            (add-hook 'kill-buffer-hook #'agent-fleet-editor--buffer-killed t t)
+            (add-hook 'server-done-hook #'agent-fleet-editor--server-done t t)
+            (agent-fleet-editor-buffer-mode 1))
+          (agent-fleet-editor--present-request request))
       (error
-       (agent-fleet-editor--finish-request request 'abort)
+       ;; Registration precedes all setup so every failure must go through the
+       ;; same idempotent cleanup path.  Preserve the setup/presentation error
+       ;; even if cleanup itself reports a secondary error.
+       (condition-case cleanup-error
+           (agent-fleet-editor--finish-request request 'abort)
+         (error
+          (message "agent-fleet: external editor cleanup failed: %s"
+                   (error-message-string cleanup-error))))
        (signal (car err) (cdr err))))
     request))
 
