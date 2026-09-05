@@ -605,9 +605,14 @@ Notes:
 Notes:
 - The snapshot carries all tabs (`snapshot.tabs`); `tab.list` is a live
   refresh without re-snapshotting.
-- `tab.create` is already used internally by `agent-fleet-start`
-  (§8.1); `tab.close` would close a tab without killing the agent pane
-  (unlike `pane.close`).
+- `tab.close` returns `{"type":"ok"}` and shuts down the tab's detached
+  terminal runtimes. Closing the last tab also closes its Workspace, unless
+  an implicit worktree-group close requires confirmation. Verified in
+  [Herdr 0.8.2 tab handlers](https://github.com/herdrdev/herdr/blob/v0.8.2/src/app/api/tabs.rs).
+- `agent-fleet-cleanup-tabs` is the explicitly requested cleanup operation:
+  it preserves tabs containing any agent and each Workspace's last tab.
+  Fresh snapshots and positive live-cache agent evidence guard every close;
+  there is no server-side atomic conditional-close RPC.
 
 ### 10.3 Pane management (beyond §8.1)
 
