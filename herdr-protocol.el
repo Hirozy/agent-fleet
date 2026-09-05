@@ -88,7 +88,9 @@ This is a connection-configuration option only: changing it does NOT
 affect an existing connection.  Reconnect and every RPC stay pinned to
 the endpoint saved on the connection; only a fresh `herdr-connect' after
 an explicit disconnect resolves the current setting.  Agent Fleet never
-enumerates, switches, creates, or manages Sessions at runtime."
+enumerates, switches, creates, or otherwise manages Sessions at runtime;
+the narrow `herdr-start' / `herdr-stop' commands are the explicit local
+server-lifecycle exception."
   :type '(choice (const :tag "Use environment/default socket" nil)
                  (string :tag "Session name"))
   :group 'herdr)

@@ -49,6 +49,15 @@
 
 ;;; Code:
 
+;; Declare the alias before loading Herdr so an early user setting becomes
+;; the canonical value before its defcustom installs the default.
+;;;###autoload
+(defvaralias 'agent-fleet-default-session-name 'herdr-default-session-name
+  "Default Herdr Session used by Agent Fleet.
+Alias for `herdr-default-session-name'; both names share one value.
+Changing it affects the next connection after an explicit disconnect,
+not the endpoint of an existing connection.")
+
 ;; Package installation generates and loads this file automatically.  A source
 ;; checkout creates it with `make autoloads'; loading it here keeps the README's
 ;; `(require 'agent-fleet)' setup sufficient while leaving feature modules lazy.
@@ -83,6 +92,9 @@
   "Multi-agent supervisor over the Herdr terminal workspace server."
   :group 'processes
   :link '(url-link "https://herdr.dev"))
+
+(custom-add-to-group 'agent-fleet 'agent-fleet-default-session-name
+                     'custom-variable)
 
 (defvar agent-fleet--auto-connect-timer nil
   "Pending idle timer for an automatic Herdr connection, or nil.")
