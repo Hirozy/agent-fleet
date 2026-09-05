@@ -84,6 +84,21 @@ The actual delay grows exponentially up to `herdr-reconnect-max-delay'."
   :type 'number
   :group 'herdr)
 
+(defcustom herdr-executable "herdr"
+  "Executable used by `herdr-start' to launch a local Herdr server.
+The executable is resolved with `executable-find' before a process is
+started.  `herdr-start' invokes it with an argument vector; it never
+passes the command through a shell."
+  :type 'file
+  :group 'herdr)
+
+(defcustom herdr-startup-timeout 10.0
+  "Maximum seconds `herdr-start' waits for the Herdr server to become ready.
+The wait is synchronous and bounded.  The diagnostic process buffer is
+kept when startup fails or times out."
+  :type 'number
+  :group 'herdr)
+
 
 ;;; --- Connection state ---------------------------------------------
 
@@ -97,6 +112,11 @@ The actual delay grows exponentially up to `herdr-reconnect-max-delay'."
 
 (defvar herdr--conn nil
   "Current `herdr--connection', or nil when fully disconnected.")
+
+(defvar herdr--server-processes nil
+  "Alist of managed Herdr server processes.
+Each entry is (SOCKET-PATH . PROCESS).  These are only processes started by
+`herdr-start'; an externally managed Herdr server is never added here.")
 
 (defun herdr-connection ()
   "Return the live connection struct, or nil."
@@ -505,6 +525,263 @@ state did not change."
     (unless (eq state herdr--last-connection-state)
       (setq herdr--last-connection-state state)
       (run-hook-with-args 'herdr-connection-state-changed-hook state))))
+
+
+;;; --- Local server lifecycle --------------------------------------
+
+(defun herdr--server-start-target ()
+  "Return (SESSION SOCKET-PATH) for `herdr-start'.
+Unlike normal socket discovery, starting a server never guesses a Session
+from an explicit socket, the environment, or a missing configuration."
+  (when (and herdr-socket-path
+             (not (and (stringp herdr-socket-path)
+                       (string-empty-p herdr-socket-path))))
+    (user-error
+     "`herdr-start' cannot launch a Session with explicit `herdr-socket-path'"))
+  (let ((session herdr-default-session-name))
+    (unless (and (stringp session)
+                 (herdr-protocol--session-name-valid-p session))
+      (user-error
+       "`herdr-start' requires a valid non-nil `herdr-default-session-name'"))
+    (list session (herdr-protocol--session-socket-path session))))
+
+(defun herdr--server-start-executable ()
+  "Return the resolved executable for `herdr-start', or signal `user-error'."
+  (unless (and (stringp herdr-executable)
+               (not (string-empty-p herdr-executable)))
+    (user-error "`herdr-executable' must name an executable"))
+  (or (executable-find herdr-executable)
+      (user-error "Herdr executable `%s' was not found on PATH"
+                  herdr-executable)))
+
+(defun herdr--server-process-for (socket-path)
+  "Return the live managed server process for SOCKET-PATH, or nil.
+Remove dead process entries while looking up the target."
+  (setq herdr--server-processes
+        (cl-remove-if-not
+         (lambda (entry)
+           (and (process-live-p (cdr entry))
+                (stringp (car entry))))
+         herdr--server-processes))
+  (cdr (assoc socket-path herdr--server-processes)))
+
+(defun herdr--forget-server-process (socket-path &optional process)
+  "Forget the managed server for SOCKET-PATH.
+When PROCESS is non-nil, remove only an entry whose process is PROCESS."
+  (setq herdr--server-processes
+        (cl-remove-if
+         (lambda (entry)
+           (and (equal socket-path (car entry))
+                (or (null process) (eq process (cdr entry)))))
+         herdr--server-processes)))
+
+(defun herdr--server-process-sentinel (process event socket-path)
+  "Record that managed PROCESS for SOCKET-PATH exited and retain its buffer."
+  (herdr--forget-server-process socket-path process)
+  (herdr--log 'warn "managed Herdr server %s exited: %s"
+              socket-path (string-trim event)))
+
+(defun herdr--launch-server-process (session socket-path executable)
+  "Launch a managed headless Herdr SESSION and return a process descriptor.
+The descriptor is a plist containing `:process' and `:buffer'.  The process
+is intentionally left running after this function returns; its diagnostic
+buffer is also retained if launch or readiness later fails."
+  (let* ((buffer (generate-new-buffer
+                  (format "*herdr-server-%s*" session)))
+         (process
+          (condition-case err
+              (apply #'start-process
+                     (format "herdr-server-%s" session)
+                     buffer executable
+                     (list "--session" session "server"))
+            (error
+             (signal 'herdr-connection-error
+                     (list :reason 'launch-failed
+                           :session session
+                           :path socket-path
+                           :buffer (buffer-name buffer)
+                           :detail (error-message-string err)))))))
+    ;; This is a supervised process, not a process that should prompt while
+    ;; Emacs exits.  The process itself remains alive after `herdr-start'.
+    (set-process-query-on-exit-flag process nil)
+    (push (cons socket-path process) herdr--server-processes)
+    (set-process-sentinel
+     process
+     (lambda (proc event)
+       (herdr--server-process-sentinel proc event socket-path)))
+    (list :process process :buffer buffer)))
+
+(defun herdr--server-probe (socket-path)
+  "Probe SOCKET-PATH and return `:ready', `:unavailable', or an error pair.
+The probe deliberately uses the exact path supplied by the caller.  A
+responsive but incompatible server is reported as an error instead of
+starting a duplicate process beside it."
+  (if (not (file-exists-p socket-path))
+      :unavailable
+    (condition-case err
+        (progn
+          (let ((herdr-socket-path socket-path))
+            (herdr-protocol-ping
+             :timeout (min 0.5 (max 0.05 herdr-startup-timeout))))
+          :ready)
+      ((herdr-connection-error herdr-timeout-error)
+       (cons :unavailable err))
+      (herdr-error
+       (cons :error err)))))
+
+(defun herdr--server-diagnostics (buffer)
+  "Return a bounded diagnostic string from BUFFER, or an empty string."
+  (if (and buffer (buffer-live-p buffer))
+      (with-current-buffer buffer
+        (let ((text (string-trim (buffer-string))))
+          (if (> (length text) 1000)
+              (concat "…" (substring text (- (length text) 1000)))
+            text)))
+    ""))
+
+(defun herdr--server-start-failure (session socket-path buffer reason)
+  "Signal a useful `user-error' for a failed local server startup."
+  (let ((diagnostics (herdr--server-diagnostics buffer)))
+    (user-error
+     "Herdr Session %S did not start at %s (%s); diagnostics in %s%s"
+     session socket-path reason
+     (if (bufferp buffer) (buffer-name buffer) buffer)
+     (if (string-empty-p diagnostics) ""
+       (format ": %s" diagnostics)))))
+
+(defun herdr--await-server-start (session socket-path process buffer)
+  "Wait synchronously for PROCESS's Herdr server at SOCKET-PATH.
+Signal `user-error' on an early exit, timeout, or a responsive server error.
+BUFFER is retained for diagnostics."
+  (let ((deadline (+ (float-time) herdr-startup-timeout))
+        (probe nil)
+        (fatal nil))
+    (while (and (process-live-p process)
+                (< (float-time) deadline)
+                (not (eq probe :ready))
+                (not fatal))
+      (setq probe (herdr--server-probe socket-path))
+      (when (and (consp probe) (eq (car probe) :error))
+        (setq fatal (cdr probe)))
+      (unless (or fatal (eq probe :ready))
+        (accept-process-output
+         process (max 0.01 (min 0.05 (- deadline (float-time)))))))
+    (cond
+     ((eq probe :ready) t)
+     (fatal
+      (herdr--server-start-failure
+       session socket-path buffer (error-message-string fatal)))
+     ((not (process-live-p process))
+      (herdr--server-start-failure
+       session socket-path buffer
+       (format "process exited with status %s"
+               (process-exit-status process))))
+     (t
+      (herdr--server-start-failure
+       session socket-path buffer
+       (format "readiness timeout after %.1f seconds" herdr-startup-timeout))))))
+
+(defun herdr--abort-launched-server (socket-path process)
+  "Terminate the newly launched PROCESS for SOCKET-PATH after startup failure.
+Only a process owned by `herdr-start' is ever passed here.  Its process buffer
+is deliberately retained for diagnostics."
+  (herdr--forget-server-process socket-path process)
+  (when (process-live-p process)
+    (delete-process process)))
+
+;;;###autoload
+(defun herdr-start ()
+  "Start the configured local Herdr Session and connect Emacs to it.
+The configured Session must be a valid non-nil name and
+`herdr-socket-path' must be unset.  An already-running target is reused;
+otherwise this starts `herdr --session NAME server' as a no-query process,
+waits synchronously up to `herdr-startup-timeout', and then calls
+`herdr-connect' with the exact resolved socket.  The managed process remains
+alive after this command returns.  Signals `user-error' for invalid
+configuration or startup failure, and preserves typed connection/protocol
+errors from the final connect."
+  (interactive)
+  (let* ((target (herdr--server-start-target))
+         (session (car target))
+         (socket-path (cadr target)))
+    (unless (and (numberp herdr-startup-timeout)
+                 (> herdr-startup-timeout 0))
+      (user-error "`herdr-startup-timeout' must be a positive number"))
+    (when (and herdr--conn
+               (not (equal socket-path
+                           (herdr--connection-socket-path herdr--conn))))
+      (user-error
+       "`herdr-start' targets %s, but Emacs is pinned to %s; run `herdr-disconnect' first"
+       socket-path (herdr--connection-socket-path herdr--conn)))
+    (if (and herdr--conn
+             (equal socket-path (herdr--connection-socket-path herdr--conn))
+             (herdr-connected-p))
+        t
+      (let ((probe (herdr--server-probe socket-path)))
+        (cond
+         ((eq probe :ready)
+          (herdr-connect socket-path))
+         ((and (consp probe) (eq (car probe) :error))
+          (user-error "Herdr server at %s responded but is unusable: %s"
+                      socket-path (error-message-string (cdr probe))))
+         (t
+          (let* ((process (herdr--server-process-for socket-path))
+                 (launched nil)
+                 descriptor buffer)
+            (unless process
+              (let ((executable (herdr--server-start-executable)))
+                (setq descriptor
+                      (condition-case err
+                          (herdr--launch-server-process
+                           session socket-path executable)
+                        (herdr-error
+                         (user-error
+                          "Could not launch Herdr Session %S: %s; diagnostics in %s"
+                          session (error-message-string err)
+                          (or (plist-get (cdr err) :buffer) "*herdr-log*"))))))
+              (setq process (plist-get descriptor :process)
+                    buffer (plist-get descriptor :buffer)
+                    launched t))
+            (unless buffer
+              (setq buffer (process-buffer process)))
+            (condition-case err
+                (herdr--await-server-start
+                 session socket-path process buffer)
+              (error
+               (when launched
+                 (herdr--abort-launched-server socket-path process))
+               (signal (car err) (cdr err))))
+            ;; A server that became ready belongs to the user's local
+            ;; Session even when the subsequent Emacs bootstrap fails; do
+            ;; not terminate it here.
+            (herdr-connect socket-path))))))))
+
+;;;###autoload
+(defun herdr-stop ()
+  "Stop the targeted Herdr server after disconnecting Emacs.
+Interactively, ask for confirmation because all panes and agents owned by
+the server will exit.  The request uses the current connection's pinned
+socket when one exists; otherwise it resolves the configured endpoint.
+Returns Herdr's `server.stop' result and propagates typed protocol errors."
+  (interactive)
+  (when (or (not (called-interactively-p 'interactive))
+            (yes-or-no-p
+             "Stop Herdr? All server-owned panes and agents will exit. "))
+    (let* ((connection herdr--conn)
+           (socket-path
+            (or (and connection
+                     (herdr--connection-socket-path connection))
+                (herdr-protocol-socket-path)))
+           result)
+      ;; Save SOCKET-PATH before disconnecting: disconnect clears the
+      ;; connection object and cancels all reconnect state.
+      (herdr-disconnect)
+      (let ((herdr-socket-path socket-path))
+        (setq result (herdr-protocol-request "server.stop" nil)))
+      (herdr--forget-server-process socket-path)
+      (when (called-interactively-p 'interactive)
+        (message "Stopped Herdr server at %s" socket-path))
+      result)))
 
 
 ;;; --- RPC passthrough ----------------------------------------------

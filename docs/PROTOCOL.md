@@ -33,6 +33,12 @@ assumed — but Herdr may change between versions, so the client must always:
   must be a safe single path component. The resolved endpoint is saved on
   the connection and reused by reconnect and every RPC, so a later setting
   change does not move a live connection.
+- The explicit Emacs command `herdr-start` launches the configured named
+  Session through the CLI as `herdr --session NAME server` and waits for the
+  resolved socket to answer `ping`. It is a narrow local lifecycle command,
+  not Session enumeration or switching. The explicit `herdr-stop` command
+  disconnects Emacs first and then sends the `server.stop` RPC on the saved
+  socket; it does not invoke a stop CLI command.
 - **Newline-delimited JSON.** Each message is one UTF-8 JSON object terminated by
   `\n`. A single JSON object may be split across multiple `recv` calls, so a
   client must buffer until the terminating `\n`.
