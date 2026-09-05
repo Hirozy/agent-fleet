@@ -11,7 +11,9 @@ interaction is needed.
 
 Agent Fleet deliberately focuses on agents. It uses Herdr workspaces, panes,
 worktrees, and events to provision and locate them, but it is not a general
-Emacs frontend for managing every Herdr Session or Workspace resource.
+Emacs frontend for managing every Herdr Session or Workspace resource. The
+only server-lifecycle controls it provides are the explicit local
+`herdr-start` and `herdr-stop` commands described below.
 
 ## Features
 
@@ -19,6 +21,8 @@ Emacs frontend for managing every Herdr Session or Workspace resource.
   context and filters.
 - Agent lifecycle commands: start, prompt, wait, read, interrupt, rename, switch,
   and kill.
+- Explicit local Herdr server lifecycle commands: `herdr-start` and
+  `herdr-stop`.
 - Automatic connection to a running Herdr server on first use.
 - `project.el` integration and per-agent Git worktree isolation.
 - Parallel tasks that run multiple agents in independent worktrees.
@@ -29,7 +33,8 @@ Emacs frontend for managing every Herdr Session or Workspace resource.
 ## Requirements
 
 - Emacs 29.1 or newer.
-- A running Herdr server reachable through its local Unix socket.
+- The Herdr CLI reachable on PATH, or a running Herdr server reachable through
+  its local Unix socket.
 - `transient` 0.7.2 or newer.
 - One or more supported agent CLIs, such as Claude Code, Codex, or Pi.
 - Magit for the optional status and diff integration.
@@ -75,11 +80,20 @@ With the prefix above, these commands are available:
 
 ## Quick start
 
-Start the Herdr server, then open the dashboard:
+Start the configured local Herdr Session, then open the dashboard:
 
 ```text
+M-x herdr-start
 M-x agent-fleet
 ```
+
+`herdr-start` launches the configured Session as the supervised headless
+process `herdr --session NAME server`, waits for its socket to become ready,
+and connects Emacs to that exact socket. To stop it explicitly, use
+`M-x herdr-stop`; after confirmation, Emacs disconnects first and sends the
+`server.stop` request. Stopping exits all panes and agents owned by that
+server. The process is supervised by Emacs after `herdr-start` returns; it is
+not an independent daemon managed by Agent Fleet.
 
 By default, the first dashboard or control command connects to Herdr
 automatically. From the dashboard, press `h` to open the transient command
@@ -497,31 +511,48 @@ The dashboard mode line reports `Reconnecting`/`Disconnected` during these
 transitions (see [Dashboard](#dashboard)), so a stale-looking list is never
 silent about why.
 
+Use `M-x herdr-start` when Emacs should launch the configured local Session.
+If `M-x agent-fleet` cannot connect to that Session's socket, it reports
+`Herdr session "NAME" is not running; run M-x herdr-start, then retry`.
+`herdr-start` requires a valid non-nil `agent-fleet-default-session-name` and no explicit
+`herdr-socket-path`; it waits synchronously up to `herdr-startup-timeout` and
+keeps a diagnostic process buffer if startup fails. If the target is already
+running, no duplicate process is started. `M-x herdr-stop` is the explicit
+shutdown command; it asks for confirmation and uses `server.stop` against the
+current connection's pinned socket when available. Neither command performs
+Session enumeration or runtime Session switching.
+
 The socket is discovered with the following precedence (highest first):
 a nonempty explicit `herdr-socket-path`; the configured
-`herdr-default-session-name`; the `HERDR_SOCKET_PATH` environment
+`agent-fleet-default-session-name`; the `HERDR_SOCKET_PATH` environment
 variable; and the default `~/.config/herdr/herdr.sock`. The default
 Session is `default`, so normal startup does not invoke `herdr status`.
 Override the location explicitly with
 `herdr-socket-path`, or name a Herdr Session with
-`herdr-default-session-name`:
+`agent-fleet-default-session-name`:
 
 ```elisp
 ;; Use the default Session (~/.config/herdr/herdr.sock).
-(setq herdr-default-session-name "default")
+(setq agent-fleet-default-session-name "default")
 
 ;; Use a named Session (~/.config/herdr/sessions/work/herdr.sock).
-(setq herdr-default-session-name "work")
+(setq agent-fleet-default-session-name "work")
 ```
 
 A Session name must be a safe single path component (no separator or
-NUL, not `.` or `..`). The client only resolves the path; it never
-creates directories or starts Herdr, so a configured Session whose
-socket is missing is a connection error with a `herdr session attach
-NAME` hint. Set `herdr-default-session-name` to `nil` only to use
+NUL, not `.` or `..`). Ordinary connection discovery only resolves the
+path; it never creates directories or starts Herdr, so a configured Session
+whose socket is missing is a connection error with a `herdr session attach
+NAME` hint. Use `M-x herdr-start` to launch a valid configured named Session.
+Set `agent-fleet-default-session-name` to `nil` only to use
 `HERDR_SOCKET_PATH` or the default socket path without a named Session;
 the client does not auto-discover a different active Session with
 `herdr status`.
+
+`agent-fleet-default-session-name` is an alias for the underlying
+`herdr-default-session-name`. Both names share one value, and existing
+Herdr configuration remains supported. The Fleet name is available in
+`M-x customize-group RET agent-fleet`.
 
 This is a connection-configuration option: changing it does not affect
 an existing connection. Reconnect and every RPC stay pinned to the
@@ -542,8 +573,10 @@ groups; set them with `setq` or <kbd>M-x customize-group RET agent-fleet</kbd>.
 
 | Option | Default | Meaning |
 |---|---|---|
-| `herdr-socket-path` | `nil` | Explicit Herdr Unix socket path; highest discovery precedence. `nil` uses `herdr-default-session-name`, then `HERDR_SOCKET_PATH`, then `~/.config/herdr/herdr.sock` |
-| `herdr-default-session-name` | `"default"` | Default Herdr Session name. A valid name resolves to its socket (`default` → `~/.config/herdr/herdr.sock`; other → `~/.config/herdr/sessions/NAME/herdr.sock`). `nil` skips named-Session resolution and uses `HERDR_SOCKET_PATH` or the default socket path. Changing it does not affect an existing connection; only the next connect after a disconnect resolves it |
+| `herdr-socket-path` | `nil` | Explicit Herdr Unix socket path; highest discovery precedence. `nil` uses `agent-fleet-default-session-name`, then `HERDR_SOCKET_PATH`, then `~/.config/herdr/herdr.sock` |
+| `agent-fleet-default-session-name` | `"default"` | Alias for `herdr-default-session-name`. A valid name resolves to its socket (`default` → `~/.config/herdr/herdr.sock`; other → `~/.config/herdr/sessions/NAME/herdr.sock`). `nil` skips named-Session resolution and uses `HERDR_SOCKET_PATH` or the default socket path. Changing it does not affect an existing connection; only the next connect after a disconnect resolves it |
+| `herdr-executable` | `"herdr"` | Herdr executable used by `M-x herdr-start`; it is invoked as `herdr --session NAME server` without a shell |
+| `herdr-startup-timeout` | `10.0` | Maximum seconds `M-x herdr-start` waits for the local server socket to become ready |
 | `herdr-protocol-request-timeout` | `5.0` | Default timeout in seconds for a synchronous Herdr request |
 | `herdr-protocol-ping-timeout` | `3.0` | Timeout in seconds for a `ping` |
 | `herdr-subscription-start-timeout` | `3.0` | Seconds to wait for the `subscription_started` acknowledgement |
@@ -605,7 +638,8 @@ must be started manually. `agent-fleet-agent-editor-command` must invoke
 ## Low-level Herdr client
 
 The `herdr` library is available for direct protocol access
-(`M-x herdr-connect`, `M-x herdr-disconnect`, and `M-x herdr-doctor`), but most
+(`M-x herdr-connect`, `M-x herdr-start`, `M-x herdr-stop`,
+`M-x herdr-disconnect`, and `M-x herdr-doctor`), but most
 users should prefer the `agent-fleet-*` commands, which resolve targets, keep
 the local model synchronized, and expose lifecycle hooks. The protocol uses one
 short-lived socket per request and one long-lived event subscription; Herdr

@@ -23,6 +23,42 @@
 
 ;;; --- Test harness ---------------------------------------------------
 
+(ert-deftest agent-fleet-session-alias-shares-canonical-setting ()
+  "Fleet configuration is discoverable and uses Herdr's single value."
+  (should (eq (indirect-variable 'agent-fleet-default-session-name)
+              'herdr-default-session-name))
+  (should (custom-variable-p 'agent-fleet-default-session-name))
+  (should (member '(agent-fleet-default-session-name custom-variable)
+                  (get 'agent-fleet 'custom-group)))
+  (let ((herdr-default-session-name "default")
+        (herdr-socket-path nil))
+    (setq agent-fleet-default-session-name "work")
+    (should (equal herdr-default-session-name "work"))
+    (should (equal (herdr--server-start-target)
+                   (list "work" (herdr-protocol--session-socket-path "work"))))
+    (setq herdr-default-session-name "other")
+    (should (equal agent-fleet-default-session-name "other"))))
+
+(ert-deftest agent-fleet-session-alias-preserves-early-configuration ()
+  "Both configuration names survive loading the package in fresh Emacs."
+  (let ((directory (file-name-directory (locate-library "agent-fleet"))))
+    (dolist (variable '(agent-fleet-default-session-name
+                       herdr-default-session-name))
+      (with-temp-buffer
+        (should
+         (zerop
+          (call-process
+           (expand-file-name invocation-name invocation-directory) nil t nil
+           "--batch" "-Q" "-L" directory "--eval"
+           (prin1-to-string
+            `(progn
+               (setq load-prefer-newer t)
+               (setq ,variable "early-session")
+               (require 'agent-fleet)
+               (unless (and (equal agent-fleet-default-session-name "early-session")
+                            (equal herdr-default-session-name "early-session"))
+                 (error "Early Session configuration was lost")))))))))))
+
 (defun agent-fleet-test--pump (&optional n)
   "Pump the event loop N (default 8) times so async I/O lands."
   (dotimes (_ (or n 8))

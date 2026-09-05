@@ -1173,7 +1173,21 @@ override use `agent-fleet-dashboard-open-buffer', `-open-child-frame', or
 the list from `agent.list' on open, refreshes from the event bus, and
 connects according to `agent-fleet-auto-connect'."
   (interactive)
-  (agent-fleet-dashboard--open agent-fleet-dashboard-display))
+  (condition-case err
+      (agent-fleet-dashboard--open agent-fleet-dashboard-display)
+    (agent-fleet-not-connected
+     (let ((cause (plist-get (cdr err) :cause)))
+       (if (and (called-interactively-p 'interactive)
+                (memq (car-safe cause)
+                      '(herdr-connection-error herdr-timeout-error))
+                (stringp herdr-default-session-name)
+                (herdr-protocol--session-name-valid-p
+                 herdr-default-session-name)
+                (not (and herdr-socket-path
+                          (not (equal herdr-socket-path "")))))
+           (user-error "Herdr session \"%s\" is not running; run M-x herdr-start, then retry"
+                       herdr-default-session-name)
+         (signal (car err) (cdr err)))))))
 
 ;;;###autoload
 (defun agent-fleet-dashboard-open-buffer ()

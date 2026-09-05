@@ -51,13 +51,14 @@ default expansion path.
 Allow users to configure the Herdr Session used by the next connection without
 adding a Session management interface:
 
-- add `herdr-default-session-name`, defaulting to nil;
+- add `herdr-default-session-name`, defaulting to `"default"`;
 - keep an explicit `herdr-socket-path` at the highest precedence;
 - require a Session name to be a safe, single path component;
 - do not let a configuration change affect an existing connection; reconnect
   must continue using the endpoint saved on that connection;
-- do not add runtime Session switching, enumeration, multi-Session caches, or
-  server lifecycle commands;
+- do not add runtime Session switching, enumeration, or multi-Session caches;
+  the explicitly approved `herdr-start` and `herdr-stop` commands are the
+  narrow server-lifecycle exception, not a general Session management UI;
 - do not make automatic connection start Herdr; report a missing Session with
   a clear diagnostic and CLI hint.
 
@@ -189,7 +190,8 @@ Unless the user makes a new product decision, do not implement:
 - continuous terminal-output mirroring or agent-state inference from terminal
   text;
 - replacements for Magit, Ghostel, or Herdr;
-- Herdr plugin, integration, or server lifecycle management UI.
+- Herdr plugin, integration, or general server lifecycle management UI beyond
+  the explicit `herdr-start` and `herdr-stop` commands.
 
 ## Suggested implementation order
 
