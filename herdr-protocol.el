@@ -559,6 +559,15 @@ still invoked with an :connection error in that case)."
 
 ;;; --- Ping ----------------------------------------------------------
 
+(defun herdr-protocol-validate-ok (result method)
+  "Validate an explicit Ok acknowledgement RESULT for METHOD.
+Return RESULT, or signal a typed error rather than treating an absent or
+unexpected acknowledgement as successful destructive completion."
+  (unless (and (listp result) (equal (plist-get result :type) "ok"))
+    (signal 'herdr-protocol-error
+            (list :method method :reason 'unexpected-ack :result result)))
+  result)
+
 (cl-defun herdr-protocol-ping (&key (timeout herdr-protocol-ping-timeout))
   "Ping Herdr and return the pong result plist.
 The result looks like (:type \"pong\" :version <ver> :protocol <n>

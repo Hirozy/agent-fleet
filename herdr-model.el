@@ -154,6 +154,71 @@ and `worktree.created'/`opened' events."
 
 ;;; --- Snapshot parsing ---------------------------------------------
 
+(defun herdr-model-parse-tab-cleanup-snapshot (result)
+  "Parse RESULT with strict topology checks for destructive tab cleanup.
+Unlike ordinary display snapshots, missing identities, duplicate rows and
+incomplete pane counts must fail closed rather than imply an empty tab."
+  (let* ((snap (or (plist-get result :snapshot) result))
+         (workspaces (make-hash-table :test 'equal))
+         (tabs (make-hash-table :test 'equal))
+         (panes (make-hash-table :test 'equal))
+         (agents (make-hash-table :test 'equal)))
+    (cl-labels
+        ((bad () (signal 'herdr-protocol-error
+                         '(:reason incomplete-tab-cleanup-snapshot)))
+         (identity (row key)
+           (let ((value (plist-get row key)))
+             (unless (and (stringp value) (not (string-empty-p value)))
+               (bad))
+             value))
+         (insert-row (row key table)
+           (let ((id (identity row key)))
+             (when (gethash id table) (bad))
+             (puthash id row table))))
+      (dolist (key '(:workspaces :tabs :panes :agents))
+        (unless (and (plist-member snap key)
+                     (proper-list-p (plist-get snap key)))
+          (bad)))
+      (dolist (row (plist-get snap :workspaces))
+        (insert-row row :workspace_id workspaces))
+      (dolist (row (plist-get snap :tabs))
+        (insert-row row :tab_id tabs)
+        (unless (gethash (identity row :workspace_id) workspaces) (bad)))
+      (dolist (row (plist-get snap :panes))
+        (insert-row row :pane_id panes)
+        (let ((tab (gethash (identity row :tab_id) tabs)))
+          (unless (and tab (equal (identity row :workspace_id)
+                                 (plist-get tab :workspace_id)))
+            (bad))))
+      (dolist (row (plist-get snap :agents))
+        (insert-row row :pane_id agents)
+        (let ((pane (gethash (plist-get row :pane_id) panes)))
+          (unless (and pane
+                       (equal (identity row :tab_id) (plist-get pane :tab_id))
+                       (equal (identity row :workspace_id)
+                              (plist-get pane :workspace_id)))
+            (bad))))
+      (maphash
+       (lambda (id tab)
+         (let ((count (plist-get tab :pane_count)))
+           (unless (and (integerp count) (> count 0)
+                        (= count (cl-count id (plist-get snap :panes)
+                                           :key (lambda (p) (plist-get p :tab_id))
+                                           :test #'equal)))
+             (bad))))
+       tabs)
+      (maphash
+       (lambda (id workspace)
+         (let ((count (plist-get workspace :tab_count)))
+           (unless (and (integerp count) (> count 0)
+                        (= count (cl-count id (plist-get snap :tabs)
+                                           :key (lambda (tab)
+                                                  (plist-get tab :workspace_id))
+                                           :test #'equal)))
+             (bad))))
+       workspaces))
+    (herdr-model-parse-snapshot result)))
+
 (defun herdr-model-parse-snapshot (result)
   "Build a `herdr-session' from a snapshot RESULT plist.
 RESULT is the decoded `result' field of a session.snapshot response,
