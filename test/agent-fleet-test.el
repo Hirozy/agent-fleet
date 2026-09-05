@@ -23,6 +23,162 @@
 
 ;;; --- Test harness ---------------------------------------------------
 
+(defun agent-fleet-test--cleanup-snapshot ()
+  "Return three empty tabs in one Workspace and one in another."
+  (list :workspaces (list (list :workspace_id "w1" :tab_count 3)
+                          (list :workspace_id "w2" :tab_count 1))
+        :tabs (cl-loop for id in '("t1" "t2" "t3" "t4")
+                       collect (list :tab_id id :pane_count 1
+                                     :workspace_id (if (equal id "t4") "w2" "w1")))
+        :panes (cl-loop for id in '("t1" "t2" "t3" "t4")
+                        collect (list :pane_id (concat id "p") :tab_id id :agent nil
+                                      :workspace_id (if (equal id "t4") "w2" "w1")))
+        :agents nil))
+
+(defmacro agent-fleet-test--with-cleanup (&rest body)
+  "Run BODY with mutable snapshot, injected failures and recorded closes."
+  (declare (indent 0))
+  `(let ((snapshot (agent-fleet-test--cleanup-snapshot))
+         (herdr--conn (make-herdr--connection :socket-path "/tmp/cleanup.sock"))
+         (herdr-model--cache nil)
+         (snapshot-count 0) (before-snapshot nil)
+         (close-failures nil) (closes nil))
+     (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+               ((symbol-function 'herdr-connected-p) (lambda () t))
+               ((symbol-function 'herdr-request)
+                (lambda (method &optional params &rest _)
+                  (cond
+                   ((equal method "session.snapshot")
+                    (cl-incf snapshot-count)
+                    (when before-snapshot (funcall before-snapshot))
+                    (copy-tree snapshot))
+                   ((equal method "tab.close")
+                    (let* ((id (alist-get 'tab_id params))
+                           (tab (cl-find id (plist-get snapshot :tabs)
+                                         :key (lambda (row) (plist-get row :tab_id))
+                                         :test #'equal)))
+                      (push id closes)
+                      (when (member id close-failures)
+                        (signal 'herdr-request-error '(:code "close_failed")))
+                      (setf (plist-get snapshot :tabs)
+                            (delete tab (plist-get snapshot :tabs)))
+                      (setf (plist-get snapshot :panes)
+                            (cl-remove id (plist-get snapshot :panes)
+                                       :key (lambda (row) (plist-get row :tab_id))
+                                       :test #'equal))
+                      (dolist (ws (plist-get snapshot :workspaces))
+                        (when (equal (plist-get ws :workspace_id)
+                                     (plist-get tab :workspace_id))
+                          (cl-decf (plist-get ws :tab_count))))
+                      '(:type "ok")))
+                   (t (ert-fail (format "Unexpected RPC: %s" method)))))))
+       ,@body)))
+
+(ert-deftest agent-fleet-cleanup-tabs-preserves-last-tabs ()
+  (agent-fleet-test--with-cleanup
+    (let ((result (agent-fleet-cleanup-tabs)))
+      (should (equal (plist-get result :closed) '("t1" "t2")))
+      (should (equal (plist-get result :skipped) '("t3" "t4")))
+      (should-not (plist-get result :failed))
+      (should-not (herdr-model-cache)))))
+
+(ert-deftest agent-fleet-cleanup-tabs-protects-agent-states-and-splits ()
+  (dolist (state '("working" "idle" "done" "blocked" "unknown"))
+    (agent-fleet-test--with-cleanup
+      (let ((pane '(:pane_id "split" :tab_id "t1" :workspace_id "w1")))
+        (setf (plist-get (car (plist-get snapshot :tabs)) :pane_count) 2)
+        (push pane (plist-get snapshot :panes))
+        (push (append pane (list :agent "codex" :agent_status state))
+              (plist-get snapshot :agents)))
+      (agent-fleet-cleanup-tabs)
+      (should-not (member "t1" closes))))
+  (dolist (source '(pane pending))
+    (agent-fleet-test--with-cleanup
+      (if (eq source 'pane)
+          (setf (plist-get (car (plist-get snapshot :panes)) :agent) "codex")
+        (push '(:pane_id "t1p" :tab_id "t1" :workspace_id "w1" :launch_pending t)
+              (plist-get snapshot :agents)))
+      (agent-fleet-cleanup-tabs)
+      (should-not (member "t1" closes)))))
+
+(ert-deftest agent-fleet-cleanup-tabs-rechecks-before-close ()
+  (agent-fleet-test--with-cleanup
+    (setq before-snapshot
+          (lambda ()
+            (when (= snapshot-count 2)
+              (setf (plist-get (car (plist-get snapshot :panes)) :agent) "codex"))))
+    (let ((result (agent-fleet-cleanup-tabs)))
+      (should-not (member "t1" closes))
+      (should (member "t1" (plist-get result :skipped)))))
+  (agent-fleet-test--with-cleanup
+    (setq before-snapshot
+          (lambda ()
+            (when (= snapshot-count 2)
+              (setq herdr-model--cache (herdr-model--empty-session))
+              (puthash "t1p" (make-herdr-agent :id "t1p" :tab-id "t1")
+                       (herdr-session-agents herdr-model--cache)))))
+    (agent-fleet-cleanup-tabs)
+    (should-not (member "t1" closes))))
+
+(ert-deftest agent-fleet-cleanup-tabs-reports-partial-failure ()
+  (agent-fleet-test--with-cleanup
+    (setq close-failures '("t1"))
+    (let ((result (agent-fleet-cleanup-tabs)))
+      (should (equal '("t2") (plist-get result :closed)))
+      (should (equal "t1" (caar (plist-get result :failed)))))))
+
+(ert-deftest agent-fleet-cleanup-tabs-missing-ack-is-not-success ()
+  (agent-fleet-test--with-cleanup
+    (let ((request (symbol-function 'herdr-request)))
+      (cl-letf (((symbol-function 'herdr-request)
+                 (lambda (method &optional params &rest _)
+                   (if (equal method "tab.close") nil
+                     (funcall request method params)))))
+        (let ((result (agent-fleet-cleanup-tabs)))
+          (should-not (plist-get result :closed))
+          (should (= 2 (length (plist-get result :failed)))))))))
+
+(ert-deftest agent-fleet-cleanup-tabs-connection-change-prevents-close ()
+  (agent-fleet-test--with-cleanup
+    (setq before-snapshot
+          (lambda ()
+            (when (= snapshot-count 2)
+              (setq herdr--conn
+                    (make-herdr--connection :socket-path "/tmp/other.sock")))))
+    (let ((result (agent-fleet-cleanup-tabs)))
+      (should-not closes)
+      (should (= snapshot-count 2))
+      (should (= 2 (length (plist-get result :failed)))))))
+
+(ert-deftest agent-fleet-cleanup-tabs-incomplete-snapshot-prevents-close ()
+  (agent-fleet-test--with-cleanup
+    (setf (plist-get snapshot :panes) (cdr (plist-get snapshot :panes)))
+    (should-error (agent-fleet-cleanup-tabs) :type 'herdr-protocol-error)
+    (should-not closes)))
+
+(ert-deftest agent-fleet-cleanup-tabs-disappearing-tab-is-skipped ()
+  (agent-fleet-test--with-cleanup
+    (setq before-snapshot
+          (lambda ()
+            (when (= snapshot-count 2)
+              (setf (plist-get snapshot :tabs) (cdr (plist-get snapshot :tabs))
+                    (plist-get snapshot :panes) (cdr (plist-get snapshot :panes))
+                    (plist-get (car (plist-get snapshot :workspaces)) :tab_count) 2))))
+    (let ((result (agent-fleet-cleanup-tabs)))
+      (should (member "t1" (plist-get result :skipped)))
+      (should-not (member "t1" closes))
+      (should (equal '("t2") (plist-get result :closed))))))
+
+(ert-deftest agent-fleet-cleanup-tabs-no-candidates-does-not-confirm ()
+  (agent-fleet-test--with-cleanup
+    (dolist (pane (plist-get snapshot :panes))
+      (setf (plist-get pane :agent) "codex"))
+    (cl-letf (((symbol-function 'called-interactively-p) (lambda (_) t))
+              ((symbol-function 'yes-or-no-p)
+               (lambda (_) (ert-fail "No candidates should not prompt"))))
+      (agent-fleet-cleanup-tabs)
+      (should-not closes))))
+
 (ert-deftest agent-fleet-session-alias-shares-canonical-setting ()
   "Fleet configuration is discoverable and uses Herdr's single value."
   (should (eq (indirect-variable 'agent-fleet-default-session-name)

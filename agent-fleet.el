@@ -1552,6 +1552,100 @@ so fleet consumers depend on the agent-fleet hook, not `herdr' directly."
 (agent-fleet--configure-auto-connect)
 
 
+;;; --- Agent-free tab cleanup -----------------------------------------
+
+(defun agent-fleet--tab-has-agent-p (tab session)
+  "Return non-nil if any pane or agent in SESSION occupies TAB."
+  (let ((id (herdr-tab-id tab)))
+    (or (cl-some (lambda (agent) (equal id (herdr-agent-tab-id agent)))
+                 (herdr-model-agents session))
+        (cl-some (lambda (pane)
+                   (and (equal id (herdr-pane-tab-id pane))
+                        (herdr-pane-agent pane)))
+                 (herdr-model-panes session)))))
+
+(defun agent-fleet--cleanup-tabs-check-connection (connection)
+  "Require the original live CONNECTION throughout tab cleanup."
+  (unless (and (eq connection (herdr-connection)) (herdr-connected-p))
+    (signal 'herdr-connection-error '(:reason cleanup-connection-changed))))
+
+(defun agent-fleet--cleanup-tabs-snapshot (connection)
+  "Fetch an authoritative tab cleanup snapshot on CONNECTION."
+  (agent-fleet--cleanup-tabs-check-connection connection)
+  (let ((session (herdr-model-parse-tab-cleanup-snapshot
+                  (herdr-request "session.snapshot" nil))))
+    (agent-fleet--cleanup-tabs-check-connection connection)
+    session))
+
+;;;###autoload
+(defun agent-fleet-cleanup-tabs ()
+  "Close agent-free tabs in the connected Herdr Session.
+Preserve every agent regardless of status, and each Workspace's last tab.
+Interactively confirm once: closing a tab also closes its ordinary shells
+and other terminal processes.  Recheck a fresh snapshot before each close;
+Herdr has no atomic conditional-close RPC, so concurrent launches can race.
+Return a plist with :closed tab IDs, :skipped tab IDs, and :failed entries
+of (TAB-ID . ERROR).  Declining confirmation adds :cancelled t.
+No global cache is replaced; pushed events maintain the existing model."
+  (interactive)
+  (agent-fleet--ensure-connected)
+  (let* ((connection (herdr-connection))
+         (session (agent-fleet--cleanup-tabs-snapshot connection))
+         (tabs (herdr-model-tabs session))
+         (remaining (make-hash-table :test 'equal))
+         candidates closed skipped failed cancelled)
+    (dolist (tab tabs)
+      (cl-incf (gethash (herdr-tab-workspace-id tab) remaining 0)))
+    (dolist (tab tabs)
+      (unless (agent-fleet--tab-has-agent-p tab session)
+        (let ((workspace (herdr-tab-workspace-id tab)))
+          (if (> (gethash workspace remaining) 1)
+              (progn (push (herdr-tab-id tab) candidates)
+                     (cl-decf (gethash workspace remaining)))
+            (push (herdr-tab-id tab) skipped)))))
+    (setq candidates (nreverse candidates))
+    (if (and candidates (called-interactively-p 'interactive)
+             (not (yes-or-no-p
+                   (format "Close %d agent-free tab(s)? Their shells and other processes will also close. "
+                           (length candidates)))))
+        (setq cancelled t)
+      (dolist (id candidates)
+        (condition-case err
+            (let* ((current (agent-fleet--cleanup-tabs-snapshot connection))
+                   (tab (herdr-model-find-tab current id)))
+              (if (or (null tab)
+                      (agent-fleet--tab-has-agent-p tab current)
+                      ;; A push may announce a launch while an older snapshot
+                      ;; response is in flight.  Positive live-cache evidence
+                      ;; must veto closing even if the response predates it.
+                      (and (herdr-model-cache)
+                           (agent-fleet--tab-has-agent-p
+                            tab (herdr-model-cache)))
+                      (<= (cl-count (herdr-tab-workspace-id tab)
+                                    (herdr-model-tabs current)
+                                    :key #'herdr-tab-workspace-id :test #'equal)
+                          1))
+                  (push id skipped)
+                (agent-fleet--cleanup-tabs-check-connection connection)
+                (herdr-protocol-validate-ok
+                 (herdr-request "tab.close" `((tab_id . ,id))) "tab.close")
+                (push id closed)))
+          (error (push (cons id err) failed)))))
+    (setq closed (nreverse closed) skipped (nreverse skipped)
+          failed (nreverse failed))
+    (when (called-interactively-p 'interactive)
+      (message "Tab cleanup: %s%d closed, %d skipped, %d failed%s"
+               (if cancelled "cancelled; " "")
+               (length closed) (length skipped) (length failed)
+               (if failed
+                   (concat ": " (mapconcat
+                                  (lambda (entry)
+                                    (format "%s: %s" (car entry)
+                                            (error-message-string (cdr entry))))
+                                  failed "; "))
+                 "")))
+    (list :closed closed :skipped skipped :failed failed :cancelled cancelled)))
+
 ;;; --- Doctor ---------------------------------------------------------
 
 (defun agent-fleet--doctor-agent-checks ()

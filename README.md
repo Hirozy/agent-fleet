@@ -635,6 +635,22 @@ must be started manually. `agent-fleet-agent-editor-command` must invoke
 | `agent-fleet-attach-buffer-prefix` | `*agent:` | Prefix for attach buffer names (buffer is `PREFIX<name>*`) |
 | `agent-fleet-attach-inhibit-evil-escape` | `t` | Inhibit `evil-escape` locally in attach buffers to avoid duplicated input |
 
+## Clean up agent-free tabs
+
+Run `M-x agent-fleet-cleanup-tabs` to close tabs without agents in the
+currently connected Session, across its Workspaces. The command asks for
+confirmation because ordinary shells and other processes in those tabs also
+close. Agents in every state, including idle, done, unknown and starting,
+are protected; a done agent is still an agent.
+
+The last tab of each Workspace is retained to avoid closing the Workspace.
+The command checks a fresh snapshot before every close and stops issuing
+requests if the connection changes. It reports closed, skipped and failed
+tabs; failed closes can be retried by invoking the command again. Herdr has
+no atomic close-if-agent-free operation, so a concurrent agent launch after
+the final check can still race with closing. Do not launch agents in candidate
+tabs while cleanup runs. The live cache is updated by Herdr events.
+
 ## Low-level Herdr client
 
 The `herdr` library is available for direct protocol access
