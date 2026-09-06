@@ -195,6 +195,39 @@
     (setq herdr-default-session-name "other")
     (should (equal agent-fleet-default-session-name "other"))))
 
+(ert-deftest agent-fleet-session-alias-preserves-deferred-custom ()
+  "Actual deferred use-package customization survives alias registration."
+  (let ((directory (file-name-directory (locate-library "agent-fleet"))))
+    (dolist (preload '(nil herdr agent-fleet-autoloads))
+      (dolist (value '("agent-fleet" nil))
+        (with-temp-buffer
+          (let* ((form
+                  `(progn
+                     (setq load-prefer-newer t)
+                     (require 'use-package)
+                     ,(when preload `(require ',preload))
+                     (eval '(use-package agent-fleet
+                              :commands (agent-fleet)
+                              :custom (agent-fleet-default-session-name ,value)))
+                     (require 'agent-fleet-dashboard)
+                     (unless (and (equal agent-fleet-default-session-name ,value)
+                                  (equal herdr-default-session-name ,value)
+                                  (equal (cadr (assq 'use-package
+                                                     (get 'herdr-default-session-name
+                                                          'theme-value)))
+                                         ,value))
+                       (error "Deferred Customize value lost: %S"
+                              herdr-default-session-name))
+                     (setq agent-fleet-default-session-name "later")
+                     (load "agent-fleet" nil t)
+                     (unless (equal herdr-default-session-name "later")
+                       (error "Reload reapplied stale customization"))))
+                 (status
+                  (call-process
+                   (expand-file-name invocation-name invocation-directory) nil t nil
+                   "--batch" "-Q" "-L" directory "--eval" (prin1-to-string form))))
+            (ert-info ((buffer-string)) (should (zerop status)))))))))
+
 (ert-deftest agent-fleet-session-alias-preserves-early-configuration ()
   "Both configuration names survive loading the package in fresh Emacs."
   (let ((directory (file-name-directory (locate-library "agent-fleet"))))

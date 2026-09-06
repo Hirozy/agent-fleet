@@ -52,11 +52,36 @@
 ;; Declare the alias before loading Herdr so an early user setting becomes
 ;; the canonical value before its defcustom installs the default.
 ;;;###autoload
-(defvaralias 'agent-fleet-default-session-name 'herdr-default-session-name
+(progn
+  ;; Deferred Customize settings can precede alias registration.  Their
+  ;; properties belong to the alias symbol until we transfer them to the
+  ;; canonical option.  Do this only once, never on a subsequent reload.
+  (when (eq (indirect-variable 'agent-fleet-default-session-name)
+            'agent-fleet-default-session-name)
+    (let ((saved (get 'agent-fleet-default-session-name 'saved-value)))
+      (when saved
+        (dolist (property '(saved-value theme-value saved-variable-comment
+                                       variable-comment))
+          (put 'herdr-default-session-name property
+               (get 'agent-fleet-default-session-name property)))
+        ;; Keep the owning theme's records aligned with the canonical name
+        ;; too, so disabling/re-enabling that theme addresses the same option.
+        (dolist (entry (get 'agent-fleet-default-session-name 'theme-value))
+          (dolist (setting (get (car entry) 'theme-settings))
+            (when (and (eq (car setting) 'theme-value)
+                       (eq (cadr setting) 'agent-fleet-default-session-name))
+              (setcar (cdr setting) 'herdr-default-session-name))))
+        ;; Herdr may already be loaded.  In that case no future defcustom
+        ;; initialization will apply the deferred value for us.
+        (when (default-boundp 'herdr-default-session-name)
+          (funcall (or (get 'herdr-default-session-name 'custom-set)
+                       #'set-default)
+                   'herdr-default-session-name (eval (car saved) t))))))
+  (defvaralias 'agent-fleet-default-session-name 'herdr-default-session-name
   "Default Herdr Session used by Agent Fleet.
 Alias for `herdr-default-session-name'; both names share one value.
 Changing it affects the next connection after an explicit disconnect,
-not the endpoint of an existing connection.")
+not the endpoint of an existing connection."))
 
 ;; Package installation generates and loads this file automatically.  A source
 ;; checkout creates it with `make autoloads'; loading it here keeps the README's

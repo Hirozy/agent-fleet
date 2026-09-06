@@ -553,6 +553,8 @@ the client does not auto-discover a different active Session with
 `herdr-default-session-name`. Both names share one value, and existing
 Herdr configuration remains supported. The Fleet name is available in
 `M-x customize-group RET agent-fleet`.
+The Fleet name also supports deferred `use-package :custom` settings before
+the package is loaded; no explicit `require` is needed for this option.
 
 This is a connection-configuration option: changing it does not affect
 an existing connection. Reconnect and every RPC stay pinned to the
