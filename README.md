@@ -122,7 +122,10 @@ subscription: events received while `agent.list` is in flight are queued, the
 server snapshot is installed first, and the queued events are then replayed in
 arrival order. A newer status or lifecycle event therefore cannot be replaced
 by an older list response, and received events are still replayed if the refresh
-fails.
+fails. Repeating `M-x agent-fleet` focuses the existing dashboard window or
+frame instead of creating another dashboard; the explicit
+`agent-fleet-dashboard-open-*` commands still provide one-shot display
+overrides.
 
 | Key | Action |
 |---|---|

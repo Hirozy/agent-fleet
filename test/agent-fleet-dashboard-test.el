@@ -363,6 +363,79 @@ would not catch an accidental `add-function' wrapper around a nil hook."
                            (cdr modified))))
     (should (eq 'dashboard focused))))
 
+(ert-deftest agent-fleet-dashboard-main-command-reuses-existing-container ()
+  "Repeated main-command opens select one dashboard across frame contexts.
+
+The first open creates the configured display.  Later opens from the
+dashboard itself and another frame select the existing window, including
+when its frame is iconified or invisible.  If that container was deleted,
+the next open creates a replacement.  Explicit display calls still bypass
+this reuse path."
+  (let ((buffer (generate-new-buffer " *agent-fleet-dashboard-reuse*"))
+        (existing-window nil)
+        (display-count 0)
+        (caller 'origin)
+        (visibility 'icon)
+        (agent-fleet-dashboard-display 'child-frame)
+        focused-frames
+        made-visible
+        selected-windows)
+    (unwind-protect
+        (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+                  ((symbol-function 'agent-fleet-dashboard--prepare-buffer)
+                   (lambda () buffer))
+                  ((symbol-function 'agent-fleet-dashboard--detect-context)
+                   #'ignore)
+                  ((symbol-function 'agent-fleet-dashboard--refresh) #'ignore)
+                  ((symbol-function
+                    'agent-fleet-dashboard--position-on-highlight)
+                   #'ignore)
+                  ((symbol-function 'selected-frame) (lambda () caller))
+                  ((symbol-function 'get-buffer-window)
+                   (lambda (_buffer &optional _all-frames)
+                     existing-window))
+                  ((symbol-function 'window-frame)
+                   (lambda (_window) 'dashboard-frame))
+                  ((symbol-function 'frame-live-p) (lambda (_frame) t))
+                  ((symbol-function 'frame-visible-p)
+                   (lambda (_frame) visibility))
+                  ((symbol-function 'make-frame-visible)
+                   (lambda (frame) (push frame made-visible)))
+                  ((symbol-function 'select-frame-set-input-focus)
+                   (lambda (frame) (push frame focused-frames)))
+                  ((symbol-function 'select-window)
+                   (lambda (window) (push window selected-windows)))
+                  ((symbol-function 'agent-fleet-dashboard--display)
+                   (lambda (_buffer _display)
+                     (cl-incf display-count)
+                     (setq existing-window 'dashboard-window))))
+          ;; The first invocation has no existing dashboard and creates one.
+          (agent-fleet)
+          ;; Reopening from the dashboard's frame reuses its iconified frame.
+          (setq caller 'dashboard-frame
+                visibility 'icon)
+          (agent-fleet)
+          ;; Reopening from another frame also reuses it, even if hidden.
+          (setq caller 'other-frame
+                visibility nil)
+          (agent-fleet)
+          ;; A deleted container leaves no live window, so the next open
+          ;; creates a new one rather than treating the buffer as displayed.
+          (setq existing-window nil
+                caller 'origin
+                visibility t)
+          (agent-fleet)
+          (should (= 2 display-count))
+          (should (equal '(dashboard-frame dashboard-frame) focused-frames))
+          (should (equal '(dashboard-frame dashboard-frame) made-visible))
+          (should (equal '(dashboard-window dashboard-window) selected-windows))
+          ;; A one-shot backend command remains an explicit override.
+          (setq existing-window 'dashboard-window)
+          (agent-fleet-dashboard--open 'buffer)
+          (should (= 3 display-count)))
+      (when (buffer-live-p buffer)
+        (kill-buffer buffer)))))
+
 (ert-deftest agent-fleet-dashboard-row-display-selects-origin-frame ()
   "Display-producing row actions leave dashboard frames for their origin."
   (let (focused shown)
