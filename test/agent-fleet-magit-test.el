@@ -128,25 +128,25 @@ worktree path yields nil."
 
 ;;; --- Availability guard ---------------------------------------------
 
-(ert-deftest agent-fleet-magit-status-in-buffer-errors-when-magit-absent ()
-  "When Magit is not installed, `agent-fleet-magit-status-in-buffer' `user-error's
+(ert-deftest agent-fleet-magit-status-errors-when-magit-absent ()
+  "When Magit is not installed, `agent-fleet-magit-status' `user-error's
 clearly (Magit is an optional dependency).  The guard fires
 before agent resolution, so any target triggers it."
   (skip-unless (not (featurep 'magit)))
-  (should-error (agent-fleet-magit-status-in-buffer (make-herdr-agent :id "x"))
+  (should-error (agent-fleet-magit-status (make-herdr-agent :id "x"))
                 :type 'user-error))
 
-(ert-deftest agent-fleet-magit-diff-in-buffer-errors-when-magit-absent ()
-  "Likewise `agent-fleet-magit-diff-in-buffer' `user-error's without Magit."
+(ert-deftest agent-fleet-magit-diff-errors-when-magit-absent ()
+  "Likewise `agent-fleet-magit-diff' `user-error's without Magit."
   (skip-unless (not (featurep 'magit)))
-  (should-error (agent-fleet-magit-diff-in-buffer (make-herdr-agent :id "x"))
+  (should-error (agent-fleet-magit-diff (make-herdr-agent :id "x"))
                 :type 'user-error))
 
 
 ;;; --- Command wiring (Magit stubbed) ---------------------------------
 
-(ert-deftest agent-fleet-magit-status-in-buffer-calls-magit-status-with-root ()
-  "`agent-fleet-magit-status-in-buffer' opens `magit-status' on the agent's resolved
+(ert-deftest agent-fleet-magit-status-calls-magit-status-with-root ()
+  "`agent-fleet-magit-status' opens `magit-status' on the agent's resolved
 root.  `--available-p' is stubbed to t and `magit-status' to a capture
 lambda, so this runs without Magit installed."
   (let ((repo (agent-fleet-magit-test--make-git-repo))
@@ -161,13 +161,13 @@ lambda, so this runs without Magit installed."
                        (push dir captured)
                        'status-domain-value)))
             (should (eq 'status-domain-value
-                        (agent-fleet-magit-status-in-buffer agent))))
+                        (agent-fleet-magit-status agent))))
           (should (= 1 (length captured)))
           (should (file-equal-p root (car captured))))
       (when (file-exists-p repo) (delete-directory repo t)))))
 
-(ert-deftest agent-fleet-magit-diff-in-buffer-calls-magit-diff-working-tree ()
-  "`agent-fleet-magit-diff-in-buffer' calls `magit-diff-working-tree' with
+(ert-deftest agent-fleet-magit-diff-calls-magit-diff-working-tree ()
+  "`agent-fleet-magit-diff' calls `magit-diff-working-tree' with
 `default-directory' bound to the agent's root.  Magit stubbed."
   (let ((repo (agent-fleet-magit-test--make-git-repo))
         captured)
@@ -181,7 +181,7 @@ lambda, so this runs without Magit installed."
                        (push default-directory captured)
                        'diff-domain-value)))
             (should (eq 'diff-domain-value
-                        (agent-fleet-magit-diff-in-buffer agent))))
+                        (agent-fleet-magit-diff agent))))
           (should (= 1 (length captured)))
           (should (file-equal-p root (car captured))))
       (when (file-exists-p repo) (delete-directory repo t)))))
@@ -200,7 +200,7 @@ lambda, so this runs without Magit installed."
               (should-not (agent-fleet-display--outcome-value outcome)))))
       (when (file-exists-p repo) (delete-directory repo t)))))
 
-(ert-deftest agent-fleet-magit-status-in-buffer-no-root-messages ()
+(ert-deftest agent-fleet-magit-status-no-root-messages ()
   "An agent with no accessible git root messages and returns nil (no error)
 even when Magit is available."
   (let ((dir (make-temp-file "af-magit-nogit-" t))
@@ -210,7 +210,7 @@ even when Magit is available."
                    (lambda () t))
                   ((symbol-function 'message)
                    (lambda (format &rest args) (setq msg (apply #'format format args)))))
-          (should-not (agent-fleet-magit-status-in-buffer
+          (should-not (agent-fleet-magit-status
                        (make-herdr-agent :id "x" :cwd dir)))
           (should (string-match-p "no accessible git root" msg)))
       (when (file-exists-p dir) (delete-directory dir t)))))

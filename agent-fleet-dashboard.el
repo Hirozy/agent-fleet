@@ -656,7 +656,7 @@ own refresh, but reprinting is harmless and gives instant feedback."
   (interactive)
   (let ((pane-id (agent-fleet-dashboard--agent-at-point)))
     (agent-fleet-dashboard--visit-external-interface
-     (lambda () (agent-fleet-show-output-in-buffer pane-id)))))
+     (lambda () (agent-fleet-show-output pane-id)))))
 
 (defun agent-fleet-dashboard--prompt ()
   "Prompt the agent at point."
@@ -693,15 +693,15 @@ own refresh, but reprinting is harmless and gives instant feedback."
 (defun agent-fleet-dashboard--worktree ()
   "Show the worktree status for the agent at point.
 Displays the worktree path/branch/repo/metadata read-only (no
-pane output).  Delegates to `agent-fleet-worktree-status-in-buffer'."
+pane output).  Delegates to `agent-fleet-worktree-status'."
   (interactive)
   (let ((pane-id (agent-fleet-dashboard--agent-at-point)))
     (agent-fleet-dashboard--visit-external-interface
-     (lambda () (agent-fleet-worktree-status-in-buffer pane-id)))))
+     (lambda () (agent-fleet-worktree-status pane-id)))))
 
 (defun agent-fleet-dashboard--diff ()
   "Show the working-tree diff for the agent at point.
-Uses the same operation as `agent-fleet-magit-diff-in-buffer' while retaining
+Uses the same operation as `agent-fleet-magit-diff' while retaining
 its explicit presentation outcome for child-dashboard lifecycle decisions."
   (interactive)
   (let ((pane-id (agent-fleet-dashboard--agent-at-point)))
@@ -711,7 +711,7 @@ its explicit presentation outcome for child-dashboard lifecycle decisions."
 
 (defun agent-fleet-dashboard--magit ()
   "Open Magit status for the agent at point.
-Uses the same operation as `agent-fleet-magit-status-in-buffer' while retaining
+Uses the same operation as `agent-fleet-magit-status' while retaining
 its explicit presentation outcome for child-dashboard lifecycle decisions."
   (interactive)
   (let ((pane-id (agent-fleet-dashboard--agent-at-point)))
@@ -1388,7 +1388,7 @@ The package binds NO global keys."
   "a" #'agent-fleet
   "s" #'agent-fleet-start
   "p" #'agent-fleet-prompt
-  "o" #'agent-fleet-show-output-in-buffer
+  "o" #'agent-fleet-show-output
   "i" #'agent-fleet-interrupt
   "!" #'agent-fleet-next-needs-attention)
 
