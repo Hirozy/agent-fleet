@@ -649,7 +649,7 @@ message for quick auditing."
     (dolist (kind '(herdr-connection-error herdr-timeout-error))
       (cl-letf (((symbol-function 'called-interactively-p) (lambda (_) t))
                 ((symbol-function 'agent-fleet-dashboard--open)
-                 (lambda (_)
+                 (lambda (&rest _)
                    (signal 'agent-fleet-not-connected
                            (list :cause (list kind :reason 'unavailable))))))
         (should
@@ -663,17 +663,17 @@ message for quick auditing."
         (cl-letf (((symbol-function 'called-interactively-p)
                    (lambda (_) interactive))
                   ((symbol-function 'agent-fleet-dashboard--open)
-                   (lambda (_) (signal (car failure) (cdr failure)))))
+                   (lambda (&rest _) (signal (car failure) (cdr failure)))))
           (should (equal failure (should-error (agent-fleet)))))))
     (let ((failure '(agent-fleet-not-connected
                      :cause (herdr-connection-error :reason unavailable))))
       (cl-letf (((symbol-function 'agent-fleet-dashboard--open)
-                 (lambda (_) (signal (car failure) (cdr failure)))))
+                 (lambda (&rest _) (signal (car failure) (cdr failure)))))
         (should (equal failure (should-error (agent-fleet))))))
     (let ((herdr-socket-path "/tmp/custom-herdr.sock"))
       (cl-letf (((symbol-function 'called-interactively-p) (lambda (_) t))
                 ((symbol-function 'agent-fleet-dashboard--open)
-                 (lambda (_)
+                 (lambda (&rest _)
                    (signal 'agent-fleet-not-connected
                            '(:cause (herdr-connection-error))))))
         (should-error (call-interactively #'agent-fleet)
