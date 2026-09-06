@@ -89,8 +89,9 @@ Set to nil to disable notifications entirely."
 (defcustom agent-fleet-dashboard-display 'buffer
   "How the `agent-fleet' command displays its dashboard.
 
-This variable is the sole specifier of how `M-x agent-fleet' presents the
-dashboard; the one-shot `agent-fleet-dashboard-open-buffer',
+When no dashboard is already displayed, this selects how `M-x agent-fleet'
+presents it; a repeated invocation focuses the existing dashboard.  The
+one-shot `agent-fleet-dashboard-open-buffer',
 `-open-child-frame', and `-open-frame' commands override it per
 invocation.
 
@@ -1113,21 +1114,6 @@ read from SRC but set in the dashboard buffer (the current buffer)."
         (when root
           (setq-local agent-fleet-dashboard--focus-project root))))))
 
-(defun agent-fleet-dashboard--open (display)
-  "Connect, prepare and open the dashboard using DISPLAY backend."
-  (agent-fleet--ensure-connected)
-  (let ((src (current-buffer))
-        (buffer (agent-fleet-dashboard--prepare-buffer)))
-    (with-current-buffer buffer
-      (agent-fleet-dashboard--detect-context src)
-      (agent-fleet-dashboard--refresh))
-    (agent-fleet-dashboard--display buffer display)
-    ;; Position point on the highlighted agent after the buffer is displayed,
-    ;; so the window's point and hl-line overlay reflect the highlight.
-    (with-current-buffer buffer
-      (agent-fleet-dashboard--position-on-highlight))
-    buffer))
-
 (defun agent-fleet-dashboard--select-buffer-window (buffer)
   "Select the existing window displaying BUFFER, across all live frames.
 Return the selected window, or nil when BUFFER is not currently visible.
@@ -1135,10 +1121,37 @@ The helper also focuses a child or standalone frame so commands invoked from
 desktop notification callbacks visibly land on the dashboard."
   (when-let* ((window (get-buffer-window buffer t))
               (frame (window-frame window)))
-    (select-window window)
     (when (frame-live-p frame)
-      (select-frame-set-input-focus frame))
-    window))
+      ;; `get-buffer-window' with t includes iconified and invisible frames.
+      ;; Make such a frame usable before selecting its window; otherwise an
+      ;; already-open dashboard can remain hidden when invoked from elsewhere.
+      (when (not (eq (frame-visible-p frame) t))
+        (make-frame-visible frame))
+      (select-frame-set-input-focus frame)
+      (select-window window)
+      window)))
+
+(defun agent-fleet-dashboard--open (display &optional reuse-existing)
+  "Connect, prepare and open the dashboard using DISPLAY backend.
+When REUSE-EXISTING is non-nil, select a live window already displaying the
+dashboard instead of invoking DISPLAY.  This is used by the main
+`agent-fleet' command so repeated invocations focus the existing dashboard;
+the explicit one-shot display commands leave it nil to honor their backend
+override."
+  (agent-fleet--ensure-connected)
+  (let ((src (current-buffer))
+        (buffer (agent-fleet-dashboard--prepare-buffer)))
+    (with-current-buffer buffer
+      (agent-fleet-dashboard--detect-context src)
+      (agent-fleet-dashboard--refresh))
+    (unless (and reuse-existing
+                 (agent-fleet-dashboard--select-buffer-window buffer))
+      (agent-fleet-dashboard--display buffer display))
+    ;; Position point on the highlighted agent after the buffer is displayed,
+    ;; so the window's point and hl-line overlay reflect the highlight.
+    (with-current-buffer buffer
+      (agent-fleet-dashboard--position-on-highlight))
+    buffer))
 
 (defun agent-fleet-dashboard--focus-agent (pane-id)
   "Open/select the dashboard and reveal the row for PANE-ID.
@@ -1166,15 +1179,16 @@ If active filters hide PANE-ID, they are cleared before the row is selected."
 (defun agent-fleet ()
   "Open the agent-fleet dashboard.
 
-The display form is `agent-fleet-dashboard-display' and only that
-variable selects how this command presents the dashboard; for a one-shot
-override use `agent-fleet-dashboard-open-buffer', `-open-child-frame', or
-`-open-frame'.  The dashboard lists every Herdr-managed agent, reconciles
+When no dashboard is already displayed, `agent-fleet-dashboard-display'
+selects how this command presents it; a repeated invocation focuses the
+existing dashboard.  For a one-shot override use
+`agent-fleet-dashboard-open-buffer', `-open-child-frame', or `-open-frame'.
+The dashboard lists every Herdr-managed agent, reconciles
 the list from `agent.list' on open, refreshes from the event bus, and
 connects according to `agent-fleet-auto-connect'."
   (interactive)
   (condition-case err
-      (agent-fleet-dashboard--open agent-fleet-dashboard-display)
+      (agent-fleet-dashboard--open agent-fleet-dashboard-display t)
     (agent-fleet-not-connected
      (let ((cause (plist-get (cdr err) :cause)))
        (if (and (called-interactively-p 'interactive)
