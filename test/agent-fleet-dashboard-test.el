@@ -1134,20 +1134,74 @@ rests on a real agent row."
   (should-not (where-is-internal 'agent-fleet global-map)))
 
 (ert-deftest agent-fleet-command-map-keys ()
-  "The prefix map binds the documented commands."
-  (should (eq (lookup-key agent-fleet-command-map "a") #'agent-fleet))
-  (should (eq (lookup-key agent-fleet-command-map "s") #'agent-fleet-start))
-  (should (eq (lookup-key agent-fleet-command-map "p") #'agent-fleet-prompt))
-  (should (eq (lookup-key agent-fleet-command-map "o") #'agent-fleet-show-output))
-  (should (eq (lookup-key agent-fleet-command-map "i") #'agent-fleet-interrupt))
-  (dolist (command '(agent-fleet-start agent-fleet-prompt
-                     agent-fleet-wait agent-fleet-interrupt agent-fleet-rename
-                     agent-fleet-kill agent-fleet-switch agent-fleet-show-output))
-    (should (commandp command)))
+  "The prefix map groups commands for buffers without an attached pane."
+  (dolist (binding
+           '(("a" . agent-fleet)
+             ("s" . agent-fleet-start)
+             ("N" . agent-fleet-start-for-project)
+             ("p" . agent-fleet-prompt)
+             ("P" . agent-fleet-prompt-dwim)
+             ("o" . agent-fleet-show-output)
+             ("i" . agent-fleet-interrupt)
+             ("t" . agent-fleet-attach)
+             ("l" . agent-fleet-list)
+             ("L" . agent-fleet-list-project-agents)
+             ("w" . agent-fleet-worktree-status)
+             ("m" . agent-fleet-magit-status)
+             ("d" . agent-fleet-magit-diff)
+             ("k" . agent-fleet-send-keys)
+             ("x" . agent-fleet-kill)
+             ("r" . agent-fleet-rename)
+             ("!" . agent-fleet-next-needs-attention)
+             ("h" . describe-prefix-bindings)
+             ("?" . describe-prefix-bindings)))
+    (let ((command (cdr binding)))
+      (should (eq (lookup-key agent-fleet-command-map (kbd (car binding)))
+                  command))
+      (should (commandp command))))
   ;; The documented unquoted map value forms a real prefix keymap.
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c a") agent-fleet-command-map)
     (should (eq (lookup-key map (kbd "C-c a p")) #'agent-fleet-prompt))))
+
+(ert-deftest agent-fleet-command-map-autoloads-bind-all-public-entries ()
+  "Generated autoloads expose the complete command map before features load.
+The subprocess is deliberately batch-only: loading a prefix map must not
+create a GUI frame or require any optional integration module."
+  (skip-unless (executable-find "emacs"))
+  (let* ((directory (or (file-name-directory (locate-library "agent-fleet"))
+                        default-directory))
+         (keys '("a" "s" "N" "p" "P" "o" "i" "t" "l" "L"
+                 "w" "m" "d" "k" "x" "r" "!" "h" "?"))
+         (commands '(agent-fleet agent-fleet-start
+                     agent-fleet-start-for-project agent-fleet-prompt
+                     agent-fleet-prompt-dwim agent-fleet-show-output
+                     agent-fleet-interrupt agent-fleet-attach agent-fleet-list
+                     agent-fleet-list-project-agents agent-fleet-worktree-status
+                     agent-fleet-magit-status agent-fleet-magit-diff
+                     agent-fleet-send-keys agent-fleet-kill agent-fleet-rename
+                     agent-fleet-next-needs-attention describe-prefix-bindings
+                     describe-prefix-bindings))
+         (script (make-temp-file
+                  "af-command-map-autoloads-" nil ".el"
+                  (format
+                   "(require 'agent-fleet-autoloads)\n(prin1 (list\n  (mapcar (lambda (key) (lookup-key agent-fleet-command-map (kbd key))) '%S)\n  (mapcar #'commandp '%S)))\n"
+                   keys commands))))
+    (unwind-protect
+        (with-temp-buffer
+          ;; Keep stdout and stderr separate so startup diagnostics cannot
+          ;; corrupt the Lisp form read below.
+          (should (zerop
+                   (call-process
+                    (expand-file-name invocation-name invocation-directory)
+                    nil (list (current-buffer) nil) nil
+                    "--batch" "-Q" "-L" directory "-l" script)))
+          (goto-char (point-min))
+          (let ((result (read (current-buffer))))
+            (should (equal commands (nth 0 result)))
+            (should (equal (make-list (length commands) t)
+                           (nth 1 result)))))
+      (delete-file script))))
 
 
 ;;; --- Row keys -----------------------------------------
