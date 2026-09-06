@@ -34,7 +34,7 @@
 ;;
 ;; The mode installs `:around' advice on `agent-fleet-read-agent-name'
 ;; -- the shared reader that the interactive forms of
-;; `agent-fleet-attach', `agent-fleet-show-output-in-buffer',
+;; `agent-fleet-attach', `agent-fleet-show-output',
 ;; `agent-fleet-switch', `agent-fleet-kill', `agent-fleet-interrupt',
 ;; and the other selection commands all call -- so every entry point
 ;; that goes through the
@@ -108,7 +108,7 @@ PROMPT is passed through."
 When on, this installs `:around' advice on
 `agent-fleet-read-agent-name' -- the shared public reader that the
 interactive forms of `agent-fleet-attach',
-`agent-fleet-show-output-in-buffer', `agent-fleet-switch',
+`agent-fleet-show-output', `agent-fleet-switch',
 `agent-fleet-kill', `agent-fleet-interrupt', and
 the other selection commands all call.  Because the advice sits on the
 reader, every entry point that goes through it is covered: keys you

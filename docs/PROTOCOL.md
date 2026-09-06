@@ -381,7 +381,7 @@ Notes:
 - **Output is a read-snapshot.** `agent.read` returns a `PaneReadResult`
   (`{pane_id, workspace_id, tab_id, source, format, text, revision,
   truncated}`); it is never mirrored or persisted (§23/§46 — pane output may
-  contain secrets). `agent-fleet-show-output-in-buffer` opens a fresh snapshot in a
+  contain secrets). `agent-fleet-show-output` opens a fresh snapshot in a
   read-only buffer.
 - **`strip_ansi` is a JSON boolean**, not a string. The Emacs client encodes
   `t`→`true` and `nil`/`:false`→`false` (via `(json-false :false)`).

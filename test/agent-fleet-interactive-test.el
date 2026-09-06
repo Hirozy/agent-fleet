@@ -55,16 +55,16 @@
     (agent-fleet-cleanup-tabs . agent-fleet-interactive-cleanup-tabs)
     (agent-fleet-switch . agent-fleet-interactive-rename-kill-switch-list)
     (agent-fleet-list . agent-fleet-interactive-rename-kill-switch-list)
-    (agent-fleet-show-output-in-buffer . agent-fleet-interactive-output-viewer)
+    (agent-fleet-show-output . agent-fleet-interactive-output-viewer)
     (agent-fleet-doctor . agent-fleet-interactive-doctors)
     (agent-fleet-start-for-project . agent-fleet-interactive-project-start)
     (agent-fleet-worktree-list . agent-fleet-interactive-worktrees)
     (agent-fleet-worktree-open . agent-fleet-interactive-worktrees)
     (agent-fleet-worktree-remove . agent-fleet-interactive-worktrees)
-    (agent-fleet-worktree-status-in-buffer . agent-fleet-interactive-worktrees)
+    (agent-fleet-worktree-status . agent-fleet-interactive-worktrees)
     (agent-fleet-worktree-cleanup . agent-fleet-interactive-worktrees)
-    (agent-fleet-magit-status-in-buffer . agent-fleet-interactive-magit)
-    (agent-fleet-magit-diff-in-buffer . agent-fleet-interactive-magit)
+    (agent-fleet-magit-status . agent-fleet-interactive-magit)
+    (agent-fleet-magit-diff . agent-fleet-interactive-magit)
     (agent-fleet-parallel . agent-fleet-interactive-parallel)
     (agent-fleet-task-wait . agent-fleet-interactive-task-commands)
     (agent-fleet-task-cleanup . agent-fleet-interactive-task-commands)
@@ -87,10 +87,10 @@
     (agent-fleet-attach-interrupt . agent-fleet-interactive-attach-current-agent)
     (agent-fleet-attach-kill . agent-fleet-interactive-attach-current-agent)
     (agent-fleet-attach-rename . agent-fleet-interactive-attach-current-agent)
-    (agent-fleet-attach-inspect-in-buffer . agent-fleet-interactive-attach-current-agent)
-    (agent-fleet-attach-worktree-in-buffer . agent-fleet-interactive-attach-current-agent)
-    (agent-fleet-attach-magit-in-buffer . agent-fleet-interactive-attach-current-agent)
-    (agent-fleet-attach-diff-in-buffer . agent-fleet-interactive-attach-current-agent)
+    (agent-fleet-attach-inspect . agent-fleet-interactive-attach-current-agent)
+    (agent-fleet-attach-worktree . agent-fleet-interactive-attach-current-agent)
+    (agent-fleet-attach-magit . agent-fleet-interactive-attach-current-agent)
+    (agent-fleet-attach-diff . agent-fleet-interactive-attach-current-agent)
     (agent-fleet-attach--ctrl-g . agent-fleet-interactive-attach-ctrl-g)
     (agent-fleet-editor-arm-current-attach . agent-fleet-interactive-editor-bridge)
     (agent-fleet-editor-submit . agent-fleet-interactive-editor-buffer)
@@ -980,7 +980,7 @@ no interactive form (asserted in
                      '(:text "interactive output")))
                   ((symbol-function 'display-buffer) (lambda (&rest _) nil)))
           (let ((current-prefix-arg '(4)))
-            (call-interactively #'agent-fleet-show-output-in-buffer))
+            (call-interactively #'agent-fleet-show-output))
           (should (equal "w1:p1" (car captured)))
           (should (= 7 (plist-get (cdr captured) :lines)))
           (with-current-buffer buf-name
@@ -988,11 +988,11 @@ no interactive form (asserted in
             (should (equal "interactive output" (buffer-string)))))
       (when (get-buffer buf-name) (kill-buffer buf-name)))))
 
-(ert-deftest agent-fleet-interactive-obsolete-view-aliases ()
-  "The unsuffixed view names are obsolete aliases of the buffer variants.
-Each alias still dispatches to its `-in-buffer' replacement and carries
-obsolete information naming it; `agent-fleet-read' is a pure Lisp API and
-no longer a command at all."
+(ert-deftest agent-fleet-interactive-view-command-aliases ()
+  "Unsuffixed view names are canonical; old `-in-buffer' names are obsolete.
+Each compatibility alias dispatches to its canonical command and carries
+obsolete information naming it.  Canonical commands must not retain stale
+obsolete metadata from the previous alias direction."
   (dolist (pair '((agent-fleet-show-output
                    . agent-fleet-show-output-in-buffer)
                   (agent-fleet-worktree-status
@@ -1000,12 +1000,77 @@ no longer a command at all."
                   (agent-fleet-magit-status
                    . agent-fleet-magit-status-in-buffer)
                   (agent-fleet-magit-diff
-                   . agent-fleet-magit-diff-in-buffer)))
-    (should (eq (symbol-function (car pair)) (cdr pair)))
+                   . agent-fleet-magit-diff-in-buffer)
+                  (agent-fleet-attach-inspect
+                   . agent-fleet-attach-inspect-in-buffer)
+                  (agent-fleet-attach-worktree
+                   . agent-fleet-attach-worktree-in-buffer)
+                  (agent-fleet-attach-magit
+                   . agent-fleet-attach-magit-in-buffer)
+                  (agent-fleet-attach-diff
+                   . agent-fleet-attach-diff-in-buffer)))
     (should (commandp (car pair)))
-    (let ((info (get (car pair) 'byte-obsolete-info)))
-      (should (eq (car info) (cdr pair)))))
+    (should-not (get (car pair) 'byte-obsolete-info))
+    (should (eq (symbol-function (cdr pair)) (car pair)))
+    (should (commandp (cdr pair)))
+    (let ((info (get (cdr pair) 'byte-obsolete-info)))
+      (should (eq (car info) (car pair)))))
   (should-not (commandp 'agent-fleet-read)))
+
+(ert-deftest agent-fleet-interactive-view-command-autoloads ()
+  "Generated autoloads expose canonical views and obsolete compatibility names."
+  (skip-unless (executable-find "emacs"))
+  (let* ((dir (or (file-name-directory (locate-library "agent-fleet"))
+                  default-directory))
+         (script (make-temp-file
+                  "af-view-autoloads-" nil ".el"
+                  (concat
+                   "(require 'agent-fleet-autoloads)\n"
+                   "(prin1 (list\n"
+                   " (mapcar (lambda (name) (autoloadp (symbol-function name)))\n"
+                   "         '(agent-fleet-show-output agent-fleet-worktree-status\n"
+                   "           agent-fleet-magit-status agent-fleet-magit-diff\n"
+                   "           agent-fleet-attach-inspect agent-fleet-attach-worktree\n"
+                   "           agent-fleet-attach-magit agent-fleet-attach-diff))\n"
+                   " (mapcar #'commandp\n"
+                   "         '(agent-fleet-show-output-in-buffer\n"
+                   "           agent-fleet-worktree-status-in-buffer\n"
+                   "           agent-fleet-magit-status-in-buffer\n"
+                   "           agent-fleet-magit-diff-in-buffer\n"
+                   "           agent-fleet-attach-inspect-in-buffer\n"
+                   "           agent-fleet-attach-worktree-in-buffer\n"
+                   "           agent-fleet-attach-magit-in-buffer\n"
+                   "           agent-fleet-attach-diff-in-buffer))\n"
+                   " (mapcar (lambda (name) (car (get name 'byte-obsolete-info)))\n"
+                   "         '(agent-fleet-show-output-in-buffer\n"
+                   "           agent-fleet-worktree-status-in-buffer\n"
+                   "           agent-fleet-magit-status-in-buffer\n"
+                   "           agent-fleet-magit-diff-in-buffer\n"
+                   "           agent-fleet-attach-inspect-in-buffer\n"
+                   "           agent-fleet-attach-worktree-in-buffer\n"
+                   "           agent-fleet-attach-magit-in-buffer\n"
+                   "           agent-fleet-attach-diff-in-buffer))))\n"))))
+    (unwind-protect
+        (with-temp-buffer
+          (should (zerop (call-process
+                         (expand-file-name invocation-name invocation-directory)
+                         nil (list (current-buffer) nil) nil
+                         "--batch" "-Q" "-L" dir "-l" script)))
+          (goto-char (point-min))
+          (let ((result (read (current-buffer))))
+            (should (equal '(t t t t t t t t) (nth 0 result)))
+            (should (equal '(t t t t t t t t) (nth 1 result)))
+            (should
+             (equal '(agent-fleet-show-output
+                      agent-fleet-worktree-status
+                      agent-fleet-magit-status
+                      agent-fleet-magit-diff
+                      agent-fleet-attach-inspect
+                      agent-fleet-attach-worktree
+                      agent-fleet-attach-magit
+                      agent-fleet-attach-diff)
+                    (nth 2 result)))))
+      (delete-file script))))
 
 
 (ert-deftest agent-fleet-interactive-list-buffer ()
@@ -1089,7 +1154,7 @@ for a deterministic project."
       (let ((current-prefix-arg '(4)))
         (call-interactively #'agent-fleet-worktree-list))
       (call-interactively #'agent-fleet-worktree-open)
-      (call-interactively #'agent-fleet-worktree-status-in-buffer))
+      (call-interactively #'agent-fleet-worktree-status))
     (should (member nil fetches))
     (should (member "/repo" fetches))
     (should (member "worktree.open" (mapcar #'car requests)))
@@ -1139,8 +1204,8 @@ for a deterministic project."
                (lambda (root) (push (list 'status root) calls)))
               ((symbol-function 'magit-diff-working-tree)
                (lambda (&rest _) (push (list 'diff default-directory) calls))))
-      (call-interactively #'agent-fleet-magit-status-in-buffer)
-      (call-interactively #'agent-fleet-magit-diff-in-buffer))
+      (call-interactively #'agent-fleet-magit-status)
+      (call-interactively #'agent-fleet-magit-diff))
     (should (member '(status "/tmp") calls))
     (should (member '(diff "/tmp") calls))))
 
@@ -1245,14 +1310,14 @@ buffer-local pane id; the inspect pair honors its prefix line count."
                          (t ""))))
                 ((symbol-function 'read-number) (lambda (&rest _) 7))
                 ((symbol-function 'y-or-n-p) (lambda (&rest _) t))
-                ((symbol-function 'agent-fleet-show-output-in-buffer)
+                ((symbol-function 'agent-fleet-show-output)
                  (lambda (target &optional lines &rest _)
                    (push (list 'inspect-buf target lines) calls)))
-                ((symbol-function 'agent-fleet-magit-status-in-buffer)
+                ((symbol-function 'agent-fleet-magit-status)
                  (lambda (target) (push (list 'magit-buf target) calls)))
-                ((symbol-function 'agent-fleet-magit-diff-in-buffer)
+                ((symbol-function 'agent-fleet-magit-diff)
                  (lambda (target) (push (list 'diff-buf target) calls)))
-                ((symbol-function 'agent-fleet-worktree-status-in-buffer)
+                ((symbol-function 'agent-fleet-worktree-status)
                  (lambda (target) (push (list 'worktree-buf target) calls)))
                 ((symbol-function 'agent-fleet-prompt)
                  (lambda (target text) (push (list 'prompt target text) calls)))
@@ -1268,17 +1333,17 @@ buffer-local pane id; the inspect pair honors its prefix line count."
                  (lambda (command &rest _) (push (list 'menu command) calls))))
         ;; Explicit presentation leaves; a prefix on the inspect command
         ;; exercises the `read-number' line-count path.
-        (call-interactively #'agent-fleet-attach-inspect-in-buffer)
+        (call-interactively #'agent-fleet-attach-inspect)
         (let ((current-prefix-arg '(4)))
-          (call-interactively #'agent-fleet-attach-inspect-in-buffer))
+          (call-interactively #'agent-fleet-attach-inspect))
         (call-interactively #'agent-fleet-attach-prompt)
         (call-interactively #'agent-fleet-attach-send-keys)
         (call-interactively #'agent-fleet-attach-interrupt)
         (call-interactively #'agent-fleet-attach-kill)
         (call-interactively #'agent-fleet-attach-rename)
-        (call-interactively #'agent-fleet-attach-worktree-in-buffer)
-        (call-interactively #'agent-fleet-attach-magit-in-buffer)
-        (call-interactively #'agent-fleet-attach-diff-in-buffer)
+        (call-interactively #'agent-fleet-attach-worktree)
+        (call-interactively #'agent-fleet-attach-magit)
+        (call-interactively #'agent-fleet-attach-diff)
         (call-interactively #'agent-fleet-attach-menu)
         (call-interactively #'agent-fleet-attach-mode))
       (dolist (expected '((inspect-buf "w1:p1" nil)
@@ -1952,7 +2017,7 @@ navigation commands; the real skip behavior is exercised in
                (lambda (_) (make-herdr-agent :id "w1:p1" :name "arch")))
               ((symbol-function 'agent-fleet-dashboard--after-row-change)
                (lambda () (push '(refresh) calls)))
-              ((symbol-function 'agent-fleet-show-output-in-buffer)
+              ((symbol-function 'agent-fleet-show-output)
                (lambda (target &rest _) (push (list 'inspect target) calls)))
               ((symbol-function 'agent-fleet-prompt)
                (lambda (target text) (push (list 'prompt target text) calls)))
@@ -1962,7 +2027,7 @@ navigation commands; the real skip behavior is exercised in
                (lambda (target) (push (list 'kill target) calls)))
               ((symbol-function 'agent-fleet-rename)
                (lambda (target name) (push (list 'rename target name) calls)))
-              ((symbol-function 'agent-fleet-worktree-status-in-buffer)
+              ((symbol-function 'agent-fleet-worktree-status)
                (lambda (target) (push (list 'worktree target) calls)))
               ((symbol-function 'agent-fleet-magit--diff-outcome)
                (lambda (target)

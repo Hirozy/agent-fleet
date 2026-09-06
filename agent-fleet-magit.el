@@ -29,8 +29,8 @@
 ;; via Magit's own keys inside the status buffer opened by `m'.
 ;;
 ;; Two entry points, wired to the dashboard `m' / `d' keys:
-;;   `agent-fleet-magit-status-in-buffer'  -> `magit-status' on the agent's repo root
-;;   `agent-fleet-magit-diff-in-buffer'    -> `magit-diff-working-tree' (uncommitted)
+;;   `agent-fleet-magit-status'  -> `magit-status' on the agent's repo root
+;;   `agent-fleet-magit-diff'    -> `magit-diff-working-tree' (uncommitted)
 ;;
 ;; Magit is an OPTIONAL dependency; the doctor already reports
 ;; availability at `herdr.el'.  Entry points `user-error' clearly when Magit
@@ -56,7 +56,7 @@
 
 ;; The presentation-outcome API lives in the display module, which loads
 ;; before this feature; declared here so byte-compilation does not warn,
-;; and required at runtime by the `-in-buffer' entry points.
+;; and required at runtime by the view commands.
 (declare-function agent-fleet-display--make-outcome "agent-fleet-display" (opened &optional value buffer))
 (declare-function agent-fleet-display--outcome-value "agent-fleet-display" (outcome))
 
@@ -156,7 +156,7 @@ dashboard and child-frame lifecycles consume only `:opened'."
 ;;; --- Commands (dashboard `m' / `d') ---------------------------------
 
 ;;;###autoload
-(defun agent-fleet-magit-status-in-buffer (target)
+(defun agent-fleet-magit-status (target)
   "Open Magit status on TARGET's checkout in an ordinary buffer.
 TARGET is an agent name, pane id, symbol, or `herdr-agent' struct.  For a
 worktree agent, status opens on the worktree root; for a bare agent, the
@@ -168,7 +168,7 @@ reinvent).  `user-error's if Magit is not installed."
    (agent-fleet-magit--status-outcome target)))
 
 ;;;###autoload
-(defun agent-fleet-magit-diff-in-buffer (target)
+(defun agent-fleet-magit-diff (target)
   "Show TARGET's working-tree diff in an ordinary buffer.
 Opens `magit-diff-working-tree' scoped to TARGET's checkout -- the
 uncommitted changes the agent is making right now (HEAD vs working tree).
@@ -178,13 +178,18 @@ and pressing `d' there.  `user-error's if Magit is not installed."
   (agent-fleet-display--outcome-value
    (agent-fleet-magit--diff-outcome target)))
 
-;;;###autoload
-(define-obsolete-function-alias 'agent-fleet-magit-status
-  'agent-fleet-magit-status-in-buffer "0.7.0")
+;; These symbols used to be obsolete aliases.  Clear stale metadata when
+;; this file is reloaded after upgrading from that version.
+(put 'agent-fleet-magit-status 'byte-obsolete-info nil)
+(put 'agent-fleet-magit-diff 'byte-obsolete-info nil)
 
 ;;;###autoload
-(define-obsolete-function-alias 'agent-fleet-magit-diff
-  'agent-fleet-magit-diff-in-buffer "0.7.0")
+(define-obsolete-function-alias 'agent-fleet-magit-status-in-buffer
+  'agent-fleet-magit-status "0.8.0")
+
+;;;###autoload
+(define-obsolete-function-alias 'agent-fleet-magit-diff-in-buffer
+  'agent-fleet-magit-diff "0.8.0")
 
 (provide 'agent-fleet-magit)
 ;;; agent-fleet-magit.el ends here

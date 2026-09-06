@@ -274,7 +274,7 @@ exactly once regardless of presentation."
       nil)))
 
 ;;;###autoload
-(defun agent-fleet-worktree-status-in-buffer (target)
+(defun agent-fleet-worktree-status (target)
   "Show the worktree for TARGET's workspace in an ordinary buffer.
 TARGET is an agent name, pane id, symbol, or `herdr-agent' struct.
 Displays the worktree path/branch/repo/metadata read-only (no pane output
@@ -288,9 +288,13 @@ messages when no worktree is open for the workspace."
       (pop-to-buffer (get-buffer agent-fleet-worktree-buffer-name)))
     wt))
 
+;; `agent-fleet-worktree-status' used to be an obsolete alias.  Clear stale
+;; metadata when this file is reloaded after upgrading from that version.
+(put 'agent-fleet-worktree-status 'byte-obsolete-info nil)
+
 ;;;###autoload
-(define-obsolete-function-alias 'agent-fleet-worktree-status
-  'agent-fleet-worktree-status-in-buffer "0.7.0")
+(define-obsolete-function-alias 'agent-fleet-worktree-status-in-buffer
+  'agent-fleet-worktree-status "0.8.0")
 
 
 ;;; --- Cleanup (delete finished worktrees) -----------------------
