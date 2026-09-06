@@ -87,13 +87,15 @@ M-x herdr-start
 M-x agent-fleet
 ```
 
-`herdr-start` launches the configured Session as the supervised headless
-process `herdr --session NAME server`, waits for its socket to become ready,
-and connects Emacs to that exact socket. To stop it explicitly, use
-`M-x herdr-stop`; after confirmation, Emacs disconnects first and sends the
-`server.stop` request. Stopping exits all panes and agents owned by that
-server. The process is supervised by Emacs after `herdr-start` returns; it is
-not an independent daemon managed by Agent Fleet.
+`herdr-start` launches the configured Session as the headless process
+`herdr --session NAME server`, waits for its socket to become ready,
+and connects Emacs to that exact socket. The server is launched detached
+(via `nohup`), so it is not an Emacs child process: it keeps running
+after you quit Emacs, and so do its panes and agents — Emacs is only a
+client that attaches to the server's socket. To stop it explicitly, use
+`M-x herdr-stop`; after confirmation, Emacs disconnects first and sends
+the `server.stop` request. Stopping exits all panes and agents owned by
+that server.
 
 By default, the first dashboard or control command connects to Herdr
 automatically. From the dashboard, press `h` to open the transient command
@@ -516,11 +518,12 @@ If `M-x agent-fleet` cannot connect to that Session's socket, it reports
 `Herdr session "NAME" is not running; run M-x herdr-start, then retry`.
 `herdr-start` requires a valid non-nil `agent-fleet-default-session-name` and no explicit
 `herdr-socket-path`; it waits synchronously up to `herdr-startup-timeout` and
-keeps a diagnostic process buffer if startup fails. If the target is already
-running, no duplicate process is started. `M-x herdr-stop` is the explicit
-shutdown command; it asks for confirmation and uses `server.stop` against the
-current connection's pinned socket when available. Neither command performs
-Session enumeration or runtime Session switching.
+keeps a diagnostic log file if startup fails. The server is launched detached
+and survives Emacs exit, so a later `herdr-start` simply reuses it; if the
+target is already running, no duplicate server is started. `M-x herdr-stop` is
+the explicit shutdown command; it asks for confirmation and uses `server.stop`
+against the current connection's pinned socket when available. Neither command
+performs Session enumeration or runtime Session switching.
 
 The socket is discovered with the following precedence (highest first):
 a nonempty explicit `herdr-socket-path`; the configured

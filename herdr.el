@@ -87,15 +87,16 @@ The actual delay grows exponentially up to `herdr-reconnect-max-delay'."
 (defcustom herdr-executable "herdr"
   "Executable used by `herdr-start' to launch a local Herdr server.
 The executable is resolved with `executable-find' before a process is
-started.  `herdr-start' invokes it with an argument vector; it never
-passes the command through a shell."
+started.  `herdr-start' launches it detached (see
+`herdr--launch-server-process'), so the server outlives the Emacs
+session that started it."
   :type 'file
   :group 'herdr)
 
 (defcustom herdr-startup-timeout 10.0
   "Maximum seconds `herdr-start' waits for the Herdr server to become ready.
-The wait is synchronous and bounded.  The diagnostic process buffer is
-kept when startup fails or times out."
+The wait is synchronous and bounded.  The diagnostic log file is kept
+when startup fails or times out."
   :type 'number
   :group 'herdr)
 
@@ -114,9 +115,11 @@ kept when startup fails or times out."
   "Current `herdr--connection', or nil when fully disconnected.")
 
 (defvar herdr--server-processes nil
-  "Alist of managed Herdr server processes.
-Each entry is (SOCKET-PATH . PROCESS).  These are only processes started by
-`herdr-start'; an externally managed Herdr server is never added here.")
+  "Alist of detached Herdr server processes started by `herdr-start'.
+Each entry is (SOCKET-PATH . PID).  The servers are deliberately NOT
+Emacs children: they are launched detached so they survive Emacs exit
+along with the panes and agents they own.  An externally managed Herdr
+server is never added here.")
 
 (defun herdr-connection ()
   "Return the live connection struct, or nil."
@@ -554,62 +557,100 @@ from an explicit socket, the environment, or a missing configuration."
       (user-error "Herdr executable `%s' was not found on PATH"
                   herdr-executable)))
 
+(defun herdr--pid-live-p (pid)
+  "Return non-nil when a real OS process with PID exists.
+Built on `process-attributes', which answers for detached processes
+that Emacs does not supervise (unlike `process-live-p')."
+  (and (integerp pid)
+       (> pid 0)
+       (and (process-attributes pid) t)))
+
 (defun herdr--server-process-for (socket-path)
-  "Return the live managed server process for SOCKET-PATH, or nil.
-Remove dead process entries while looking up the target."
+  "Return the live managed server PID for SOCKET-PATH, or nil.
+Remove dead PID entries while looking up the target.  A recycled PID can
+rarely revive a dead entry; the readiness probe remains the authority,
+and this lookup only avoids launching a duplicate beside a server this
+Emacs session started."
   (setq herdr--server-processes
         (cl-remove-if-not
          (lambda (entry)
-           (and (process-live-p (cdr entry))
-                (stringp (car entry))))
+           (and (stringp (car entry))
+                (integerp (cdr entry))
+                (herdr--pid-live-p (cdr entry))))
          herdr--server-processes))
   (cdr (assoc socket-path herdr--server-processes)))
 
-(defun herdr--forget-server-process (socket-path &optional process)
+(defun herdr--forget-server-process (socket-path &optional pid)
   "Forget the managed server for SOCKET-PATH.
-When PROCESS is non-nil, remove only an entry whose process is PROCESS."
+When PID is non-nil, remove only an entry whose process is PID."
   (setq herdr--server-processes
         (cl-remove-if
          (lambda (entry)
            (and (equal socket-path (car entry))
-                (or (null process) (eq process (cdr entry)))))
+                (or (null pid) (eq pid (cdr entry)))))
          herdr--server-processes)))
 
-(defun herdr--server-process-sentinel (process event socket-path)
-  "Record that managed PROCESS for SOCKET-PATH exited and retain its buffer."
-  (herdr--forget-server-process socket-path process)
-  (herdr--log 'warn "managed Herdr server %s exited: %s"
-              socket-path (string-trim event)))
+(defun herdr--server-log-file (session)
+  "Return the diagnostic log path for a detached server of SESSION.
+SESSION is validated by `herdr--server-start-target' before launch, so
+the name is safe to embed in a file name.  A detached server has no
+Emacs process buffer, so its launcher redirects stdout/stderr here."
+  (expand-file-name (format "herdr-server-%s.log" session)
+                    temporary-file-directory))
 
 (defun herdr--launch-server-process (session socket-path executable)
-  "Launch a managed headless Herdr SESSION and return a process descriptor.
-The descriptor is a plist containing `:process' and `:buffer'.  The process
-is intentionally left running after this function returns; its diagnostic
-buffer is also retained if launch or readiness later fails."
-  (let* ((buffer (generate-new-buffer
-                  (format "*herdr-server-%s*" session)))
-         (process
-          (condition-case err
-              (apply #'start-process
-                     (format "herdr-server-%s" session)
-                     buffer executable
-                     (list "--session" session "server"))
-            (error
-             (signal 'herdr-connection-error
-                     (list :reason 'launch-failed
-                           :session session
-                           :path socket-path
-                           :buffer (buffer-name buffer)
-                           :detail (error-message-string err)))))))
-    ;; This is a supervised process, not a process that should prompt while
-    ;; Emacs exits.  The process itself remains alive after `herdr-start'.
-    (set-process-query-on-exit-flag process nil)
-    (push (cons socket-path process) herdr--server-processes)
-    (set-process-sentinel
-     process
-     (lambda (proc event)
-       (herdr--server-process-sentinel proc event socket-path)))
-    (list :process process :buffer buffer)))
+  "Launch a detached headless Herdr SESSION and return a server descriptor.
+The descriptor is a plist containing `:pid' and `:log'.  The server runs
+under `nohup' inside a short-lived `sh -c' launcher that backgrounds it,
+reports its PID, and exits; the server is therefore re-parented to init
+rather than remaining an Emacs child process, so it survives Emacs exit
+and every pane and agent it owns survives too.  The argument vector is
+passed as launcher positional parameters, so the shell never
+re-interprets the command itself.  Server output goes to the log file
+named by `herdr--server-log-file'.  Signals `herdr-connection-error'
+with `:reason' `launch-failed' when the launcher cannot run or produce a
+server PID."
+  (let ((log (herdr--server-log-file session))
+        (out (generate-new-buffer " *herdr-server-launch*")))
+    (unwind-protect
+        (let ((status
+               (condition-case err
+                   (process-file shell-file-name nil out nil
+                                 "-c"
+                                 (format
+                                  "nohup \"$0\" \"$@\" </dev/null >%s 2>&1 & echo $!"
+                                  (shell-quote-argument log))
+                                 executable "--session" session "server")
+                 ((file-error process-error)
+                  (signal 'herdr-connection-error
+                          (list :reason 'launch-failed
+                                :session session
+                                :path socket-path
+                                :log log
+                                :detail (error-message-string err)))))))
+          (unless (eq status 0)
+            (signal 'herdr-connection-error
+                    (list :reason 'launch-failed
+                          :session session
+                          :path socket-path
+                          :log log
+                          :detail (format "launcher exited with status %s"
+                                          status))))
+          (let ((pid (ignore-errors
+                       (string-to-number
+                        (string-trim
+                         (with-current-buffer out (buffer-string)))))))
+            (unless (and pid (> pid 0))
+              (signal 'herdr-connection-error
+                      (list :reason 'launch-failed
+                            :session session
+                            :path socket-path
+                            :log log
+                            :detail "launcher produced no server pid")))
+            (push (cons socket-path pid) herdr--server-processes)
+            (list :pid pid :log log)))
+      (when (buffer-live-p out)
+        (kill-buffer out)))))
 
 (defun herdr--server-probe (socket-path)
   "Probe SOCKET-PATH and return `:ready', `:unavailable', or an error pair.
@@ -629,34 +670,37 @@ starting a duplicate process beside it."
       (herdr-error
        (cons :error err)))))
 
-(defun herdr--server-diagnostics (buffer)
-  "Return a bounded diagnostic string from BUFFER, or an empty string."
-  (if (and buffer (buffer-live-p buffer))
-      (with-current-buffer buffer
+(defun herdr--server-diagnostics (log)
+  "Return a bounded diagnostic string from the server log file LOG, or the
+empty string.  A missing or unreadable log yields nothing."
+  (if (and log (file-readable-p log))
+      (with-temp-buffer
+        (ignore-errors (insert-file-contents log))
         (let ((text (string-trim (buffer-string))))
           (if (> (length text) 1000)
               (concat "…" (substring text (- (length text) 1000)))
             text)))
     ""))
 
-(defun herdr--server-start-failure (session socket-path buffer reason)
-  "Signal a useful `user-error' for a failed local server startup."
-  (let ((diagnostics (herdr--server-diagnostics buffer)))
+(defun herdr--server-start-failure (session socket-path log reason)
+  "Signal a useful `user-error' for a failed local server startup.
+LOG is the detached server's diagnostic file, deliberately retained."
+  (let ((diagnostics (herdr--server-diagnostics log)))
     (user-error
      "Herdr Session %S did not start at %s (%s); diagnostics in %s%s"
      session socket-path reason
-     (if (bufferp buffer) (buffer-name buffer) buffer)
+     (or log "the server log")
      (if (string-empty-p diagnostics) ""
        (format ": %s" diagnostics)))))
 
-(defun herdr--await-server-start (session socket-path process buffer)
-  "Wait synchronously for PROCESS's Herdr server at SOCKET-PATH.
+(defun herdr--await-server-start (session socket-path pid log)
+  "Wait synchronously for the detached server PID's Herdr server SOCKET-PATH.
 Signal `user-error' on an early exit, timeout, or a responsive server error.
-BUFFER is retained for diagnostics."
+LOG is retained for diagnostics."
   (let ((deadline (+ (float-time) herdr-startup-timeout))
         (probe nil)
         (fatal nil))
-    (while (and (process-live-p process)
+    (while (and (herdr--pid-live-p pid)
                 (< (float-time) deadline)
                 (not (eq probe :ready))
                 (not fatal))
@@ -664,40 +708,39 @@ BUFFER is retained for diagnostics."
       (when (and (consp probe) (eq (car probe) :error))
         (setq fatal (cdr probe)))
       (unless (or fatal (eq probe :ready))
-        (accept-process-output
-         process (max 0.01 (min 0.05 (- deadline (float-time)))))))
+        (sit-for (max 0.01 (min 0.05 (- deadline (float-time)))))))
     (cond
      ((eq probe :ready) t)
      (fatal
       (herdr--server-start-failure
-       session socket-path buffer (error-message-string fatal)))
-     ((not (process-live-p process))
+       session socket-path log (error-message-string fatal)))
+     ((not (herdr--pid-live-p pid))
       (herdr--server-start-failure
-       session socket-path buffer
-       (format "process exited with status %s"
-               (process-exit-status process))))
+       session socket-path log "server exited before ready"))
      (t
       (herdr--server-start-failure
-       session socket-path buffer
+       session socket-path log
        (format "readiness timeout after %.1f seconds" herdr-startup-timeout))))))
 
-(defun herdr--abort-launched-server (socket-path process)
-  "Terminate the newly launched PROCESS for SOCKET-PATH after startup failure.
-Only a process owned by `herdr-start' is ever passed here.  Its process buffer
+(defun herdr--abort-launched-server (socket-path pid)
+  "Terminate the newly detached server PID for SOCKET-PATH after startup failure.
+Only a PID reported by `herdr-start' is ever passed here.  Its log file
 is deliberately retained for diagnostics."
-  (herdr--forget-server-process socket-path process)
-  (when (process-live-p process)
-    (delete-process process)))
+  (herdr--forget-server-process socket-path pid)
+  (when (herdr--pid-live-p pid)
+    (signal-process pid 'sigterm)))
 
 ;;;###autoload
 (defun herdr-start ()
   "Start the configured local Herdr Session and connect Emacs to it.
 The configured Session must be a valid non-nil name and
 `herdr-socket-path' must be unset.  An already-running target is reused;
-otherwise this starts `herdr --session NAME server' as a no-query process,
-waits synchronously up to `herdr-startup-timeout', and then calls
-`herdr-connect' with the exact resolved socket.  The managed process remains
-alive after this command returns.  Signals `user-error' for invalid
+otherwise this starts `herdr --session NAME server' as a detached process
+(see `herdr--launch-server-process'), waits synchronously up to
+`herdr-startup-timeout', and then calls `herdr-connect' with the exact
+resolved socket.  The detached server is not an Emacs child: it keeps
+running after `kill-emacs', so its panes and agents survive Emacs restarts
+and `herdr-stop' is the only shutdown.  Signals `user-error' for invalid
 configuration or startup failure, and preserves typed connection/protocol
 errors from the final connect."
   (interactive)
@@ -725,10 +768,11 @@ errors from the final connect."
           (user-error "Herdr server at %s responded but is unusable: %s"
                       socket-path (error-message-string (cdr probe))))
          (t
-          (let* ((process (herdr--server-process-for socket-path))
+          (let* ((pid (herdr--server-process-for socket-path))
                  (launched nil)
-                 descriptor buffer)
-            (unless process
+                 (log (herdr--server-log-file session))
+                 descriptor)
+            (unless pid
               (let ((executable (herdr--server-start-executable)))
                 (setq descriptor
                       (condition-case err
@@ -737,19 +781,16 @@ errors from the final connect."
                         (herdr-error
                          (user-error
                           "Could not launch Herdr Session %S: %s; diagnostics in %s"
-                          session (error-message-string err)
-                          (or (plist-get (cdr err) :buffer) "*herdr-log*"))))))
-              (setq process (plist-get descriptor :process)
-                    buffer (plist-get descriptor :buffer)
-                    launched t))
-            (unless buffer
-              (setq buffer (process-buffer process)))
+                          session (error-message-string err) log))))
+                (setq pid (plist-get descriptor :pid)
+                      log (plist-get descriptor :log)
+                      launched t)))
             (condition-case err
                 (herdr--await-server-start
-                 session socket-path process buffer)
+                 session socket-path pid log)
               (error
                (when launched
-                 (herdr--abort-launched-server socket-path process))
+                 (herdr--abort-launched-server socket-path pid))
                (signal (car err) (cdr err))))
             ;; A server that became ready belongs to the user's local
             ;; Session even when the subsequent Emacs bootstrap fails; do
