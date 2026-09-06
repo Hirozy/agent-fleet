@@ -144,8 +144,9 @@ of the dependency graph and must not become core startup dependencies.
 - Keep generic frame lifecycle in `agent-fleet-display.el`. Feature modules
   call its presentation API and must not grow independent frame registries or
   global quit handling.
-- Keep domain/view computation separate from presentation. Explicit
-  `-in-buffer` and `-in-child-frame` commands should share one operation.
+- Keep domain/view computation separate from presentation. Commands with only
+  an ordinary-buffer presentation use unsuffixed names. If multiple
+  presentations are supported, they must share the same domain operation.
 - Use explicit presentation outcomes. A nil domain return can still represent
   a successfully opened view; do not infer display success from arbitrary
   third-party return values.

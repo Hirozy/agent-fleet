@@ -1104,8 +1104,8 @@ this uses `pane_created' to establish the agent with its pane fields."
         (should (herdr-agent-p got))
         (should (equal "arch" (herdr-agent-name got)))))))
 
-(ert-deftest agent-fleet-show-output-in-buffer-view ()
-  "`agent-fleet-show-output-in-buffer' opens a read-only buffer with the
+(ert-deftest agent-fleet-show-output-view ()
+  "`agent-fleet-show-output' opens a read-only buffer with the
 agent's text."
   (with-agent-fleet-mock path server
     (let ((agent (agent-fleet-start 'claude :name "arch")))
@@ -1113,7 +1113,7 @@ agent's text."
       (let ((buf-name "*Agent Output: arch*"))
         (unwind-protect
             (progn
-              (agent-fleet-show-output-in-buffer agent 5)
+              (agent-fleet-show-output agent 5)
               (should (get-buffer buf-name))
               (with-current-buffer buf-name
                 (should (string-match-p "line 1" (buffer-string)))
@@ -1629,7 +1629,7 @@ and annotation, with clean-label candidates (no inlined suffix)."
   (should (member '("m" . agent-fleet-dashboard--magit)
                   (agent-fleet-action-dashboard-bindings)))
   ;; Attach: flat list, one buffer binding per view action; prompt keeps two.
-  (should (member '("o" . agent-fleet-attach-inspect-in-buffer)
+  (should (member '("o" . agent-fleet-attach-inspect)
                   (agent-fleet-action-attach-bindings)))
   (should (member '("S" . agent-fleet-attach-prompt-in-child-frame)
                   (agent-fleet-action-attach-bindings))))

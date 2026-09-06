@@ -77,11 +77,11 @@
 ;; already-required `agent-fleet' base, so it needs no declaration.  Each
 ;; is declared here so `agent-fleet-attach' byte-compiles without a top-level
 ;; `require' of these modules.
-(declare-function agent-fleet-magit-status-in-buffer
+(declare-function agent-fleet-magit-status
                   "agent-fleet-magit" (target))
-(declare-function agent-fleet-magit-diff-in-buffer
+(declare-function agent-fleet-magit-diff
                   "agent-fleet-magit" (target))
-(declare-function agent-fleet-worktree-status-in-buffer
+(declare-function agent-fleet-worktree-status
                   "agent-fleet-worktree" (target))
 ;; Auxiliary child-frame lifecycle (agent-fleet-display).  Loaded lazily so
 ;; the command-map leaves can byte-compile without a top-level require.
@@ -461,7 +461,8 @@ acting on nil."
   (or agent-fleet-attach-pane-id
       (user-error "Not in an agent-fleet attach buffer")))
 
-(defun agent-fleet-attach-inspect-in-buffer (&optional lines)
+;;;###autoload
+(defun agent-fleet-attach-inspect (&optional lines)
   "Show this buffer's agent output as a read snapshot in an ordinary buffer.
 Acts on the agent whose terminal this buffer drives
 (`agent-fleet-attach-pane-id'), so no selection prompt is needed.  With a
@@ -469,7 +470,7 @@ prefix arg, prompt for the line count; otherwise the default
 `agent-fleet-default-read-lines' is used."
   (interactive "P")
   (let ((pane-id (agent-fleet-attach--current-pane-id)))
-    (agent-fleet-show-output-in-buffer pane-id
+    (agent-fleet-show-output pane-id
                              (and lines
                                   (read-number "Lines: "
                                                agent-fleet-default-read-lines)))))
@@ -661,34 +662,53 @@ this buffer, so no selection prompt is needed."
     (unless (or (null name) (string-empty-p name))
       (agent-fleet-rename pane-id name))))
 
-(defun agent-fleet-attach-diff-in-buffer ()
+;;;###autoload
+(defun agent-fleet-attach-diff ()
   "Show this buffer's agent working-tree diff in an ordinary buffer.
 Acts on the agent whose terminal this buffer drives
 (`agent-fleet-attach-pane-id'), so no selection prompt is needed.
 `user-error's if Magit is not installed."
   (interactive)
   (require 'agent-fleet-magit nil t)
-  (agent-fleet-magit-diff-in-buffer
+  (agent-fleet-magit-diff
    (agent-fleet-attach--current-pane-id)))
 
-(defun agent-fleet-attach-magit-in-buffer ()
+;;;###autoload
+(defun agent-fleet-attach-magit ()
   "Open Magit status for this buffer's agent in an ordinary buffer.
 Acts on the agent whose terminal this buffer drives
 (`agent-fleet-attach-pane-id'), so no selection prompt is needed.
 `user-error's if Magit is not installed."
   (interactive)
   (require 'agent-fleet-magit nil t)
-  (agent-fleet-magit-status-in-buffer
+  (agent-fleet-magit-status
    (agent-fleet-attach--current-pane-id)))
 
-(defun agent-fleet-attach-worktree-in-buffer ()
+;;;###autoload
+(defun agent-fleet-attach-worktree ()
   "Show this buffer's agent worktree status in an ordinary buffer.
 Acts on the agent whose terminal this buffer drives
 (`agent-fleet-attach-pane-id'), so no selection prompt is needed."
   (interactive)
   (require 'agent-fleet-worktree nil t)
-  (agent-fleet-worktree-status-in-buffer
+  (agent-fleet-worktree-status
    (agent-fleet-attach--current-pane-id)))
+
+;;;###autoload
+(define-obsolete-function-alias 'agent-fleet-attach-inspect-in-buffer
+  'agent-fleet-attach-inspect "0.8.0")
+
+;;;###autoload
+(define-obsolete-function-alias 'agent-fleet-attach-diff-in-buffer
+  'agent-fleet-attach-diff "0.8.0")
+
+;;;###autoload
+(define-obsolete-function-alias 'agent-fleet-attach-magit-in-buffer
+  'agent-fleet-attach-magit "0.8.0")
+
+;;;###autoload
+(define-obsolete-function-alias 'agent-fleet-attach-worktree-in-buffer
+  'agent-fleet-attach-worktree "0.8.0")
 
 (transient-define-prefix agent-fleet-attach-menu ()
   "Act on the agent this attach buffer is driving.
@@ -704,10 +724,10 @@ ordinary buffer; the compose prompt (`S') opens an auxiliary child frame."
     ("x" "Kill"              agent-fleet-attach-kill)
     ("r" "Rename"            agent-fleet-attach-rename)]
    ["View"
-    ("o" "Inspect output"    agent-fleet-attach-inspect-in-buffer)
-    ("d" "Working-tree diff" agent-fleet-attach-diff-in-buffer)
-    ("m" "Magit status"      agent-fleet-attach-magit-in-buffer)
-    ("w" "Worktree status"   agent-fleet-attach-worktree-in-buffer)]])
+    ("o" "Inspect output"    agent-fleet-attach-inspect)
+    ("d" "Working-tree diff" agent-fleet-attach-diff)
+    ("m" "Magit status"      agent-fleet-attach-magit)
+    ("w" "Worktree status"   agent-fleet-attach-worktree)]])
 
 ;;;###autoload
 (defvar-keymap agent-fleet-attach-command-map
@@ -721,16 +741,16 @@ child frame.  The shared action keys mirror `agent-fleet-action-registry'
 and `h'/`?' (menu) are attach-only.  This map is literal (not
 dolist-generated) so its autoload form carries every binding before
 `agent-fleet-attach' loads."
-  "o" #'agent-fleet-attach-inspect-in-buffer
+  "o" #'agent-fleet-attach-inspect
   "s" #'agent-fleet-attach-prompt
   "S" #'agent-fleet-attach-prompt-in-child-frame
   "k" #'agent-fleet-attach-send-keys
   "i" #'agent-fleet-attach-interrupt
   "x" #'agent-fleet-attach-kill
   "r" #'agent-fleet-attach-rename
-  "d" #'agent-fleet-attach-diff-in-buffer
-  "m" #'agent-fleet-attach-magit-in-buffer
-  "w" #'agent-fleet-attach-worktree-in-buffer
+  "d" #'agent-fleet-attach-diff
+  "m" #'agent-fleet-attach-magit
+  "w" #'agent-fleet-attach-worktree
   "h" #'agent-fleet-attach-menu
   "?" #'agent-fleet-attach-menu)
 

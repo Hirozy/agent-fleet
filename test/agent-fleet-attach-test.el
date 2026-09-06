@@ -510,8 +510,8 @@ leaf commands fail fast instead of acting on nil."
       (kill-buffer buf))))
 
 (ert-deftest agent-fleet-attach-inspect-acts-on-current-agent ()
-  "`agent-fleet-attach-inspect-in-buffer' calls
-`agent-fleet-show-output-in-buffer' with the buffer's pane id and no
+  "`agent-fleet-attach-inspect' calls
+`agent-fleet-show-output' with the buffer's pane id and no
 line count (called as a function, so no prefix arg) — no selection prompt,
 no `agent-fleet-read-agent-name'."
   (let ((buf (generate-new-buffer " *af-inspect*"))
@@ -519,10 +519,10 @@ no `agent-fleet-read-agent-name'."
     (unwind-protect
         (with-current-buffer buf
           (setq-local agent-fleet-attach-pane-id "w1:p2")
-          (cl-letf (((symbol-function #'agent-fleet-show-output-in-buffer)
+          (cl-letf (((symbol-function #'agent-fleet-show-output)
                      (lambda (agent &optional _lines _source)
                        (push agent captured))))
-            (agent-fleet-attach-inspect-in-buffer)))  ; lines nil
+            (agent-fleet-attach-inspect)))  ; lines nil
       (kill-buffer buf))
     (should (equal '("w1:p2") captured))))
 
@@ -570,13 +570,13 @@ compose child frame, and the control keys (`s'/`k'/`i'/`x'/`r') plus
 the user binds the command map to a prefix key."
   (should (keymapp agent-fleet-attach-mode-map))
   (let ((map agent-fleet-attach-command-map))
-    (should (eq #'agent-fleet-attach-inspect-in-buffer
+    (should (eq #'agent-fleet-attach-inspect
                 (lookup-key map (kbd "o"))))
-    (should (eq #'agent-fleet-attach-diff-in-buffer
+    (should (eq #'agent-fleet-attach-diff
                 (lookup-key map (kbd "d"))))
-    (should (eq #'agent-fleet-attach-magit-in-buffer
+    (should (eq #'agent-fleet-attach-magit
                 (lookup-key map (kbd "m"))))
-    (should (eq #'agent-fleet-attach-worktree-in-buffer
+    (should (eq #'agent-fleet-attach-worktree
                 (lookup-key map (kbd "w"))))
     (should (eq #'agent-fleet-attach-prompt
                 (lookup-key map (kbd "s"))))

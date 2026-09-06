@@ -903,7 +903,7 @@ Returns a PaneReadResult plist: (:pane_id :workspace_id :tab_id :source
 :format :text :revision :truncated), unwrapped from the `pane_read'
 envelope.  Defaults to `recent_unwrapped' output, which ignores soft wrapping
 and is best for logs.  This is a Lisp data API, not a command: to view an
-agent's output interactively, use `agent-fleet-show-output-in-buffer'."
+agent's output interactively, use `agent-fleet-show-output'."
   (agent-fleet--ensure-connected)
   (agent-fleet--unwrap-read
    (herdr-request "agent.read"
@@ -1432,7 +1432,7 @@ presentation."
     (cons buf res)))
 
 ;;;###autoload
-(defun agent-fleet-show-output-in-buffer (agent &optional lines source)
+(defun agent-fleet-show-output (agent &optional lines source)
   "Read AGENT's recent output and display it in an ordinary buffer.
 Opens `*Agent Output: <name>*' with the text from `agent.read' in the
 selected frame's window tree.  This is a read-snapshot view, NOT a
@@ -1446,9 +1446,13 @@ count."
     (pop-to-buffer (car pair))
     (cdr pair)))
 
+;; `agent-fleet-show-output' used to be an obsolete alias.  Clear stale
+;; metadata when this file is reloaded after upgrading from that version.
+(put 'agent-fleet-show-output 'byte-obsolete-info nil)
+
 ;;;###autoload
-(define-obsolete-function-alias 'agent-fleet-show-output
-  'agent-fleet-show-output-in-buffer "0.7.0")
+(define-obsolete-function-alias 'agent-fleet-show-output-in-buffer
+  'agent-fleet-show-output "0.8.0")
 
 
 ;;; --- Hook bus ----------------------------------------
@@ -1737,7 +1741,7 @@ agent manifests.  See the environment checks above."
 (defconst agent-fleet-action-registry
   '((inspect :label "Inspect output"
      :dashboard ("o" . agent-fleet-dashboard--inspect)
-     :attach (("o" . agent-fleet-attach-inspect-in-buffer)))
+     :attach (("o" . agent-fleet-attach-inspect)))
     (prompt :label "Prompt"
      :dashboard ("s" . agent-fleet-dashboard--prompt)
      :attach (("s" . agent-fleet-attach-prompt)
@@ -1753,13 +1757,13 @@ agent manifests.  See the environment checks above."
      :attach (("r" . agent-fleet-attach-rename)))
     (worktree :label "Worktree status"
      :dashboard ("w" . agent-fleet-dashboard--worktree)
-     :attach (("w" . agent-fleet-attach-worktree-in-buffer)))
+     :attach (("w" . agent-fleet-attach-worktree)))
     (diff :label "Working-tree diff"
      :dashboard ("d" . agent-fleet-dashboard--diff)
-     :attach (("d" . agent-fleet-attach-diff-in-buffer)))
+     :attach (("d" . agent-fleet-attach-diff)))
     (magit :label "Magit status"
      :dashboard ("m" . agent-fleet-dashboard--magit)
-     :attach (("m" . agent-fleet-attach-magit-in-buffer))))
+     :attach (("m" . agent-fleet-attach-magit))))
   "Single source of the agent actions shared by the dashboard and attach
 surfaces (and a future Embark agent menu).
 Each entry is (NAME :label L :dashboard (key . cmd)

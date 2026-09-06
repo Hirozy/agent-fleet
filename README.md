@@ -201,7 +201,7 @@ applicable.
 | `M-x agent-fleet-start` | Start an agent (prompts for kind and name) |
 | `M-x agent-fleet-prompt` | Send a prompt |
 | `M-x agent-fleet-prompt-and-wait` | Prompt and wait atomically for done/blocked |
-| `M-x agent-fleet-show-output-in-buffer` | Open output in an ordinary buffer |
+| `M-x agent-fleet-show-output` | Open output in an ordinary buffer |
 | `M-x agent-fleet-wait` | Wait for a specific state |
 | `M-x agent-fleet-send-keys` | Send terminal keys |
 | `M-x agent-fleet-interrupt` | Send `Ctrl-C` |
@@ -261,7 +261,7 @@ Standalone worktree commands:
 
 - `M-x agent-fleet-worktree-list`
 - `M-x agent-fleet-worktree-open`
-- `M-x agent-fleet-worktree-status-in-buffer`
+- `M-x agent-fleet-worktree-status`
 - `M-x agent-fleet-worktree-remove`
 - `M-x agent-fleet-worktree-cleanup`
 
@@ -311,7 +311,7 @@ The interactive command prompts for each agent's kind and prompt. Use the
 dashboard `T` key to focus on one task; the task title and its aggregate state
 then show in the mode line. Task state is derived from its members — `done`
 only when all agents are done, `blocked` when one is blocked — and no agent is
-killed when another finishes. Use `M-x agent-fleet-show-output-in-buffer` to
+killed when another finishes. Use `M-x agent-fleet-show-output` to
 inspect individual results, and `M-x agent-fleet-task-cleanup` to remove the
 task's worktrees after preserving any wanted changes.
 
@@ -321,8 +321,8 @@ With Magit installed, the dashboard can open the selected agent's checkout:
 
 - Press `m` for Magit status.
 - Press `d` for the working-tree diff.
-- Run `M-x agent-fleet-magit-status-in-buffer` or
-  `M-x agent-fleet-magit-diff-in-buffer` directly.
+- Run `M-x agent-fleet-magit-status` or
+  `M-x agent-fleet-magit-diff` directly.
 
 The agent's actual checkout is used, including an isolated Herdr worktree. If
 Magit is unavailable, the commands report how to enable the integration.
@@ -330,7 +330,7 @@ Magit is unavailable, the commands report how to enable the integration.
 ## Auxiliary views
 
 Every auxiliary view — recent output, worktree status, Magit status, and the
-working-tree diff — opens in an ordinary Emacs buffer (`-in-buffer`): a
+working-tree diff — opens in an ordinary Emacs buffer: a
 read snapshot of the agent's output or a full Magit session on its
 checkout, sized by Emacs's normal window rules.
 
@@ -343,10 +343,13 @@ single auxiliary child frame per parent, and `M-x
 agent-fleet-dashboard-aux-quit` (or `q` inside the compose buffer) closes
 it and returns focus to the parent.
 
-The unsuffixed view names (`M-x agent-fleet-show-output`,
-`M-x agent-fleet-worktree-status`, `M-x agent-fleet-magit-status`, and
-`M-x agent-fleet-magit-diff`) are obsolete aliases of their `-in-buffer`
-variants and will be removed in a future release.
+The unsuffixed view names are the canonical commands.  The former
+`-in-buffer` names remain as obsolete compatibility aliases:
+`agent-fleet-show-output-in-buffer`, `agent-fleet-worktree-status-in-buffer`,
+`agent-fleet-magit-status-in-buffer`, and `agent-fleet-magit-diff-in-buffer`.
+The same naming rule applies to the attach-buffer view commands; use
+`agent-fleet-attach-inspect`, `agent-fleet-attach-worktree`,
+`agent-fleet-attach-magit`, and `agent-fleet-attach-diff`.
 
 ## Attach to a live terminal
 
