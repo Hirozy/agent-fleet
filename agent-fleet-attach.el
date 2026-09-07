@@ -622,17 +622,6 @@ closing."
   (interactive)
   (agent-fleet-display--aux-close (selected-frame)))
 
-(defun agent-fleet-attach-send-keys ()
-  "Send key notation to the agent this buffer drives.
-Reads a key string (such as \"ctrl+c\", \"enter\", or \"esc\") and delegates
-to `agent-fleet-send-keys'.  Acts on the pane id owned by this buffer, so
-no selection prompt is needed."
-  (interactive)
-  (let ((pane-id (agent-fleet-attach--current-pane-id))
-        (keys (read-string "Keys: ")))
-    (unless (string-empty-p keys)
-      (agent-fleet-send-keys pane-id keys))))
-
 (defun agent-fleet-attach-interrupt ()
   "Send Ctrl-C to the agent this buffer drives.
 Delegates to `agent-fleet-interrupt'.  Acts on the pane id owned by this
@@ -719,7 +708,6 @@ ordinary buffer; the compose prompt (`S') opens an auxiliary child frame."
   [["Agent"
     ("s" "Prompt"            agent-fleet-attach-prompt)
     ("S" "Prompt (compose)"  agent-fleet-attach-prompt-in-child-frame)
-    ("k" "Send keys"         agent-fleet-attach-send-keys)
     ("i" "Interrupt"         agent-fleet-attach-interrupt)
     ("x" "Kill"              agent-fleet-attach-kill)
     ("r" "Rename"            agent-fleet-attach-rename)]
@@ -739,8 +727,8 @@ The package does not bind this map to a prefix by default.  Bind it in
 \"C-c a\" agent-fleet-attach-command-map).
 View keys (`o'/`w'/`m'/`d') open an ordinary buffer; `S' opens the compose
 child frame.  The shared action keys mirror `agent-fleet-action-registry'
-(verified by `agent-fleet-action-registry-attach-sync'); `k' (send keys)
-and `h'/`?' (menu) use the attached pane without an agent prompt.
+(verified by `agent-fleet-action-registry-attach-sync'); `h'/`?' (menu)
+uses the attached pane without an agent prompt.
 This map is literal (not dolist-generated) so its autoload form carries every
 binding before
 `agent-fleet-attach' loads."
@@ -748,7 +736,6 @@ binding before
   ;; agent because the attach buffer owns the target pane id.
   "s" #'agent-fleet-attach-prompt
   "S" #'agent-fleet-attach-prompt-in-child-frame
-  "k" #'agent-fleet-attach-send-keys
   "i" #'agent-fleet-attach-interrupt
   "x" #'agent-fleet-attach-kill
   "r" #'agent-fleet-attach-rename

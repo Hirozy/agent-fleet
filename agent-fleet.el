@@ -938,25 +938,6 @@ AgentInfo plist (unwrapped); its `:agent_status' is the outcome."
 ;;; --- Keys / Interrupt ----------------------------------------------
 
 ;;;###autoload
-(defun agent-fleet-send-keys (agent keys)
-  "Send KEYS to AGENT via `agent.send_keys' (Level 2 input).
-KEYS is a single key-notation string (\"ctrl+c\", \"enter\", \"esc\",
-\"shift+tab\", \"f1\", ...) or a list of them.  Returns the agent's
-AgentInfo plist if the server returned one, else the raw ack."
-  (interactive
-   (list (agent-fleet-read-agent-name "Send keys to agent")
-         (read-string "Keys (for example ctrl+c or enter): ")))
-  (agent-fleet--ensure-connected)
-  (let ((key-list (if (stringp keys) (list keys)
-                    (delq nil keys))))
-    (let ((res (herdr-request "agent.send_keys"
-                              `(("target" . ,(agent-fleet--resolve-target agent))
-                                ("keys" . ,(vconcat key-list))))))
-      ;; The live result shape is not verified; tolerate either an
-      ;; `agent_info' envelope (unwrap) or a bare `ok' ack (return as-is).
-      (or (agent-fleet--unwrap-agent res) res))))
-
-;;;###autoload
 (defun agent-fleet-interrupt (agent)
   "Interrupt AGENT by sending Ctrl-C via `agent.send_keys'.
 This is `interrupt', not `cancel': different CLIs attach different
@@ -1732,7 +1713,7 @@ agent manifests.  See the environment checks above."
 ;; the single source of their canonical labels and per-surface command+key
 ;; bindings, so the two surfaces (and a future Embark agent action menu)
 ;; cannot drift.  Surface-only actions (new/refresh/filters/quit/attention
-;; on the dashboard; send-keys/menu on attach) stay inline in their surfaces
+;; on the dashboard; menu on attach) stay inline in their surfaces
 ;; -- only the SHARED actions converge here.  Commands are stored as symbols,
 ;; so load order is irrelevant (autoload triggers on key press); both feature
 ;; modules `require' agent-fleet, so the table is available when they build
@@ -1843,7 +1824,6 @@ the already attached pane and therefore belong to that buffer's map instead."
   ;; Select an agent and perform an operation on it.
   "t" #'agent-fleet-attach
   "p" #'agent-fleet-prompt
-  "k" #'agent-fleet-send-keys
   "i" #'agent-fleet-interrupt
   "x" #'agent-fleet-kill
   "r" #'agent-fleet-rename
