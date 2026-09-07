@@ -582,8 +582,6 @@ the user binds the command map to a prefix key."
                 (lookup-key map (kbd "s"))))
     (should (eq #'agent-fleet-attach-prompt-in-child-frame
                 (lookup-key map (kbd "S"))))
-    (should (eq #'agent-fleet-attach-send-keys
-                (lookup-key map (kbd "k"))))
     (should (eq #'agent-fleet-attach-interrupt
                 (lookup-key map (kbd "i"))))
     (should (eq #'agent-fleet-attach-kill

@@ -172,9 +172,12 @@
     (unwind-protect
         (cl-letf (((symbol-function 'agent-fleet-attach--current-pane-id)
                    (lambda () "w7:p9"))
-                  ((symbol-function 'agent-fleet-send-keys)
-                   (lambda (pane keys)
-                     (push (list pane keys) sent))))
+                  ((symbol-function 'herdr-request)
+                   (lambda (method params)
+                     (should (equal "agent.send_keys" method))
+                     (push (list (cdr (assoc "target" params))
+                                 (aref (cdr (assoc "keys" params)) 0))
+                           sent))))
           (with-temp-buffer
             (setq route (agent-fleet-editor-arm-current-attach))
             (should (equal '("w7:p9" "ctrl+g") (car sent)))
@@ -197,7 +200,7 @@
     (unwind-protect
         (cl-letf (((symbol-function 'agent-fleet-attach--current-pane-id)
                    (lambda () "w1:p1"))
-                  ((symbol-function 'agent-fleet-send-keys)
+                  ((symbol-function 'herdr-request)
                    (lambda (&rest _) (error "send failed"))))
           (with-temp-buffer
             (should-error (agent-fleet-editor-arm-current-attach))

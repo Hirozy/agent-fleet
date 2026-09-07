@@ -1149,7 +1149,6 @@ rests on a real agent row."
              ("w" . agent-fleet-worktree-status)
              ("m" . agent-fleet-magit-status)
              ("d" . agent-fleet-magit-diff)
-             ("k" . agent-fleet-send-keys)
              ("x" . agent-fleet-kill)
              ("r" . agent-fleet-rename)
              ("!" . agent-fleet-next-needs-attention)
@@ -1172,14 +1171,14 @@ create a GUI frame or require any optional integration module."
   (let* ((directory (or (file-name-directory (locate-library "agent-fleet"))
                         default-directory))
          (keys '("a" "s" "N" "p" "P" "o" "i" "t" "l" "L"
-                 "w" "m" "d" "k" "x" "r" "!" "h" "?"))
+                 "w" "m" "d" "x" "r" "!" "h" "?"))
          (commands '(agent-fleet agent-fleet-start
                      agent-fleet-start-for-project agent-fleet-prompt
                      agent-fleet-prompt-dwim agent-fleet-show-output
                      agent-fleet-interrupt agent-fleet-attach agent-fleet-list
                      agent-fleet-list-project-agents agent-fleet-worktree-status
                      agent-fleet-magit-status agent-fleet-magit-diff
-                     agent-fleet-send-keys agent-fleet-kill agent-fleet-rename
+                     agent-fleet-kill agent-fleet-rename
                      agent-fleet-next-needs-attention describe-prefix-bindings
                      describe-prefix-bindings))
          (script (make-temp-file

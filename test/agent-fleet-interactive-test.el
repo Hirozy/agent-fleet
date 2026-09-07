@@ -48,7 +48,6 @@
     (agent-fleet-prompt . agent-fleet-interactive-prompt-family)
     (agent-fleet-prompt-and-wait . agent-fleet-interactive-prompt-family)
     (agent-fleet-wait . agent-fleet-interactive-wait-and-input)
-    (agent-fleet-send-keys . agent-fleet-interactive-wait-and-input)
     (agent-fleet-interrupt . agent-fleet-interactive-wait-and-input)
     (agent-fleet-rename . agent-fleet-interactive-rename-kill-switch-list)
     (agent-fleet-kill . agent-fleet-interactive-rename-kill-switch-list)
@@ -83,7 +82,6 @@
     (agent-fleet-attach-prompt-in-child-frame . agent-fleet-interactive-attach-compose)
     (agent-fleet-attach--compose-submit . agent-fleet-interactive-attach-compose)
     (agent-fleet-attach--compose-abort . agent-fleet-interactive-attach-compose)
-    (agent-fleet-attach-send-keys . agent-fleet-interactive-attach-current-agent)
     (agent-fleet-attach-interrupt . agent-fleet-interactive-attach-current-agent)
     (agent-fleet-attach-kill . agent-fleet-interactive-attach-current-agent)
     (agent-fleet-attach-rename . agent-fleet-interactive-attach-current-agent)
@@ -888,7 +886,7 @@ connected agents."
     (should (equal '(ensure read-agent ensure attach present) calls))))
 
 (ert-deftest agent-fleet-interactive-wait-and-input ()
-  "Wait/send-keys/interrupt consume minibuffer input and dispatch correctly.
+  "Wait/interrupt consume minibuffer input and dispatch correctly.
 `agent-fleet-read' is deliberately absent: it is a pure Lisp data API with
 no interactive form (asserted in
 `agent-fleet-interactive-obsolete-view-aliases')."
@@ -896,9 +894,6 @@ no interactive form (asserted in
         calls)
     (cl-letf (((symbol-function 'agent-fleet-read-agent-name)
                (lambda (_) "w1:p1"))
-              ((symbol-function 'read-string)
-               (lambda (prompt &rest _)
-                 (if (string-prefix-p "Keys" prompt) "enter" "unused")))
               ((symbol-function 'agent-fleet--ensure-connected) #'ignore)
               ((symbol-function 'herdr-request)
                (lambda (method &optional params &rest _)
@@ -906,15 +901,9 @@ no interactive form (asserted in
                  '(:type "agent_info"
                    :agent (:pane_id "w1:p1" :agent_status "done")))))
       (call-interactively #'agent-fleet-wait)
-      (call-interactively #'agent-fleet-send-keys)
       (call-interactively #'agent-fleet-interrupt))
     (should (member "agent.wait" (mapcar #'car calls)))
-    (should (= 2 (cl-count "agent.send_keys" calls :key #'car :test #'equal)))
-    (should (cl-some (lambda (call)
-                       (equal ["enter"]
-                              (agent-fleet-interactive-test--param
-                               "keys" (cadr call))))
-                     calls))
+    (should (= 1 (cl-count "agent.send_keys" calls :key #'car :test #'equal)))
     (should (cl-some (lambda (call)
                        (equal ["ctrl+c"]
                               (agent-fleet-interactive-test--param
@@ -1321,8 +1310,6 @@ buffer-local pane id; the inspect pair honors its prefix line count."
                  (lambda (target) (push (list 'worktree-buf target) calls)))
                 ((symbol-function 'agent-fleet-prompt)
                  (lambda (target text) (push (list 'prompt target text) calls)))
-                ((symbol-function 'agent-fleet-send-keys)
-                 (lambda (target keys) (push (list 'keys target keys) calls)))
                 ((symbol-function 'agent-fleet-interrupt)
                  (lambda (target) (push (list 'interrupt target) calls)))
                 ((symbol-function 'agent-fleet-kill)
@@ -1337,7 +1324,6 @@ buffer-local pane id; the inspect pair honors its prefix line count."
         (let ((current-prefix-arg '(4)))
           (call-interactively #'agent-fleet-attach-inspect))
         (call-interactively #'agent-fleet-attach-prompt)
-        (call-interactively #'agent-fleet-attach-send-keys)
         (call-interactively #'agent-fleet-attach-interrupt)
         (call-interactively #'agent-fleet-attach-kill)
         (call-interactively #'agent-fleet-attach-rename)
@@ -1349,7 +1335,6 @@ buffer-local pane id; the inspect pair honors its prefix line count."
       (dolist (expected '((inspect-buf "w1:p1" nil)
                           (inspect-buf "w1:p1" 7)
                           (prompt "w1:p1" "do it")
-                          (keys "w1:p1" "enter")
                           (interrupt "w1:p1")
                           (kill "w1:p1")
                           (rename "w1:p1" "new-name")
@@ -1982,7 +1967,7 @@ navigation commands; the real skip behavior is exercised in
                (lambda () nil))
               ((symbol-function 'agent-fleet-editor--arm-route)
                (lambda (&rest _) (setq armed t) 'route))
-              ((symbol-function 'agent-fleet-send-keys)
+              ((symbol-function 'herdr-request)
                (lambda (&rest _) (setq sent t))))
       (call-interactively #'agent-fleet-editor-bridge-mode)
       (should agent-fleet-editor-bridge-mode)
