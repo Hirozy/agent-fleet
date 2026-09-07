@@ -1378,46 +1378,6 @@ notifications into the blocked/done hooks.  Safe to call repeatedly."
 (agent-fleet-dashboard--setup)
 
 
-;;; --- Command map --------------------------------------
-
-;;;###autoload
-(defvar-keymap agent-fleet-command-map
-  :doc "Prefix map for agent-fleet commands.
-Bind it yourself, e.g. (global-set-key (kbd \"C-c a\") agent-fleet-command-map).
-The package binds NO global keys.
-
-Commands in this map are intended for an ordinary source or project buffer.
-They either open the dashboard, ask for an agent, or derive their target from
-the current project.  Commands in `agent-fleet-attach-command-map' operate on
-the already attached pane and therefore belong to that buffer's map instead."
-  ;; Discover agents and the dashboard.
-  "a" #'agent-fleet
-  "l" #'agent-fleet-list
-  "L" #'agent-fleet-list-project-agents
-  "!" #'agent-fleet-next-needs-attention
-  ;; Start an agent or send context from the current project.
-  "s" #'agent-fleet-start
-  "N" #'agent-fleet-start-for-project
-  "P" #'agent-fleet-prompt-dwim
-  ;; Select an agent and perform an operation on it.
-  "t" #'agent-fleet-attach
-  "p" #'agent-fleet-prompt
-  "k" #'agent-fleet-send-keys
-  "i" #'agent-fleet-interrupt
-  "x" #'agent-fleet-kill
-  "r" #'agent-fleet-rename
-  ;; Open views for a selected agent.
-  "o" #'agent-fleet-show-output
-  "w" #'agent-fleet-worktree-status
-  "m" #'agent-fleet-magit-status
-  "d" #'agent-fleet-magit-diff
-  ;; Prefix-map help is provided by Emacs itself and remains available even
-  ;; when optional integration modules are not installed.
-  "h" #'describe-prefix-bindings
-  "?" #'describe-prefix-bindings)
-
-
-
 ;;; --- Obsolete aliases for moved display functions -------------------
 
 (define-obsolete-function-alias 'agent-fleet-dashboard-child-frame-available-p

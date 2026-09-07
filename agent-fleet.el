@@ -1799,6 +1799,65 @@ registry (and the dashboard surface) by construction."
         (push kc out)))))
 
 
+;;; --- Command map ---------------------------------------------------
+
+;; The ordinary-buffer command map belongs to the core entry point.
+;; Keeping it here lets generated package autoloads expose the prefix command
+;; without loading the dashboard or any optional integration.  `:bind-keymap'
+;; remains the lazy source-checkout alternative when those autoloads have not
+;; been loaded yet.  The command symbols below remain autoloaded leaves; this
+;; map only records the user's opt-in bindings.
+(declare-function agent-fleet "agent-fleet-dashboard" ())
+(declare-function agent-fleet-list-project-agents
+                  "agent-fleet-dashboard" (agent))
+(declare-function agent-fleet-next-needs-attention
+                  "agent-fleet-dashboard" (&optional include-done))
+(declare-function agent-fleet-start-for-project
+                  "agent-fleet-project" (kind &rest args))
+(declare-function agent-fleet-prompt-dwim "agent-fleet-project" (agent))
+(declare-function agent-fleet-worktree-status "agent-fleet-worktree" (target))
+(declare-function agent-fleet-magit-status "agent-fleet-magit" (target))
+(declare-function agent-fleet-magit-diff "agent-fleet-magit" (target))
+
+;;;###autoload
+(defvar-keymap agent-fleet-command-map
+  :prefix t
+  :doc "Prefix map for agent-fleet commands.
+The `:prefix' declaration also makes the symbol usable as a prefix command;
+bind it yourself with `use-package :bind' or `keymap-set'.  The package
+binds NO global keys.
+
+Commands in this map are intended for an ordinary source or project buffer.
+They either open the dashboard, ask for an agent, or derive their target from
+the current project.  Commands in `agent-fleet-attach-command-map' operate on
+the already attached pane and therefore belong to that buffer's map instead."
+  ;; Discover agents and the dashboard.
+  "a" #'agent-fleet
+  "l" #'agent-fleet-list
+  "L" #'agent-fleet-list-project-agents
+  "!" #'agent-fleet-next-needs-attention
+  ;; Start an agent or send context from the current project.
+  "s" #'agent-fleet-start
+  "N" #'agent-fleet-start-for-project
+  "P" #'agent-fleet-prompt-dwim
+  ;; Select an agent and perform an operation on it.
+  "t" #'agent-fleet-attach
+  "p" #'agent-fleet-prompt
+  "k" #'agent-fleet-send-keys
+  "i" #'agent-fleet-interrupt
+  "x" #'agent-fleet-kill
+  "r" #'agent-fleet-rename
+  ;; Open views for a selected agent.
+  "o" #'agent-fleet-show-output
+  "w" #'agent-fleet-worktree-status
+  "m" #'agent-fleet-magit-status
+  "d" #'agent-fleet-magit-diff
+  ;; Prefix-map help is provided by Emacs itself and remains available even
+  ;; when optional integration modules are not installed.
+  "h" #'describe-prefix-bindings
+  "?" #'describe-prefix-bindings)
+
+
 (provide 'agent-fleet)
 
 ;; Loading: requiring `agent-fleet' loads the core control plane only.

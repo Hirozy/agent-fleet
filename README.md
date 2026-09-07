@@ -59,21 +59,34 @@ not bind any global keys; set them up with `use-package`:
 ```elisp
 (use-package agent-fleet
   :load-path "/path/to/agent-fleet"
-  :bind (;; Open the dashboard
-         ("s-d" . agent-fleet)
-         ;; Prefix map for agent-fleet commands
-         ("s-a" . agent-fleet-command-map))
+  :bind ("s-d" . agent-fleet)
+  :bind-keymap ("C-c a" . agent-fleet-command-map)
   :custom
   ;; Optional: use a native child frame for the dashboard
   (agent-fleet-dashboard-display 'buffer))
+
+(use-package agent-fleet-attach
+  :defer t
+  :bind (:map agent-fleet-attach-mode-map
+         ("C-c a" . agent-fleet-attach-command-map)))
 ```
+
+Both public maps are registered as Emacs prefix commands. The attach example
+uses plain use-package `:bind`; its local binding is installed when the attach
+module loads. For the core map, `:bind-keymap` is the robust source-checkout
+form because it loads `agent-fleet` only when the prefix is first used, even
+when the generated autoload file has not already been loaded. Plain `:bind`
+also works for the core map when package initialization has loaded
+`agent-fleet-autoloads.el`; in either form, feature commands use generated
+autoloads, so opening prefix help does not load the dashboard or terminal
+integration.
 
 `agent-fleet-command-map` is the entry point from ordinary code buffers.
 Project start and context composition use the calling buffer's context;
 agent-specific actions ask you to select an agent. With the prefix above,
 its bindings are:
 
-| Key after `s-a` | Command | Scenario |
+| Key after `C-c a` | Command | Scenario |
 |---|---|---|
 | `a` | `agent-fleet` | Open or focus the dashboard |
 | `l` | `agent-fleet-list` | List all agents |
@@ -415,25 +428,27 @@ listing, and selecting other agents belong to the main map. The package does
 not bind a prefix key by default, so set one yourself:
 
 ```elisp
-(keymap-set agent-fleet-attach-mode-map "C-c C-a"
-            #'agent-fleet-attach-command-map)
+(use-package agent-fleet-attach
+  :defer t
+  :bind (:map agent-fleet-attach-mode-map
+         ("C-c a" . agent-fleet-attach-command-map)))
 ```
 
 With the prefix above, these keys act on the current agent directly:
 
 | Key | Action |
 |---|---|
-| `C-c C-a o` | Inspect recent output (buffer) |
-| `C-c C-a d` | Open the working-tree diff (Magit, buffer) |
-| `C-c C-a m` | Open Magit status (buffer) |
-| `C-c C-a w` | Show worktree status (buffer) |
-| `C-c C-a s` | Send a prompt |
-| `C-c C-a S` | Compose a prompt in a child frame |
-| `C-c C-a k` | Send keys |
-| `C-c C-a i` | Send `Ctrl-C` |
-| `C-c C-a x` | Kill the agent |
-| `C-c C-a r` | Rename the agent |
-| `C-c C-a h` | Open the transient action menu |
+| `C-c a o` | Inspect recent output (buffer) |
+| `C-c a d` | Open the working-tree diff (Magit, buffer) |
+| `C-c a m` | Open Magit status (buffer) |
+| `C-c a w` | Show worktree status (buffer) |
+| `C-c a s` | Send a prompt |
+| `C-c a S` | Compose a prompt in a child frame |
+| `C-c a k` | Send keys |
+| `C-c a i` | Send `Ctrl-C` |
+| `C-c a x` | Kill the agent |
+| `C-c a r` | Rename the agent |
+| `C-c a h` / `C-c a ?` | Open the transient action menu |
 
 View keys (`o`/`d`/`m`/`w`) open an ordinary buffer; `S` opens the compose
 child frame. The compose child frame floats over the terminal's parent so
@@ -495,7 +510,7 @@ agents and Emacs on the same host with a shared filesystem.
 | `C-g` (bridge enabled) | Send `Ctrl-G` and route the CLI editor file |
 | `C-c C-c` (editor view) | Save, release `emacsclient`, and close the view |
 | `C-c C-k` (editor view) | Discard unsaved edits and release `emacsclient` successfully |
-| `C-c C-a S` | Open the independent Agent Fleet compose child frame |
+| `C-c a S` | Open the independent Agent Fleet compose child frame |
 
 The editor bridge requires a graphical attach frame because it creates a
 dedicated standalone operating-system frame rather than replacing the attach
@@ -513,7 +528,7 @@ Ghostel terminal via bracketed paste (so multi-line prompts stay atomic) but
 Enter is **not** pressed — the user reviews the text and presses Enter manually
 to submit. In the bridge workflow, the CLI owns restoring its draft after the
 editor exits; Agent Fleet does not scrape terminal output or inject Enter.
-`C-c C-a S` remains available regardless of bridge state.
+`C-c a S` remains available regardless of bridge state.
 
 ### Evil and evil-escape
 
