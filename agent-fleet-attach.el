@@ -731,10 +731,12 @@ ordinary buffer; the compose prompt (`S') opens an auxiliary child frame."
 
 ;;;###autoload
 (defvar-keymap agent-fleet-attach-command-map
+  :prefix t
   :doc "Prefix map for attach-buffer current-agent commands.
 The package does not bind this map to a prefix by default.  Bind it in
-`agent-fleet-attach-mode-map', e.g. (keymap-set agent-fleet-attach-mode-map
-\"C-c C-a\" agent-fleet-attach-command-map).
+`agent-fleet-attach-mode-map', e.g. with
+`use-package :bind' or (keymap-set agent-fleet-attach-mode-map
+\"C-c a\" agent-fleet-attach-command-map).
 View keys (`o'/`w'/`m'/`d') open an ordinary buffer; `S' opens the compose
 child frame.  The shared action keys mirror `agent-fleet-action-registry'
 (verified by `agent-fleet-action-registry-attach-sync'); `k' (send keys)

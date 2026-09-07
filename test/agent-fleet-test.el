@@ -1373,13 +1373,127 @@ is pending must not call `herdr-connect' and rediscover a different socket."
     (agent-fleet--configure-auto-connect)
     (should (memq #'agent-fleet--schedule-auto-connect after-init-hook))))
 
+(ert-deftest agent-fleet-core-prefix-without-generated-autoloads ()
+  "The core owns its prefix even when generated autoloads are unavailable.
+Exercise actual deferred use-package loading through the help key without
+loading the dashboard or any optional feature."
+  (let* ((directory (file-name-directory (locate-library "agent-fleet")))
+         (form
+          '(progn
+             (setq load-prefer-newer t)
+             (require 'cl-lib)
+             (require 'use-package)
+             (let ((original-require (symbol-function 'require)))
+               (cl-letf (((symbol-function 'require)
+                          (lambda (feature &rest args)
+                            (unless (eq feature 'agent-fleet-autoloads)
+                              (apply original-require feature args)))))
+                 (eval '(use-package agent-fleet
+                          :bind-keymap ("C-c a" . agent-fleet-command-map)))
+                 (when (featurep 'agent-fleet)
+                   (error "Core loaded before the prefix was invoked"))
+                 (execute-kbd-macro (kbd "C-c a h"))
+                 (unless (and (featurep 'agent-fleet)
+                              (keymapp agent-fleet-command-map)
+                              (get-buffer "*Help*")
+                              (eq (key-binding (kbd "C-c a p"))
+                                  'agent-fleet-prompt))
+                   (error "Core prefix unavailable without autoloads"))
+                 (dolist (feature '(agent-fleet-autoloads agent-fleet-dashboard
+                                    agent-fleet-attach agent-fleet-project
+                                    agent-fleet-magit agent-fleet-worktree
+                                    magit ghostel consult))
+                   (when (featurep feature)
+                     (error "Unexpected feature load: %S" feature))))))))
+    (with-temp-buffer
+      (let ((status (call-process
+                     (expand-file-name invocation-name invocation-directory)
+                     nil t nil "--batch" "-Q" "-L" directory
+                     "--eval" (prin1-to-string form))))
+        (ert-info ((buffer-string)) (should (zerop status)))))))
+
+(ert-deftest agent-fleet-prefix-commands-support-deferred-use-package ()
+  "Both public maps work as prefix commands with deferred use-package setup.
+Test plain :bind with package autoloads and the README's :bind-keymap setup
+without preloaded autoloads, each in a fresh Emacs process."
+  (dolist (preload '(nil t))
+    (let* ((directory (file-name-directory (locate-library "agent-fleet")))
+           (form
+            `(progn
+               (setq load-prefer-newer t)
+               (require 'cl-lib)
+               (require 'use-package)
+               ,@(when preload '((require 'agent-fleet-autoloads)))
+               (eval ',(if preload
+                           '(use-package agent-fleet
+                              :bind (("s-d" . agent-fleet)
+                                     ("C-c a" . agent-fleet-command-map)))
+                         '(use-package agent-fleet
+                            :bind ("s-d" . agent-fleet)
+                            :bind-keymap ("C-c a" . agent-fleet-command-map))))
+               (eval '(use-package agent-fleet-attach
+                        :defer t
+                        :bind (:map agent-fleet-attach-mode-map
+                                    ("C-c a" . agent-fleet-attach-command-map))))
+               (unless (and (not (featurep 'agent-fleet))
+                            (not (featurep 'agent-fleet-attach)))
+                 (error "Prefix setup loaded a feature eagerly"))
+               (switch-to-buffer (get-buffer-create " *agent-fleet-prefix*"))
+               (execute-kbd-macro (kbd "C-c a h"))
+               (execute-kbd-macro (kbd "C-c a h"))
+               (unless (and (eq (not (featurep 'agent-fleet)) ,preload)
+                            (keymapp (symbol-function 'agent-fleet-command-map))
+                            (keymapp agent-fleet-command-map)
+                            (keymapp (symbol-function
+                                      'agent-fleet-attach-command-map))
+                            (keymapp agent-fleet-attach-command-map)
+                            (eq (key-binding (kbd "C-c a p"))
+                                'agent-fleet-prompt))
+                 (error "Core prefix dispatch or lazy loading failed"))
+               (dolist (feature '(agent-fleet-dashboard agent-fleet-attach
+                                 agent-fleet-project agent-fleet-magit
+                                 agent-fleet-worktree magit ghostel consult))
+                 (when (featurep feature)
+                   (error "Prefix help loaded a feature eagerly: %S" feature)))
+               (require 'agent-fleet-attach)
+               (agent-fleet-attach-mode 1)
+               (unless (eq (key-binding (kbd "C-c a o"))
+                           'agent-fleet-attach-inspect)
+                 (error "Attach local prefix did not override the global map"))
+               (defvar agent-fleet-test-prefix-dispatch-count 0)
+               (cl-letf (((symbol-function 'agent-fleet-attach-inspect)
+                          (lambda () (interactive)
+                            (setq agent-fleet-test-prefix-dispatch-count
+                                  (1+ agent-fleet-test-prefix-dispatch-count)))))
+                 (execute-kbd-macro (kbd "C-c a o"))
+                 (execute-kbd-macro (kbd "C-c a o")))
+               (unless (= agent-fleet-test-prefix-dispatch-count 2)
+                 (error "Attach prefix did not dispatch twice"))
+               (agent-fleet-attach-mode -1)
+               (unless (eq (key-binding (kbd "C-c a p"))
+                           'agent-fleet-prompt)
+                 (error "Global prefix was not restored after attach mode"))
+               (execute-kbd-macro (kbd "C-c a h"))))
+           (output (generate-new-buffer " *agent-fleet-prefix-test-output*")))
+      (unwind-protect
+          (let ((status
+                 (call-process
+                  (expand-file-name invocation-name invocation-directory)
+                  nil output nil
+                  "--batch" "-Q" "-L" directory
+                  "--eval" (prin1-to-string form))))
+            (with-current-buffer output
+              (ert-info ((buffer-string))
+                (should (zerop status)))))
+        (kill-buffer output)))))
+
 (ert-deftest agent-fleet-core-does-not-load-features ()
   "Requiring `agent-fleet' loads only the core control plane.
 Feature modules (dashboard, attach, editor, magit, worktree, parallel) and
 Emacs's server library are NOT loaded by a bare `require', while public entry
-points and the prefix map remain available through generated autoloads.  This
-is verified in a fresh Emacs subprocess so the already-loaded test environment
-does not mask the result."
+points remain available through generated autoloads and the core owns its map.
+This is verified in a fresh Emacs subprocess so the already-loaded test
+environment does not mask the result."
   (skip-unless (executable-find "emacs"))
   (let* ((dir (or (file-name-directory (locate-library "agent-fleet"))
                   default-directory))
