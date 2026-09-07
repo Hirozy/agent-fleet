@@ -732,25 +732,30 @@ ordinary buffer; the compose prompt (`S') opens an auxiliary child frame."
 ;;;###autoload
 (defvar-keymap agent-fleet-attach-command-map
   :doc "Prefix map for attach-buffer current-agent commands.
-Bound to `C-c C-a' in `agent-fleet-attach-mode-map'.  You can rebind it
-there, e.g. (keymap-set agent-fleet-attach-mode-map \"C-c C-f\"
-\\='agent-fleet-attach-command-map).
+The package does not bind this map to a prefix by default.  Bind it in
+`agent-fleet-attach-mode-map', e.g. (keymap-set agent-fleet-attach-mode-map
+\"C-c C-a\" agent-fleet-attach-command-map).
 View keys (`o'/`w'/`m'/`d') open an ordinary buffer; `S' opens the compose
 child frame.  The shared action keys mirror `agent-fleet-action-registry'
 (verified by `agent-fleet-action-registry-attach-sync'); `k' (send keys)
-and `h'/`?' (menu) are attach-only.  This map is literal (not
-dolist-generated) so its autoload form carries every binding before
+and `h'/`?' (menu) use the attached pane without an agent prompt.
+This map is literal (not dolist-generated) so its autoload form carries every
+binding before
 `agent-fleet-attach' loads."
-  "o" #'agent-fleet-attach-inspect
+  ;; Control the already attached pane; these commands never prompt for an
+  ;; agent because the attach buffer owns the target pane id.
   "s" #'agent-fleet-attach-prompt
   "S" #'agent-fleet-attach-prompt-in-child-frame
   "k" #'agent-fleet-attach-send-keys
   "i" #'agent-fleet-attach-interrupt
   "x" #'agent-fleet-attach-kill
   "r" #'agent-fleet-attach-rename
+  ;; Views for the already attached pane.
+  "o" #'agent-fleet-attach-inspect
   "d" #'agent-fleet-attach-diff
   "m" #'agent-fleet-attach-magit
   "w" #'agent-fleet-attach-worktree
+  ;; Discover the attach-buffer commands.
   "h" #'agent-fleet-attach-menu
   "?" #'agent-fleet-attach-menu)
 

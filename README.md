@@ -68,15 +68,37 @@ not bind any global keys; set them up with `use-package`:
   (agent-fleet-dashboard-display 'buffer))
 ```
 
-With the prefix above, these commands are available:
+`agent-fleet-command-map` is the entry point from ordinary code buffers.
+Project start and context composition use the calling buffer's context;
+agent-specific actions ask you to select an agent. With the prefix above,
+its bindings are:
 
-| Key | Command |
-|---|---|
-| `s-d` | Open the dashboard |
-| `s-a s` | Start an agent |
-| `s-a p` | Prompt an agent |
-| `s-a o` | Show recent output |
-| `s-a i` | Interrupt an agent |
+| Key after `s-a` | Command | Scenario |
+|---|---|---|
+| `a` | `agent-fleet` | Open or focus the dashboard |
+| `l` | `agent-fleet-list` | List all agents |
+| `L` | `agent-fleet-list-project-agents` | List peers in a selected agent's Project |
+| `!` | `agent-fleet-next-needs-attention` | Find an agent needing attention |
+| `s` | `agent-fleet-start` | Start an agent |
+| `N` | `agent-fleet-start-for-project` | Start an agent for the current Project |
+| `P` | `agent-fleet-prompt-dwim` | Prepare file/region context for an agent |
+| `t` | `agent-fleet-attach` | Attach to a selected agent's terminal |
+| `p` | `agent-fleet-prompt` | Prompt a selected agent |
+| `k` | `agent-fleet-send-keys` | Send keys to a selected agent |
+| `i` | `agent-fleet-interrupt` | Interrupt a selected agent |
+| `x` | `agent-fleet-kill` | Kill a selected agent |
+| `r` | `agent-fleet-rename` | Rename a selected agent |
+| `o` | `agent-fleet-show-output` | Inspect recent output |
+| `w` | `agent-fleet-worktree-status` | Inspect worktree status |
+| `m` | `agent-fleet-magit-status` | Open Magit status |
+| `d` | `agent-fleet-magit-diff` | Open the working-tree diff |
+| `h` / `?` | `describe-prefix-bindings` | Show the prefix's bindings |
+
+`s-d` also opens the dashboard directly. In an attached terminal, use
+`agent-fleet-attach-command-map` to act on its agent without selecting one
+again (see [Acting on the attached agent](#acting-on-the-attached-agent)).
+Less frequent maintenance, task, and connection commands remain available
+through `M-x`.
 
 ## Quick start
 
@@ -387,7 +409,9 @@ always reach the same Herdr Session.
 
 An attach buffer already knows which agent it is driving, so once attached you
 do not need to return to the dashboard or pick from a completion listing. The
-single-key bindings live in `agent-fleet-attach-command-map`; the package does
+single-key bindings live in `agent-fleet-attach-command-map`. Unlike the main
+map, these commands always target the current attach buffer's pane; starting,
+listing, and selecting other agents belong to the main map. The package does
 not bind a prefix key by default, so set one yourself:
 
 ```elisp
