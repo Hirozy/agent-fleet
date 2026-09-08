@@ -840,18 +840,6 @@ Returns the unwrapped AgentInfo (the `agent_prompted' envelope payload)."
 
 ;;; --- Keys / Interrupt ----------------------------------------------
 
-(ert-deftest agent-fleet-send-keys-single-and-list ()
-  "send-keys accepts a single string or a list; both encode as an array."
-  (with-agent-fleet-mock path server
-    (let ((agent (agent-fleet-start 'claude :name "arch")))
-      (agent-fleet-test--pump)
-      (agent-fleet-send-keys agent "enter")
-      (let ((p1 (agent-fleet-test--last-request server "agent.send_keys")))
-        (should (equal '("enter") (plist-get p1 :keys))))
-      (agent-fleet-send-keys agent '("ctrl+c" "enter"))
-      (let ((p2 (agent-fleet-test--last-request server "agent.send_keys")))
-        (should (equal '("ctrl+c" "enter") (plist-get p2 :keys)))))))
-
 (ert-deftest agent-fleet-interrupt-sends-ctrl-c ()
   "interrupt sends exactly [\"ctrl+c\"].
 Returns the unwrapped AgentInfo (tolerant of a bare ack on real servers)."

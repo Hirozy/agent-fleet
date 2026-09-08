@@ -51,7 +51,7 @@
 
 (declare-function agent-fleet-attach--current-pane-id
                   "agent-fleet-attach" ())
-(declare-function agent-fleet-send-keys "agent-fleet" (agent keys))
+(declare-function herdr-request "herdr" (method &optional params))
 (declare-function agent-fleet-display-origin-frame
                   "agent-fleet-display" (&optional frame))
 
@@ -264,9 +264,10 @@ is removed and the prior `server-window' value is restored."
          (route (agent-fleet-editor--arm-route pane-id origin-info)))
     (condition-case err
         (progn
-          ;; Use the shared control-plane API and stable pane id.  This sends
-          ;; exactly Ctrl-G to Herdr; it does not synthesize Enter.
-          (agent-fleet-send-keys pane-id "ctrl+g")
+          ;; Send exactly Ctrl-G to Herdr through `agent.send_keys'; it does
+          ;; not synthesize Enter or any other terminal key.
+          (herdr-request "agent.send_keys"
+                         `(("target" . ,pane-id) ("keys" . ["ctrl+g"])))
           (message "agent-fleet: waiting for external editor request"))
       (error
        (agent-fleet-editor--clear-pending-route

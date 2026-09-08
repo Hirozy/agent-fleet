@@ -97,7 +97,6 @@ its bindings are:
 | `P` | `agent-fleet-prompt-dwim` | Prepare file/region context for an agent |
 | `t` | `agent-fleet-attach` | Attach to a selected agent's terminal |
 | `p` | `agent-fleet-prompt` | Prompt a selected agent |
-| `k` | `agent-fleet-send-keys` | Send keys to a selected agent |
 | `i` | `agent-fleet-interrupt` | Interrupt a selected agent |
 | `x` | `agent-fleet-kill` | Kill a selected agent |
 | `r` | `agent-fleet-rename` | Rename a selected agent |
@@ -238,7 +237,6 @@ applicable.
 | `M-x agent-fleet-prompt-and-wait` | Prompt and wait atomically for done/blocked |
 | `M-x agent-fleet-show-output` | Open output in an ordinary buffer |
 | `M-x agent-fleet-wait` | Wait for a specific state |
-| `M-x agent-fleet-send-keys` | Send terminal keys |
 | `M-x agent-fleet-interrupt` | Send `Ctrl-C` |
 | `M-x agent-fleet-rename` | Rename the agent |
 | `M-x agent-fleet-switch` | Focus the agent in Herdr |
@@ -444,7 +442,6 @@ With the prefix above, these keys act on the current agent directly:
 | `C-c a w` | Show worktree status (buffer) |
 | `C-c a s` | Send a prompt |
 | `C-c a S` | Compose a prompt in a child frame |
-| `C-c a k` | Send keys |
 | `C-c a i` | Send `Ctrl-C` |
 | `C-c a x` | Kill the agent |
 | `C-c a r` | Rename the agent |
@@ -457,7 +454,10 @@ the attached terminal's window geometry — and the PTY size the agent sees
 
 `C-c` passes through to Emacs in the terminal's char mode, so the prefix
 reaches Emacs rather than the PTY; `h` (or `?`) lists the same actions
-for discoverability. The commands are also available as `M-x
+for discoverability. To send a literal key sequence (such as `shift+tab`
+or `esc`) to the attached terminal, use Ghostel's own quote key — `C-q`
+(`ghostel-send-next-key`) — rather than an Agent Fleet command. The
+commands are also available as `M-x
 agent-fleet-attach-*` and signal a clear error outside an attach buffer.
 
 ### Composing prompts with C-g
