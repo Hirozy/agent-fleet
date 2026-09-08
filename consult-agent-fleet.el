@@ -57,12 +57,14 @@
 (defvar consult-agent-fleet--history nil
   "Minibuffer history for `consult-agent-fleet' agent selection.")
 
-(defun consult-agent-fleet--select (prompt)
+(defun consult-agent-fleet--select (prompt &optional filter)
   "Select a cached Herdr agent with consult, returning its pane id.
 PROMPT is shown in the minibuffer.  Candidates are the
-`agent-fleet-agent-candidates' data: each shows the agent identity and,
-as a consult annotation aligned with `consult--annotate-align', its kind,
-task, and project.  The suffix comes from the SAME public
+`agent-fleet-agent-candidates' data (filtered by FILTER, a predicate on a
+candidate entry, mirroring `agent-fleet-read-agent-name'): each shows the
+agent identity and, as a consult annotation aligned with
+`consult--annotate-align', its kind, task, and project.  The suffix comes
+from the SAME public
 `agent-fleet-agent-annotation' the built-in reader's completion table
 declares (via `agent-fleet-completion-annotation-table'), so consult and
 the native *Completions* show identical suffixes with no duplicated
@@ -70,7 +72,7 @@ label->suffix logic.  Agents sharing an identity are disambiguated with
 the pane id in brackets.  Signal `user-error' when no agent is cached.
 The return value is the pane id that the consult `:lookup' yields, so it
 round-trips through `agent-fleet--find-agent'."
-  (let* ((entries (agent-fleet-agent-candidates))
+  (let* ((entries (agent-fleet-agent-candidates filter))
          (candidates
           (mapcar (lambda (entry)
                     (cons (plist-get entry :label)
@@ -91,7 +93,7 @@ round-trips through `agent-fleet--find-agent'."
                   cand (agent-fleet-agent-annotation cand)))
      :lookup #'consult--lookup-cdr)))
 
-(defun consult-agent-fleet--read-agent-name (_orig-fn prompt)
+(defun consult-agent-fleet--read-agent-name (_orig-fn prompt &optional filter)
   "`:around' advice that selects an agent with consult.
 Installed by `consult-agent-fleet-mode' (which also removes it on
 disable), so while the mode is off the original
@@ -100,8 +102,8 @@ disable), so while the mode is off the original
 id -- matching the return value of the original reader so it
 round-trips through `agent-fleet--find-agent'.  _ORIG-FN is the
 original reader (ignored; this advice fully replaces it while active);
-PROMPT is passed through."
-  (consult-agent-fleet--select prompt))
+PROMPT and FILTER are passed through, mirroring the reader's signature."
+  (consult-agent-fleet--select prompt filter))
 
 (define-minor-mode consult-agent-fleet-mode
   "Use consult to select agents in every agent-fleet selection command.

@@ -795,8 +795,8 @@ used for provisioning — the body does not prompt a second time."
                   (lambda (call) (assoc "wait" (cadr call))) calls)))))
 
 (ert-deftest agent-fleet-interactive-prompt-dwim ()
-  "prompt-dwim reads a same-Project agent, attaches to it, and prefills the
-compose buffer with the buffer context (file + symbol).  With no same-Project
+  "prompt-dwim reads a same-Project agent, attaches to it, and pastes the
+buffer context (file + symbol) into its input box.  With no same-Project
 agent it falls back to the unfiltered reader."
   (let ((herdr-model--cache (agent-fleet-interactive-test--session))
         attached presented)
@@ -815,7 +815,7 @@ agent it falls back to the unfiltered reader."
                (lambda (_prompt &optional _filter) "w1:p1"))
               ((symbol-function 'agent-fleet-attach)
                (lambda (target) (push (list 'attach target) attached)))
-              ((symbol-function 'agent-fleet-attach-prefill-prompt)
+              ((symbol-function 'agent-fleet-attach-paste-prompt)
                (lambda (pane-id initial)
                  (push (list 'present pane-id initial) presented))))
       ;; Use a temp file buffer so buffer-file-name is set; the context
@@ -860,7 +860,7 @@ agent it falls back to the unfiltered reader."
                 ((symbol-function 'agent-fleet-project-for-agent)
                  (lambda (_) "/repo"))
                 ((symbol-function 'agent-fleet-attach) #'ignore)
-                ((symbol-function 'agent-fleet-attach-prefill-prompt) #'ignore))
+                ((symbol-function 'agent-fleet-attach-paste-prompt) #'ignore))
         (with-temp-buffer
           (call-interactively #'agent-fleet-prompt-dwim)
           (should read-called)))))
@@ -879,7 +879,7 @@ connected agents."
                (lambda (_) (make-herdr-agent :id "w1:p1" :cwd "/repo")))
               ((symbol-function 'agent-fleet-attach)
                (lambda (_) (setq calls (append calls '(attach)))))
-              ((symbol-function 'agent-fleet-attach-prefill-prompt)
+              ((symbol-function 'agent-fleet-attach-paste-prompt)
                (lambda (&rest _) (setq calls (append calls '(present))))))
       (with-temp-buffer
         (call-interactively #'agent-fleet-prompt-dwim)))
@@ -1403,55 +1403,14 @@ the lifecycle runs in batch."
           (should aux-closed))))))
 
 
-(ert-deftest agent-fleet-interactive-attach-compose-prefills-initial-text ()
-  "Compose inserts initial text exactly and leaves point ready at its end."
-  (let ((herdr-model--cache (agent-fleet-interactive-test--session))
-        (frame (selected-frame))
-        compose-buf)
-    (unwind-protect
-        (cl-letf (((symbol-function 'set-window-buffer) #'ignore)
-                  ((symbol-function 'agent-fleet-display--aux-run)
-                   (lambda (thunk &optional _parameters) (funcall thunk))))
-          (agent-fleet-attach--compose-open "w1:p1" "src.el:1\n\n")
-          (setq compose-buf
-                (gethash frame agent-fleet-attach--compose-buffers))
-          (should (buffer-live-p compose-buf))
-          (with-current-buffer compose-buf
-            (should (equal "src.el:1\n\n" (buffer-string)))
-            (should (= (point) (point-max)))
-            (should (equal "w1:p1" agent-fleet-attach--compose-pane-id))))
-      (remhash frame agent-fleet-attach--compose-buffers)
-      (when (buffer-live-p compose-buf)
-        (kill-buffer compose-buf)))))
-
-
-(ert-deftest agent-fleet-interactive-attach-prefill-uses-child-frame ()
-  "The generic prefill API uses compose when child frames are available."
-  (let (opened looked-up)
-    (cl-letf (((symbol-function 'agent-fleet-display-child-frame-available-p)
-               (lambda (&optional _) t))
-              ((symbol-function 'agent-fleet-attach--compose-open)
-               (lambda (pane-id initial-text)
-                 (setq opened (list pane-id initial-text))))
-              ((symbol-function 'agent-fleet-attach--live-buffer-for-pane)
-               (lambda (&rest _)
-                 (setq looked-up t)
-                 nil)))
-      (should (eq 'child-frame
-                  (agent-fleet-attach-prefill-prompt
-                   "w1:p1" "src.el:1\n\n")))
-      (should (equal '("w1:p1" "src.el:1\n\n") opened))
-      (should-not looked-up))))
-
-
-(ert-deftest agent-fleet-interactive-attach-prefill-falls-back-to-terminal ()
-  "Without child frames, prefill pastes into the terminal without Enter."
-  (let ((attach-buf (generate-new-buffer " *af-prefill-fallback*"))
+(ert-deftest agent-fleet-interactive-attach-paste-prompt-without-enter ()
+  "The paste API bracketed-pastes into the live terminal and sends no key.
+Empty INITIAL-TEXT is a no-op; non-empty text without a live attach
+buffer signals `user-error'."
+  (let ((attach-buf (generate-new-buffer " *af-paste-target*"))
         pasted sent-key)
     (unwind-protect
-        (cl-letf (((symbol-function 'agent-fleet-display-child-frame-available-p)
-                   (lambda (&optional _) nil))
-                  ((symbol-function 'agent-fleet-attach--live-buffer-for-pane)
+        (cl-letf (((symbol-function 'agent-fleet-attach--live-buffer-for-pane)
                    (lambda (pane-id)
                      (should (equal "w1:p1" pane-id))
                      attach-buf))
@@ -1459,15 +1418,24 @@ the lifecycle runs in batch."
                    (lambda (text)
                      (should (eq (current-buffer) attach-buf))
                      (setq pasted text)))
+                  ((symbol-function 'ghostel--mode-enabled)
+                   (lambda (&rest _) (error "Do not gate on outer DEC mode")))
+                  ((symbol-function 'agent-fleet-attach--compose-open)
+                   (lambda (&rest _) (error "Do not open a compose frame")))
                   ((symbol-function 'ghostel-send-key)
                    (lambda (&rest args) (setq sent-key args))))
-          (should (eq 'terminal
-                      (agent-fleet-attach-prefill-prompt
-                       "w1:p1" "src.el:1\n\n")))
+          (agent-fleet-attach-paste-prompt "w1:p1" "src.el:1\n\n")
           (should (equal "src.el:1\n\n" pasted))
           (should-not sent-key))
       (when (buffer-live-p attach-buf)
-        (kill-buffer attach-buf)))))
+        (kill-buffer attach-buf))))
+  (cl-letf (((symbol-function 'agent-fleet-attach--live-buffer-for-pane)
+             (lambda (&rest _) nil))
+            ((symbol-function 'ghostel-paste-string)
+             (lambda (&rest _) (error "must not paste"))))
+    (agent-fleet-attach-paste-prompt "w1:p1" "")
+    (should-error (agent-fleet-attach-paste-prompt "w1:p1" "ref")
+                  :type 'user-error)))
 
 
 (ert-deftest agent-fleet-interactive-attach-compose-isolated-per-frame ()
@@ -1536,7 +1504,7 @@ passed to the live attach buffer unchanged."
           (setq-local agent-fleet-attach--compose-pane-id "w1:p1")
           (insert "  fix the bug\n")
           (cl-letf (((symbol-function
-                      'agent-fleet-attach--live-buffer-for-pane)
+                     'agent-fleet-attach--live-buffer-for-pane)
                      (lambda (_pane-id) attach-buf))
                     ((symbol-function 'ghostel-paste-string)
                      (lambda (text)
