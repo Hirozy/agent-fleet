@@ -411,24 +411,23 @@ read the span).  Returns (\"\" . nil) when nothing can be gathered."
                (t ""))
               truncated)))))
 
-(declare-function agent-fleet-attach-prefill-prompt "agent-fleet-attach"
+(declare-function agent-fleet-attach-paste-prompt "agent-fleet-attach"
                   (pane-id initial-text))
 
 ;;;###autoload
 (defun agent-fleet-prompt-dwim (agent)
-  "Attach to AGENT and prefill a compose buffer with the buffer context.
+  "Attach to AGENT and paste the buffer context into its input box.
 Gathers a lightweight reference — file path (relative to the agent's
 project root when possible), the active region's line range, the symbol
 near point, and the selected text when small enough
 \(see `agent-fleet-prompt-dwim-max-region-lines').  AGENT is selected
 scoped to the same Project as the current buffer when one exists (no
 auto-selection; you confirm the target).  The reference (and selected
-text) are prefilled into the attach compose child frame when supported;
-you type the task there and press C-c C-c to paste (reference+task) into
-the attach terminal (no Enter), then submit.  Without child-frame support,
-the context is pasted directly into the live terminal without Enter so you
-can finish the task there.  Does not save user files or copy an entire
-buffer by default."
+text) is bracketed-pasted directly into the live attach terminal without
+Enter, so it lands in the agent's own input box; finish the task there
+and press Enter to submit.  Composing in a child frame remains available
+via `agent-fleet-attach-prompt-in-child-frame'.  Does not save user
+files or copy an entire buffer by default."
   (interactive
    (progn
      ;; Candidate readers inspect the cache, so establish the on-demand
@@ -452,9 +451,9 @@ buffer by default."
       (when (cdr context)
         (message "agent-fleet: selected text exceeds a context limit; text omitted"))
       ;; `agent-fleet-attach' is autoloaded, so calling it loads the attach
-      ;; feature and makes the public prefill presentation API available.
+      ;; feature and makes the public paste presentation API available.
       (agent-fleet-attach agent)
-      (agent-fleet-attach-prefill-prompt
+      (agent-fleet-attach-paste-prompt
        (herdr-agent-id struct) initial-text))))
 
 (provide 'agent-fleet-project)

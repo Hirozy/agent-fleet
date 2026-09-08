@@ -317,12 +317,12 @@ same Project as the current buffer, and still requires an explicit selection
 when there is only one matching agent. If the buffer has no Project or no
 agent is associated with it, the completion falls back to all cached agents
 and says so in the minibuffer prompt/message. After selection, Agent Fleet
-attaches to the live terminal and opens the existing compose child frame with
-the reference prefilled. Append the task there and press `C-c C-c` to paste it
-into the terminal; Enter remains a separate, explicit submission step.
-When native child frames are unavailable, the context is instead pasted
-directly into the live attach terminal using bracketed paste, without Enter;
-finish the task in the terminal and submit it explicitly.
+attaches to the live terminal and pastes the context there with bracketed
+paste, without Enter — it lands in the agent's own input box. Type the
+task after the reference and press Enter to submit. To compose a separate prompt
+in a child frame, use
+`agent-fleet-attach-prompt-in-child-frame` — the `S` key of
+`agent-fleet-attach-command-map`.
 
 The selected text is included only when it is at most
 `agent-fleet-prompt-dwim-max-region-lines` lines and

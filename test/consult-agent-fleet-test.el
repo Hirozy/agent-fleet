@@ -30,9 +30,9 @@
 selected candidate; `--select' must return that pane id, not the label.
 It also passes the `agent-fleet-agent' category and an `:annotate' that
 reuses the public `agent-fleet-agent-annotation' for the suffix."
-  (let (got-table got-lookup got-annotate got-category)
+  (let (got-table got-lookup got-annotate-result got-category)
     (cl-letf (((symbol-function #'agent-fleet-agent-candidates)
-               (lambda ()
+               (lambda (&optional _filter)
                  (list (list :agent nil :pane-id "w1:p1" :name "arch"
                              :label "arch" :kind "Claude" :task "—"
                              :project "demo")
@@ -41,11 +41,15 @@ reuses the public `agent-fleet-agent-annotation' for the suffix."
                              :project "demo")))))
       ;; Simulate consult: capture the table and :lookup it was handed,
       ;; then apply that lookup to a selected candidate as consult would.
+      ;; The :annotate function is called INSIDE this stub (as consult
+      ;; does, within the selector's dynamic extent) because it closes
+      ;; over the annotation table bound only during `--select'.
       (cl-letf (((symbol-function #'consult--read)
                  (lambda (table &rest opts)
                    (setq got-table table
                          got-lookup (plist-get opts :lookup)
-                         got-annotate (plist-get opts :annotate)
+                         got-annotate-result
+                         (funcall (plist-get opts :annotate) "arch")
                          got-category (plist-get opts :category))
                    (let ((sel (car (cadr table))))
                      (funcall got-lookup sel table nil nil)))))
@@ -56,11 +60,11 @@ reuses the public `agent-fleet-agent-annotation' for the suffix."
     (should (eq got-category 'agent-fleet-agent))
     ;; consult reuses the public agent-fleet-agent-annotation for the suffix
     ;; (consult--annotate-align wraps it; the suffix substring survives).
-    (should (string-match-p "Claude · — · demo" (funcall got-annotate "arch")))))
+    (should (string-match-p "Claude · — · demo" got-annotate-result))))
 
 (ert-deftest consult-agent-fleet--select-signals-when-no-agents ()
   "With no cached agents, signal `user-error' before `consult--read'."
-  (cl-letf (((symbol-function #'agent-fleet-agent-candidates) (lambda () nil))
+  (cl-letf (((symbol-function #'agent-fleet-agent-candidates) (lambda (&optional _filter) nil))
             ((symbol-function #'consult--read)
              (lambda (&rest _) (error "consult--read should not run"))))
     (should-error (consult-agent-fleet--select "Pick")
@@ -100,7 +104,7 @@ consult lookup result (the pane id), not the built-in
 the real reader is left intact."
   (let (got-table got-lookup)
     (cl-letf (((symbol-function #'agent-fleet-agent-candidates)
-               (lambda ()
+               (lambda (&optional _filter)
                  (list (list :agent nil :pane-id "w1:p1" :name "arch"
                              :label "arch" :kind "Claude" :task "—"
                              :project "demo")
@@ -122,6 +126,35 @@ the real reader is left intact."
     (should (equal got-table
                    '(("arch" . "w1:p1") ("arch  [w1:p2]" . "w1:p2"))))
     (should (eq got-lookup #'consult--lookup-cdr))))
+
+(ert-deftest consult-agent-fleet--read-agent-name-forwards-filter ()
+  "The advised reader accepts and forwards the reader's optional FILTER.
+`agent-fleet-prompt-dwim' scopes selection by calling
+`agent-fleet-read-agent-name' with a predicate; the advice must have a
+matching signature or every scoped selection fails with a wrong-arity
+error, and the predicate must reach `agent-fleet-agent-candidates'."
+  (let (seen-filter got)
+    (cl-letf (((symbol-function #'agent-fleet-agent-candidates)
+               (lambda (&optional filter)
+                 (setq seen-filter filter)
+                 (list (list :agent nil :pane-id "w1:p1" :name "arch"
+                             :label "arch" :kind "Claude" :task "—"
+                             :project "demo")))))
+      (cl-letf (((symbol-function #'consult--read)
+                 (lambda (table &rest _opts) (cdr (car table)))))
+        (unwind-protect
+            (progn
+              (consult-agent-fleet-mode 1)
+              (setq got (agent-fleet-read-agent-name
+                         "Pick"
+                         (lambda (entry)
+                           (equal "w1:p1" (plist-get entry :pane-id))))))
+          (consult-agent-fleet-mode -1))))
+    (should (functionp seen-filter))
+    (should (funcall seen-filter
+                     (list :pane-id "w1:p1" :label "arch")))
+    (should-not (funcall seen-filter (list :pane-id "w9:p9" :label "x")))
+    (should (equal got "w1:p1"))))
 
 (provide 'consult-agent-fleet-test)
 ;;; consult-agent-fleet-test.el ends here

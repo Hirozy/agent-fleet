@@ -485,17 +485,14 @@ Acts on the pane id owned by this buffer, so no selection prompt is needed."
     (unless (string-empty-p text)
       (agent-fleet-prompt pane-id text))))
 
-(defun agent-fleet-attach--compose-open (pane-id &optional initial-text)
-  "Open a compose child frame for PANE-ID, prefilling INITIAL-TEXT.
+(defun agent-fleet-attach--compose-open (pane-id)
+  "Open a compose child frame for PANE-ID.
 C-c C-c pastes the composed text into the live attach terminal for
 PANE-ID (bracketed paste, no Enter) and closes the frame; the user
 then presses Enter to submit.  C-c C-k closes without pasting.
-INITIAL-TEXT is inserted at the start of the compose buffer so a caller
-\(e.g. `agent-fleet-prompt-dwim') can prefill a context reference and the
-user appends the task before submitting.  Acts on PANE-ID, so no
-selection prompt is needed.  Clears `quit-flag' because ghostel sets
-`inhibit-quit' in terminal buffers, so a C-g that opens this frame left
-a quit-flag this command would otherwise inherit."
+Acts on PANE-ID, so no selection prompt is needed.  Clears `quit-flag'
+because ghostel sets `inhibit-quit' in terminal buffers, so a C-g that
+opens this frame left a quit-flag this command would otherwise inherit."
   (require 'agent-fleet-display nil t)
   (setq quit-flag nil)
   (let* ((agent (agent-fleet--find-agent pane-id))
@@ -510,8 +507,6 @@ a quit-flag this command would otherwise inherit."
            (text-mode)
            (use-local-map (agent-fleet-attach--compose-map))
            (setq-local agent-fleet-attach--compose-pane-id pane-id)
-           (when (and initial-text (not (string-empty-p initial-text)))
-             (insert initial-text))
            (setq-local header-line-format
                        (concat "  Compose prompt: "
                                (propertize name 'face 'bold)
@@ -524,34 +519,26 @@ a quit-flag this command would otherwise inherit."
            (cons 'height scale)
            (cons 'name (format "agent-fleet compose: %s" name))))))
 
-(defun agent-fleet-attach-prefill-prompt (pane-id initial-text)
-  "Present INITIAL-TEXT for the live attach terminal owned by PANE-ID.
-When a native child frame is available, open the compose editor with
-INITIAL-TEXT prefilled.  Otherwise paste INITIAL-TEXT directly into the
-live Ghostel terminal using bracketed paste, without sending Enter, and
-leave that terminal selected for the user to finish and submit the task.
-
-An empty INITIAL-TEXT is not pasted in the fallback path.  Signal a
-`user-error' when fallback is needed but no live attach buffer exists.
-Return `child-frame' or `terminal' to describe the presentation used.
-This is the public attach-facing presentation API used by
-`agent-fleet-prompt-dwim'; callers do not need to depend on the private
-compose implementation."
-  (require 'agent-fleet-display nil t)
-  (if (agent-fleet-display-child-frame-available-p)
-      (progn
-        (agent-fleet-attach--compose-open pane-id initial-text)
-        'child-frame)
-    (unless (string-empty-p (or initial-text ""))
-      (let ((buf (agent-fleet-attach--live-buffer-for-pane pane-id)))
-        (unless buf
-          (user-error "No live attach buffer for pane %s" (or pane-id "?")))
-        (with-current-buffer buf
-          (ghostel-paste-string initial-text))))
-    (message (if (string-empty-p (or initial-text ""))
-                 "agent-fleet: child frames unavailable; attached without buffer context"
-               "agent-fleet: child frames unavailable; context pasted into terminal (press Enter to submit)"))
-    'terminal))
+(defun agent-fleet-attach-paste-prompt (pane-id initial-text)
+  "Paste INITIAL-TEXT into the live Ghostel terminal owned by PANE-ID.
+The text is bracketed-pasted without Enter, so the agent's own input box
+receives it and the user finishes the task there and submits with Enter.
+An empty INITIAL-TEXT is not pasted.  Signal a `user-error' when no live
+attach buffer exists.  Composing in a child frame is the sibling flow,
+available through `agent-fleet-attach-prompt-in-child-frame' (and the
+attach map's `S').  This is the public attach-facing presentation API
+used by `agent-fleet-prompt-dwim'."
+  (unless (string-empty-p (or initial-text ""))
+    (let ((buf (agent-fleet-attach--live-buffer-for-pane pane-id)))
+      (unless buf
+        (user-error "No live attach buffer for pane %s" (or pane-id "?")))
+      (unless (fboundp 'ghostel-paste-string)
+        (user-error "Ghostel does not provide ghostel-paste-string; update Ghostel"))
+      (with-current-buffer buf
+        (ghostel-paste-string initial-text))))
+  (message (if (string-empty-p (or initial-text ""))
+               "agent-fleet: attached without buffer context"
+             "agent-fleet: context pasted into terminal (press Enter to submit)")))
 
 (defun agent-fleet-attach-prompt-in-child-frame ()
   "Open a child frame to compose a prompt for this buffer's agent.
@@ -612,10 +599,9 @@ closing."
       (let ((buf (agent-fleet-attach--live-buffer-for-pane pane-id)))
         (unless buf
           (user-error "No live attach buffer for pane %s" (or pane-id "?")))
-        ;; Paste while the frame is still available, then close on success.
         (with-current-buffer buf
-          (ghostel-paste-string text))
-        (agent-fleet-display--aux-close frame)))))
+          (ghostel-paste-string text)))
+      (agent-fleet-display--aux-close frame))))
 
 (defun agent-fleet-attach--compose-abort ()
   "Close the compose child frame without sending."
