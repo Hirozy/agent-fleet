@@ -71,16 +71,25 @@ Each element is an alist like ((\"type\" . \"workspace.created\"))."
   (mapcar (lambda (type) `(("type" . ,type)))
           herdr-events-global-types))
 
+(defun herdr-events-pane-subscriptions-for-ids (pane-ids)
+  "Return per-pane subscription alists for PANE-IDS.
+PANE-IDS is a list of stable Herdr pane-id strings.  A separate
+`pane.agent_status_changed' subscription is required for every pane because
+Herdr does not provide a wildcard status subscription.  Keeping this helper
+independent of the cache lets the connection layer subscribe from an
+authoritative `pane.list' before its first snapshot is installed."
+  (let (subs)
+    (dolist (pane-id pane-ids)
+      (when (and (stringp pane-id) (not (string-empty-p pane-id)))
+        (dolist (type herdr-events-per-pane-types)
+          (push `(("type" . ,type) ("pane_id" . ,pane-id)) subs))))
+    (nreverse subs)))
+
 (defun herdr-events-pane-subscriptions (session)
   "Return per-pane subscription alists for SESSION.
 One `pane.agent_status_changed' subscription per current pane."
-  (let (subs)
-    (dolist (pn (herdr-model-panes session))
-      (let ((pid (herdr-pane-id pn)))
-        (when pid
-          (dolist (type herdr-events-per-pane-types)
-            (push `(("type" . ,type) ("pane_id" . ,pid)) subs)))))
-    subs))
+  (herdr-events-pane-subscriptions-for-ids
+   (delq nil (mapcar #'herdr-pane-id (herdr-model-panes session)))))
 
 (defun herdr-events-subscriptions-for (session)
   "Return the full subscription set for SESSION: global + per-pane.
@@ -88,16 +97,25 @@ Order: global subscriptions first, then one per-pane block per pane."
   (nconc (herdr-events-default-subscriptions)
          (herdr-events-pane-subscriptions session)))
 
+(defun herdr-events-subscriptions-for-pane-ids (pane-ids)
+  "Return global plus per-pane subscriptions for PANE-IDS.
+Unlike `herdr-events-subscriptions-for', this function does not require a
+parsed session cache.  It is used during connection bootstrap and stream
+handover, where v0.9 servers require the subscription to be live before the
+authoritative snapshot is requested."
+  (nconc (herdr-events-default-subscriptions)
+         (herdr-events-pane-subscriptions-for-ids pane-ids)))
+
 
 ;;; --- Rebuild detection --------------------------------------------
 
 ;; `pane.agent_status_changed' is scoped to a pane, so when panes come
 ;; and go the per-pane subscription set must be recomputed and the
 ;; subscription re-established (the server does not accept additional
-;; subscribe requests on an existing stream).  Only the PER-PANE set is
-;; rebuilt — the global stream is unaffected by pane-set changes.
+;; subscribe requests on an existing stream).  The global and per-pane sets
+;; share one stream, which is replaced together during a rebuild.
 ;;
-;; Replayed events are excluded: the EventHub ring buffer is drained on
+;; Legacy replayed events are excluded: before Herdr 0.9 the ring drained on
 ;; every subscribe (global subscriptions replay from sequence 0), so a
 ;; `pane_created' for a pane already in the cache (from the snapshot) or
 ;; remembered gone is a stale replay, not a real new pane.  `apply-event'
@@ -117,7 +135,7 @@ When true, the caller (herdr.el) rebuilds the per-pane subscription set
 (`pane.agent_status_changed' is pane-scoped, so a new pane needs a new
 per-pane subscription and the server accepts no additions to a live
 stream).  A REPLAYED event (DESCRIPTOR's :replayp is non-nil) is not a
-change: the EventHub ring buffer is drained on every subscribe, so a
+change: older Herdr servers drain retained events on every subscribe, so a
 `pane_created' for a pane already cached (or remembered gone) adds no new
 pane — rebuilding for it would resubscribe on every replayed create, and
 each resubscribe itself replays, looping.  See `herdr-model-apply-event'

@@ -36,7 +36,7 @@
 ;; It knows nothing about workspaces, panes, agents, or orchestration:
 ;; that is `herdr-model.el', `herdr-events.el' and `herdr.el'.
 ;;
-;; Connection model (verified against Herdr 0.8.2, protocol 20):
+;; Connection model (verified against Herdr 0.9.0, protocol 22):
 ;;
 ;;   - Request connections are ONE-SHOT: open, send one request, read one
 ;;     response, the server closes.  Each request opens a fresh connection.
@@ -572,7 +572,7 @@ unexpected acknowledgement as successful destructive completion."
   "Ping Herdr and return the pong result plist.
 The result looks like (:type \"pong\" :version <ver> :protocol <n>
 :capabilities ...), where <ver>/<n> are the server's reported version and
-protocol (verified against Herdr 0.8.2, protocol 20).  Signals
+protocol (verified against Herdr 0.9.0, protocol 22).  Signals
 `herdr-request-error' or connection errors."
   (herdr-protocol-request "ping" nil :timeout timeout))
 
