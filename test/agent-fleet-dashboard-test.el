@@ -880,10 +880,10 @@ state without a manual refresh or a polling timer."
         (agent-fleet-test--pump)
         (should (equal "WORKING" (agent-fleet-dashboard-test--cell "w1:p1" 3)))
         ;; Mutate the server snapshot so the reconnect's snapshot fetch
-        ;; reports w1:p1 as blocked.  Protocol 20 satisfies the >= 19 check.
+        ;; reports w1:p1 as blocked, using the supported protocol 22.
         (herdr-mock-set-snapshot
          server
-         '(:protocol 20 :version "0.8.2-mock"
+         '(:protocol 22 :version "0.8.2-mock"
            :focused_workspace_id "w1" :focused_tab_id "w1:t1"
            :focused_pane_id "w1:p1"
            :workspaces ((:workspace_id "w1" :label "demo" :number 1
@@ -934,6 +934,16 @@ following `pane.agent_status_changed' (dotted per-pane kind) event."
       (agent-fleet-test--pump)
       (should (= 1 (length (with-current-buffer "*Agent Fleet*"
                              tabulated-list-entries))))
+      ;; The mock's pane/agent tables must include w1:p2 so `pane.list'
+      ;; and `herdr-mock--current-snapshot' agree after the resubscribe.
+      (puthash "w1:p2" '(:pane_id "w1:p2" :workspace_id "w1" :tab_id "w1:t1"
+                        :cwd "/tmp" :foreground_cwd "/tmp"
+                        :focused nil :revision 0)
+               (herdr-mock--server-panes server))
+      (herdr-mock--agent-set server "w1:p2"
+        '(:pane_id "w1:p2" :workspace_id "w1" :tab_id "w1:t1"
+          :cwd "/tmp" :name "codex" :agent "codex"
+          :agent_status "idle" :interactive_ready t))
       (herdr-mock-push-event server "pane_agent_detected"
                              '(:pane_id "w1:p2" :workspace_id "w1"
                                :agent "codex" :released :false))
@@ -955,6 +965,9 @@ following `pane.agent_status_changed' (dotted per-pane kind) event."
       (agent-fleet)
       (agent-fleet-test--pump)
       (should (agent-fleet-dashboard-test--cell "w1:p1" 3))
+      ;; Remove from both tables so the resubscribe's snapshot agrees.
+      (remhash "w1:p1" (herdr-mock--server-panes server))
+      (remhash "w1:p1" (herdr-mock--server-agents server))
       (herdr-mock-push-event server "pane_closed" '(:pane_id "w1:p1"))
       (agent-fleet-test--pump)
       (should-not (agent-fleet-dashboard-test--cell "w1:p1" 3)))))
