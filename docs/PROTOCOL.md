@@ -1,20 +1,48 @@
 # Herdr Socket API Protocol Reference
 
-Authoritative reference for the Herdr wire protocol, captured by reading the
-**Herdr 0.8.2** (protocol **20**) source (`src/` in github.com/herdrdev/herdr)
-and confirmed with direct socket probes.
+Reference for the Herdr wire contract used by Agent Fleet, refreshed against
+**Herdr 0.9.0** (protocol **22**), tag commit
+`b99002ac99b09e00b4ca692436cb15a6b0d676f1`.
+
+Verification sources:
+
+- [Release notes](https://github.com/herdrdev/herdr/releases/tag/v0.9.0).
+- [Tagged API schemas](https://github.com/herdrdev/herdr/tree/v0.9.0/src/api/schema),
+  compared with the previously supported v0.8.2 schemas.
+- [Socket server](https://github.com/herdrdev/herdr/blob/v0.9.0/src/api/server.rs)
+  and [subscriptions](https://github.com/herdrdev/herdr/blob/v0.9.0/src/api/subscriptions.rs).
+- Isolated local 0.9.0 server probes for ping, snapshots, provisioning, live
+  events, subscription rebuilding and reconnect. These do not verify every
+  optional RPC in the reference catalog below.
 
 This document is the spec the Emacs client (`herdr-protocol.el`, `herdr-model.el`,
-`herdr-events.el`, `herdr.el`) is built against. It is **runtime-verified**, not
-assumed — but Herdr may change between versions, so the client must always:
+`herdr-events.el`, `herdr.el`) is built against. Herdr may change between
+versions, so the client must always:
 
 - discover the socket from the configured endpoint and verify the protocol
-  version at runtime (`ping`),
+  compatibility floor at runtime (`ping`),
 - tolerate unknown JSON fields (Herdr protocol clients are expected to be
   forward-compatible),
 - treat `session.snapshot` as the canonical resync; never synthesize a
-  client-side missed-event replay. Herdr may still drain its bounded EventHub
-  buffer on subscribe, so event application must be idempotent.
+  client-side missed-event replay. In 0.9.0, subscribe before requesting the
+  snapshot: global subscriptions no longer replay retained history. Legacy
+  protocol 19/20 servers may replay it; event application remains idempotent.
+
+### Changes relevant to Agent Fleet in 0.9.0
+
+| Area | Verified change | Fleet handling |
+|---|---|---|
+| Global events | Subscription starts at registration, not retained history | Subscribe before snapshot on protocol 22; defer events while installing it |
+| Per-pane status | Still requires an explicit pane ID; an unfiltered subscription has no initial status push | Enumerate panes first; reconcile a post-ACK snapshot and check subscription coverage |
+| Ping capabilities | Adds integer `endpoint_protocol_generation` and booleans `surface_interest`, `health_check` | Preserve mixed-type fields; do not require endpoint-shell features for JSON RPC |
+| Workspace create/close | Adds optional `source_workspace_id` and `close_group` (default false) | Existing provisioning unchanged; never enable group close implicitly |
+| Worktree requests | Adds `trust_repository` (default false) | Existing requests unchanged; never bypass repository trust automatically |
+| Agent prompt | Success follows prompt/Enter submission; waiting requires observed activity for a non-working agent | Keep atomic prompt-with-wait RPC; preserve structured failures |
+| Terminal attach | Multiline paste handling fixed; private terminal handshake still versioned | Continue using Herdr CLI/Ghostel; keep CLI and server terminal protocols compatible |
+
+The existing AgentInfo, PaneInfo, SessionSnapshot and event payload wire
+shapes used by Fleet remain compatible. Newly added machine/client-shell UI
+methods are outside Fleet's product scope. This reference is not a backlog.
 
 ---
 
@@ -119,13 +147,18 @@ the one-shot connection already disambiguates.
 - Request: `{"id":"1","method":"ping","params":{}}`
 - Result:
   ```json
-  {"type":"pong","version":"0.8.2","protocol":20,
-   "capabilities":{"live_handoff":true,"detached_server_daemon":true}}
+  {"type":"pong","version":"0.9.0","protocol":22,
+   "capabilities":{"live_handoff":true,"detached_server_daemon":true,
+                   "endpoint_protocol_generation":1,
+                   "surface_interest":true,"health_check":true}}
   ```
 - `protocol` (int) is the authoritative protocol version; compare against
-  `herdr-required-protocol-version`. `capabilities` is a map of bools —
-  tolerate unknown keys (it is `Option` and may be omitted/null on some
-  builds).
+  `herdr-required-protocol-version` (19). It is not the stable endpoint
+  generation. `capabilities` has mixed value types: the generation is an
+  integer and the other current entries are booleans. Tolerate unknown keys
+  and an omitted/null capabilities object. The JSON client retains a legacy
+  startup path below protocol 22; endpoint generation 1 is not required for
+  this API. Direct terminal attach uses a separate private handshake.
 
 ## 6. `session.snapshot`
 
@@ -136,14 +169,18 @@ the one-shot connection already disambiguates.
 snapshot = {
   protocol: int,
   version: str,
-  focused_workspace_id, focused_tab_id, focused_pane_id: str,
+  focused_workspace_id?, focused_tab_id?, focused_pane_id?: str,
   workspaces: [ WorkspaceInfo ],
   tabs:       [ TabInfo ],
   panes:      [ PaneInfo ],
-  agents:     [ AgentInfo ],   // agents are panes-with-agents; fields ⊇ PaneInfo
+  agents:     [ AgentInfo ],   // a distinct struct, described below
   layouts:    [ PaneLayoutSnapshot ],
 }
 ```
+
+A fresh headless server can return empty arrays and omit all focused IDs.
+That is a valid snapshot, not a connection failure. No `worktrees` array is
+included; worktree metadata comes from its dedicated RPCs and events.
 
 ### WorkspaceInfo
 ```
@@ -185,9 +222,8 @@ agents by `pane_id`; the optional `name` slot is populated in Phase 2.
 
 ### AgentStatus enum
 `idle`, `working`, `blocked`, `done`, `unknown`.
-The client may add local-only runtime states `dead` / `disconnected` for panes
-whose agent process has exited or whose socket is down — these are not Herdr
-lifecycle states.
+Connection health is tracked separately. Fleet does not add `dead` or
+`disconnected` as authoritative agent lifecycle states.
 
 ## 7. Events: subscribe + push
 
@@ -198,6 +234,13 @@ lifecycle states.
   for pane-scoped subscriptions, extra required fields.
 - Result: `{"type":"subscription_started"}`. The connection then becomes
   push-only.
+- Global lifecycle events start at subscription registration in 0.9.0;
+  retained earlier events are not replayed. Setup-window events are retained.
+  There is no client-supplied replay cursor.
+- A per-pane status subscription without `agent_status` does **not** emit an
+  initial status. A matching explicit status filter can emit one. Fleet uses
+  unfiltered status subscriptions and obtains initial state from a snapshot
+  taken after the subscription acknowledgement.
 
 ### 7.2 Subscription `type` values (dotted), 27 total
 
@@ -349,7 +392,7 @@ Provisioning / teardown (used by `agent-fleet-start` / `-kill`):
 
 | Method | Request params | Result (`{type, ...}`) |
 |---|---|---|
-| `workspace.create` | `{cwd?, focus?, label?, env?}` | `workspace_created` → `{workspace: WorkspaceInfo, tab: TabInfo, root_pane: PaneInfo}` |
+| `workspace.create` | `{source_workspace_id?, cwd?, focus?, label?, env?}` | `workspace_created` → `{workspace: WorkspaceInfo, tab: TabInfo, root_pane: PaneInfo}` |
 | `pane.split` | `{workspace_id?, target_pane_id?, direction, ratio?, cwd?, focus?, right_click?, env?}` | `pane_info` → `{pane: PaneInfo}` |
 | `tab.create` | `{workspace_id?, cwd?, focus?, label?, env?}` | `tab_created` → `{tab: TabInfo, root_pane: PaneInfo}` |
 | `pane.current` | `{}` | `pane_info` → `{pane: PaneInfo}` (focused pane) |
@@ -425,6 +468,9 @@ plus the `:worktree t` branch of `agent-fleet-start`.
 | `worktree.remove` | `{workspace_id (required), force?}` | `(:type "worktree_removed" :path :workspace_id :forced)` |
 
 Notes:
+
+- All four worktree request types also accept `trust_repository` in 0.9.0,
+  default false. Fleet does not send it or change global Git trust settings.
 
 - **`worktree.create` auto-provisions the root pane.**  The result carries
   `:workspace`, `:tab`, and `:root_pane` (a shell at the worktree cwd), so
@@ -510,10 +556,14 @@ herdr agent attach <pane-id>            ← CLI subprocess, not an RPC
 Herdr server → one live agent pane
 ```
 
-- **No socket involvement.**  The pane-id is resolved client-side
+- **No new Fleet RPC.**  The pane-id is resolved client-side
   (`agent-fleet--resolve-pane-id`, §8.1) from the cache; the attach CLI is a
   subprocess started with `ghostel-exec`.  The existing subscription/event
   bus is untouched.
+- The Herdr CLI still uses the private terminal protocol (22 in 0.9.0), not
+  endpoint-generation negotiation. Its server must support that same terminal
+  protocol even when Fleet's JSON control connection succeeds. Fleet never
+  restarts an incompatible server automatically.
 - **The terminal backend is optional (§45).**
   `agent-fleet-attach-backend` (default `auto`) uses Ghostel when its dynamic
   module is ready. Otherwise path C applies: a `user-error` prints the command
@@ -533,34 +583,44 @@ Herdr server → one live agent pane
   (detach does **not** close the pane — §79).  No result extraction (§40):
   the buffer is a live terminal, never a structured answer.
 
-## 9. Reconnect contract
+## 9. Reconnect and subscription coverage
 
-- On subscription-socket close: mark `disconnected`, cancel no assumptions,
-  schedule reconnect with backoff.
-- On reconnect: `ping` (check protocol) → `session.snapshot` → **replace**
-  local cache wholesale → re-`events.subscribe` with the recomputed
-  subscription set.
-- **Do not synthesize missed events client-side.** Snapshot is the canonical
-  resync; any in-flight per-pane subscriptions are rebuilt from it. Herdr's
-  own bounded buffered-event drain may follow the subscribe ack, and those
-  frames are reconciled idempotently against the snapshot.
-- **Workspace labels are derived, not stored.** The server computes a
-  workspace's `label` live every frame (`display_name_from`:
-  `custom_name` → basename of the first tab's root-pane cwd → `"workspace"`),
-  and the client mirrors this: `herdr-workspace-label` derives the same value
-  on read from the cached root-pane cwd (the pane with the smallest public
-  pane number, `{ws}:p1`-style). Because the label is computed rather than
-  cached as an overwriteable field, the server's buffered-event drain on
-  `events.subscribe` (Herdr's `EventHub` is a 512-event ring buffer and
-  `EventsSubscribeParams` carries no `from_sequence`, so each subscribe
-  re-drains the buffer) cannot stale it: a buffered `workspace_created`/
-  `workspace_updated` carrying a frozen `label` only refreshes the fallback
-  `cached-label`, never the live value. Real cwd changes arrive as
-  `pane_updated` (never a workspace event) and flow straight into the derived
-  label with no resync needed. A `workspace_renamed` sets the `custom-name`,
-  which wins over the cwd-derived name (matching the server).
+For protocol 22, initial connect, reconnect and pane-set rebuilds share one
+bounded synchronization procedure:
 
-## 10. Full RPC catalog (not yet implemented)
+1. Close the previous event stream intentionally, if present.
+2. Request `pane.list` from the connection's pinned endpoint.
+3. Subscribe to global events and status changes for those explicit pane IDs.
+4. Await the subscription acknowledgement, then request `session.snapshot`.
+5. Install the snapshot under `herdr-call-with-deferred-events`; replay queued
+   events in arrival order, including when the operation signals.
+6. Compare the subscribed pane IDs with the post-event cache. A pane created
+   between steps 2 and 3 otherwise has neither a replayed creation event nor a
+   status subscription. Retry the sequence when the sets differ, at most
+   three attempts per synchronization.
+7. Notify `herdr-synced-hook` after successful reconciliation.
+
+Only one subscription stream is active at a time. Snapshot recovery establishes
+current state across the stream gap; it cannot reconstruct every intermediate
+transition. Events from a discarded synchronization attempt are replayed before
+the next attempt, never over a later snapshot. New pane-set events after
+synchronization schedule an event-driven rebuild, not background polling.
+
+A failed initial connection closes its stream and reports failure. Rebuild or
+reconnect failures use the existing bounded reconnect/backoff path and must
+not advertise incomplete status coverage as connected. Reconnect repeats
+`ping` and retains the saved endpoint regardless of later configuration changes.
+
+Protocol 19/20 retains the legacy snapshot-then-subscribe path. Such servers
+can replay their retained EventHub history; replay guards and stale-pane
+reconciliation remain for compatibility. Protocol 22 no longer depends on that
+history.
+
+Workspace labels still use the model's existing derivation:
+custom name, then root-pane cwd basename, then the cached server label.
+Legacy replayed workspace labels do not override the cwd-derived value.
+
+## 10. Selected RPC reference (outside the implemented workflow)
 
 The methods below are available in the Herdr socket API
 (<https://herdr.dev/docs/socket-api/>) but not currently issued by
@@ -568,7 +628,8 @@ agent-fleet. They are documented here as a reference for future
 feature work — workspace/tab management, layout export/import, pane
 navigation, notifications, plugins, and integrations. Parameter and
 result field names follow the Herdr JSON wire convention
-(`snake_case`); the Emacs client maps them to `:kebab-case` plists.
+(`snake_case`); decoded Emacs plists retain those underscores, for example
+`:pane_id`. Lisp struct accessors use hyphenated names.
 
 ### 10.1 Workspace management
 
@@ -580,7 +641,7 @@ result field names follow the Herdr JSON wire convention
 | `workspace.rename` | `{workspace_id, label}` | `WorkspaceInfo` |
 | `workspace.move` | `{workspace_id, before_workspace_id?}` | reordered list |
 | `workspace.move_block` | `{workspace_ids: [...], before_workspace_id?}` | authoritative ordered list (`workspace_ids` must be unique; the anchor cannot be part of the block) |
-| `workspace.close` | `{workspace_id}` | closed ack |
+| `workspace.close` | `{workspace_id, close_group?}` | closed ack |
 | `workspace.report_metadata` | `{workspace_id, source, tokens, ttl_ms}` | metadata ack |
 
 Notes:
@@ -590,6 +651,9 @@ Notes:
   the authoritative ordered list (the server assigns `number` fields).
 - `workspace.report_metadata` attaches display-only token metadata with a TTL;
   it does not change the workspace's identity or label.
+- In 0.9.0, closing a primary Workspace with open worktree Workspaces requires
+  explicit `close_group: true`; otherwise the entire group is preserved.
+  Fleet rollback does not supply group intent.
 
 ### 10.2 Tab management
 
@@ -608,7 +672,7 @@ Notes:
 - `tab.close` returns `{"type":"ok"}` and shuts down the tab's detached
   terminal runtimes. Closing the last tab also closes its Workspace, unless
   an implicit worktree-group close requires confirmation. Verified in
-  [Herdr 0.8.2 tab handlers](https://github.com/herdrdev/herdr/blob/v0.8.2/src/app/api/tabs.rs).
+  [Herdr 0.9.0 tab handlers](https://github.com/herdrdev/herdr/blob/v0.9.0/src/app/api/tabs.rs).
 - `agent-fleet-cleanup-tabs` is the explicitly requested cleanup operation:
   it preserves tabs containing any agent and each Workspace's last tab.
   Fresh snapshots and positive live-cache agent evidence guard every close;

@@ -24,6 +24,7 @@
 (cl-defstruct herdr-mock--server
   "A fake Herdr server."
   path process
+  (protocol 20)                     ; legacy default; 22 models live-only events
   handlers                          ; alist method -> (lambda (params) result-or-error)
   snapshot                          ; plist snapshot to return for session.snapshot
   pending-events                    ; list of (KIND . DATA-plist) to push after subscribe
@@ -48,6 +49,7 @@ OPTS keys:
   :handlers   alist method-string -> (lambda (params) result) [default nil]
   :snapshot   plist snapshot for session.snapshot [a canned default]
   :pending-events  list of (KIND . DATA) pushed after a subscribe
+  :protocol   protocol number [20]; 22 does not replay pending history
 Returns a `herdr-mock--server'.  Use `herdr-mock-stop' to tear down."
   ;; Handlers mutate nested AgentInfo plists in place to model authoritative
   ;; server state.  Copy the fixture (including vectors) so one mock instance
@@ -58,6 +60,7 @@ Returns a `herdr-mock--server'.  Use `herdr-mock-stop' to tear down."
                               t))
          (server (make-herdr-mock--server
                   :path path
+                  :protocol (or (plist-get opts :protocol) 20)
                   :handlers (plist-get opts :handlers)
                   :snapshot snapshot
                   :pending-events (plist-get opts :pending-events)
@@ -328,9 +331,14 @@ that id or nil."
         (cond
          ((equal method "ping")
           (herdr-mock--respond client id `(:type "pong"
-                                            :version "0.8.2-mock"
-                                            :protocol 20
-                                            :capabilities (:live_handoff t :detached_server_daemon t)))
+                                            :version ,(if (>= (herdr-mock--server-protocol server) 22)
+                                                          "0.9.0-mock" "0.8.2-mock")
+                                            :protocol ,(herdr-mock--server-protocol server)
+                                            :capabilities ,(if (>= (herdr-mock--server-protocol server) 22)
+                                                               '(:live_handoff t :detached_server_daemon t
+                                                                 :endpoint_protocol_generation 1
+                                                                 :surface_interest t :health_check t)
+                                                             '(:live_handoff t :detached_server_daemon t))))
           (delete-process client))
          ((equal method "session.snapshot")
           (herdr-mock--respond client id `(:snapshot ,(herdr-mock--server-snapshot server)))
@@ -350,8 +358,9 @@ that id or nil."
                   (delete-process client))
               (herdr-mock--respond client id '(:type "subscription_started"))
               (setf (herdr-mock--server-subscription-client server) client)
-              (dolist (ev (herdr-mock--server-pending-events server))
-                (herdr-mock-push-event server (car ev) (cdr ev))))))
+              (when (< (herdr-mock--server-protocol server) 22)
+                (dolist (ev (herdr-mock--server-pending-events server))
+                  (herdr-mock-push-event server (car ev) (cdr ev)))))))
          (t
           (let ((handler (and (herdr-mock--server-handlers server)
                               (assoc method (herdr-mock--server-handlers server))))

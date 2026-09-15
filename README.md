@@ -41,6 +41,15 @@ only server-lifecycle controls it provides are the explicit local
 - Ghostel for an interactive terminal inside Emacs (optional; the core
   works without it installed).
 
+The current protocol reference targets **Herdr 0.9.0 (protocol 22)**.
+The JSON control plane retains the protocol 19/20 compatibility path for
+older servers and tolerates additive fields. Terminal attach is different:
+the Herdr CLI and server must support the same private terminal protocol.
+The new stable endpoint-generation negotiation used by Herdr's own client
+shell does not apply to `herdr agent attach`. Updating the CLI alone may
+therefore require a server upgrade before attach works. Agent Fleet never
+automatically restarts a server; preserve running work before stopping one.
+
 The transport and control plane load without Magit or Ghostel. Optional Magit
 and terminal integrations are detected only when their commands are used.
 
@@ -557,6 +566,17 @@ snapshot. A command issued after a failed startup connection retries on demand.
 The dashboard mode line reports `Reconnecting`/`Disconnected` during these
 transitions (see [Dashboard](#dashboard)), so a stale-looking list is never
 silent about why.
+
+With Herdr 0.9.0, event subscriptions start with live events, not retained
+history. Initial connection, reconnect, and pane-set subscription rebuilds
+enumerate panes, establish the subscription, and then fetch an authoritative
+snapshot. Events received during that snapshot are deferred and applied
+after it. A final pane-set check covers panes created between enumeration
+and subscription; retries are bounded and failures enter the normal
+connection recovery path. Only one event stream is active at a time. The
+snapshot recovers current state across a disconnected interval, not every
+intermediate status transition. An empty headless Session is a valid
+connection even when it has no Workspace or focused pane.
 
 Use `M-x herdr-start` when Emacs should launch the configured local Session.
 If `M-x agent-fleet` cannot connect to that Session's socket, it reports
