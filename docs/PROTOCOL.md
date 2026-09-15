@@ -25,8 +25,8 @@ versions, so the client must always:
   forward-compatible),
 - treat `session.snapshot` as the canonical resync; never synthesize a
   client-side missed-event replay. In 0.9.0, subscribe before requesting the
-  snapshot: global subscriptions no longer replay retained history. Legacy
-  protocol 19/20 servers may replay it; event application remains idempotent.
+  snapshot: global subscriptions no longer replay retained history. Event
+  application remains idempotent.
 
 ### Changes relevant to Agent Fleet in 0.9.0
 
@@ -153,12 +153,12 @@ the one-shot connection already disambiguates.
                    "surface_interest":true,"health_check":true}}
   ```
 - `protocol` (int) is the authoritative protocol version; compare against
-  `herdr-required-protocol-version` (19). It is not the stable endpoint
+  `herdr-required-protocol-version` (22). It is not the stable endpoint
   generation. `capabilities` has mixed value types: the generation is an
   integer and the other current entries are booleans. Tolerate unknown keys
-  and an omitted/null capabilities object. The JSON client retains a legacy
-  startup path below protocol 22; endpoint generation 1 is not required for
-  this API. Direct terminal attach uses a separate private handshake.
+  and an omitted/null capabilities object. The JSON client requires protocol
+  22 or newer; endpoint generation 1 is not required for this API. Direct
+  terminal attach uses a separate private handshake.
 
 ## 6. `session.snapshot`
 
@@ -585,8 +585,8 @@ Herdr server → one live agent pane
 
 ## 9. Reconnect and subscription coverage
 
-For protocol 22, initial connect, reconnect and pane-set rebuilds share one
-bounded synchronization procedure:
+Initial connect, reconnect and pane-set rebuilds share one bounded
+synchronization procedure:
 
 1. Close the previous event stream intentionally, if present.
 2. Request `pane.list` from the connection's pinned endpoint.

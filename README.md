@@ -42,8 +42,8 @@ only server-lifecycle controls it provides are the explicit local
   works without it installed).
 
 The current protocol reference targets **Herdr 0.9.0 (protocol 22)**.
-The JSON control plane retains the protocol 19/20 compatibility path for
-older servers and tolerates additive fields. Terminal attach is different:
+The JSON control plane requires **Herdr 0.9.0 (protocol 22)** and
+tolerates additive fields. Terminal attach is different:
 the Herdr CLI and server must support the same private terminal protocol.
 The new stable endpoint-generation negotiation used by Herdr's own client
 shell does not apply to `herdr agent attach`. Updating the CLI alone may

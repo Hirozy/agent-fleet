@@ -24,7 +24,7 @@
 (cl-defstruct herdr-mock--server
   "A fake Herdr server."
   path process
-  (protocol 20)                     ; legacy default; 22 models live-only events
+  (protocol 22)                     ; subscribe-first; does not replay pending history
   handlers                          ; alist method -> (lambda (params) result-or-error)
   snapshot                          ; plist snapshot to return for session.snapshot
   pending-events                    ; list of (KIND . DATA-plist) to push after subscribe
@@ -49,7 +49,7 @@ OPTS keys:
   :handlers   alist method-string -> (lambda (params) result) [default nil]
   :snapshot   plist snapshot for session.snapshot [a canned default]
   :pending-events  list of (KIND . DATA) pushed after a subscribe
-  :protocol   protocol number [20]; 22 does not replay pending history
+  :protocol   protocol number [22]; does not replay pending history
 Returns a `herdr-mock--server'.  Use `herdr-mock-stop' to tear down."
   ;; Handlers mutate nested AgentInfo plists in place to model authoritative
   ;; server state.  Copy the fixture (including vectors) so one mock instance
@@ -60,8 +60,9 @@ Returns a `herdr-mock--server'.  Use `herdr-mock-stop' to tear down."
                               t))
          (server (make-herdr-mock--server
                   :path path
-                  :protocol (or (plist-get opts :protocol) 20)
-                  :handlers (plist-get opts :handlers)
+                  :protocol (or (plist-get opts :protocol) 22)
+                  :handlers (or (plist-get opts :handlers)
+                                (herdr-mock-default-agent-handlers))
                   :snapshot snapshot
                   :pending-events (plist-get opts :pending-events)
                   :received-requests nil
@@ -185,8 +186,19 @@ place and truncate the stored list to its head on every call."
   (setf (herdr-mock--server-handlers server) handlers))
 
 (defun herdr-mock-set-snapshot (server snapshot)
-  "Replace the canned snapshot."
-  (setf (herdr-mock--server-snapshot server) (copy-tree snapshot t)))
+  "Replace the canned snapshot and re-seed the pane/agent tables from it.
+`herdr-mock--current-snapshot' rebuilds :panes and :agents from the live
+tables, so a snapshot replacement must also update the tables or the
+status change is silently overwritten."
+  (setf (herdr-mock--server-snapshot server) (copy-tree snapshot t))
+  (clrhash (herdr-mock--server-panes server))
+  (clrhash (herdr-mock--server-agents server))
+  (dolist (pn (plist-get snapshot :panes))
+    (when-let* ((pid (plist-get pn :pane_id)))
+      (puthash pid pn (herdr-mock--server-panes server))))
+  (dolist (info (plist-get snapshot :agents))
+    (when-let* ((pid (plist-get info :pane_id)))
+      (puthash pid info (herdr-mock--server-agents server)))))
 
 (defun herdr-mock-set-pending-events (server events)
   "Replace the pending events to push after the next subscribe.
@@ -331,17 +343,14 @@ that id or nil."
         (cond
          ((equal method "ping")
           (herdr-mock--respond client id `(:type "pong"
-                                            :version ,(if (>= (herdr-mock--server-protocol server) 22)
-                                                          "0.9.0-mock" "0.8.2-mock")
+                                            :version "0.9.0-mock"
                                             :protocol ,(herdr-mock--server-protocol server)
-                                            :capabilities ,(if (>= (herdr-mock--server-protocol server) 22)
-                                                               '(:live_handoff t :detached_server_daemon t
-                                                                 :endpoint_protocol_generation 1
-                                                                 :surface_interest t :health_check t)
-                                                             '(:live_handoff t :detached_server_daemon t))))
+                                            :capabilities (:live_handoff t :detached_server_daemon t
+                                                           :endpoint_protocol_generation 1
+                                                           :surface_interest t :health_check t)))
           (delete-process client))
          ((equal method "session.snapshot")
-          (herdr-mock--respond client id `(:snapshot ,(herdr-mock--server-snapshot server)))
+          (herdr-mock--respond client id `(:snapshot ,(herdr-mock--current-snapshot server)))
           (delete-process client))
          ((equal method "events.subscribe")
           (let ((stale (herdr-mock--find-stale-pane-sub params server)))
@@ -357,10 +366,7 @@ that id or nil."
                                              (format "pane not found: %s" stale))
                   (delete-process client))
               (herdr-mock--respond client id '(:type "subscription_started"))
-              (setf (herdr-mock--server-subscription-client server) client)
-              (when (< (herdr-mock--server-protocol server) 22)
-                (dolist (ev (herdr-mock--server-pending-events server))
-                  (herdr-mock-push-event server (car ev) (cdr ev)))))))
+              (setf (herdr-mock--server-subscription-client server) client))))
          (t
           (let ((handler (and (herdr-mock--server-handlers server)
                               (assoc method (herdr-mock--server-handlers server))))
@@ -490,9 +496,27 @@ empty object."
 
 ;;; --- Canned snapshot ----------------------------------------------
 
+(defun herdr-mock--current-snapshot (server)
+  "Build a fresh snapshot from SERVER's current pane and agent tables.
+The static snapshot fixture set at `herdr-mock-start' time does not
+reflect panes added by `pane.split' or removed by `pane.close'.  A real
+Herdr `session.snapshot' always returns current state; the mock mirrors
+that by rebuilding the panes and agents from the live tables while
+preserving the static workspaces/tabs."
+  (let* ((snapshot (copy-tree (herdr-mock--server-snapshot server) t))
+         (panes nil)
+         (agents nil))
+    (maphash (lambda (_id pn) (push pn panes))
+             (herdr-mock--server-panes server))
+    (maphash (lambda (_id ag) (push ag agents))
+             (herdr-mock--server-agents server))
+    (plist-put snapshot :panes (nreverse panes))
+    (plist-put snapshot :agents (nreverse agents))
+    snapshot))
+
 (defun herdr-mock--default-snapshot ()
   "Return a canned, anonymized snapshot plist."
-  '(:protocol 20 :version "0.8.2-mock"
+  '(:protocol 22 :version "0.9.0-mock"
     :focused_workspace_id "w1" :focused_tab_id "w1:t1"
     :focused_pane_id "w1:p1"
     :workspaces ((:workspace_id "w1" :label "demo" :number 1
@@ -730,8 +754,8 @@ its cwd (faithful to live Herdr, where an agent's cwd is the pane's cwd)."
   "Mock pane.close: drop the pane + agent and push a pane_closed event.
 Removing the pane from the pane table (not just the agent) keeps
 `pane.list' faithful: a closed pane is no longer ground-truth live, so
-the client's `herdr--reconcile-panes' can drop a stale cache entry for
-it rather than being told it still exists."
+the client's `herdr--synchronize-live' can reconcile subscribed ids
+against the post-event cache, rather than being told it still exists."
   (let* ((server herdr-mock--current)
          (pane-id (plist-get params :pane_id)))
     (remhash pane-id (herdr-mock--server-panes server))
@@ -893,8 +917,8 @@ Returns the live envelope (:type \"worktree_list\" :source ... :worktrees
 The pane table holds snapshot panes (seeded at start) plus panes
 provisioned by pane.split / worktree.create, minus any closed by
 pane.close — exactly the set a real `pane.list' (`PaneList { panes:
-Vec<PaneInfo> }') would return.  The client's `herdr--reconcile-panes'
-reads this to drop cached pane ids the server no longer reports."
+Vec<PaneInfo> }') would return.  The client's `herdr--synchronize-live'
+reads this to enumerate live panes for the per-pane subscribe set."
   (let ((server herdr-mock--current)
         (out nil))
     (maphash (lambda (_id pn) (push pn out))
