@@ -755,5 +755,190 @@ connection stays live without a reconnect."
     (while (< (float-time) deadline)
       (accept-process-output nil 0.05 nil))))
 
+;;; --- Herdr 0.9 live-only subscriptions -----------------------------
+
+(defun herdr-test--use-protocol22 (server)
+  "Make SERVER advertise the Herdr 0.9 wire contract."
+  (herdr-mock-set-agent-handlers server)
+  (setf (herdr-mock--server-protocol server) 22)
+  (setf (plist-get (herdr-mock--server-snapshot server) :protocol) 22))
+
+(ert-deftest herdr-v090-connect-live-before-snapshot ()
+  "Live-only subscriptions precede snapshots; retained history is ignored."
+  (with-herdr-mock path server
+    (herdr-test--use-protocol22 server)
+    (setf (herdr-mock--server-pending-events server)
+          '(("pane.agent_status_changed" .
+             (:pane_id "w1:p1" :workspace_id "w1" :agent_status "blocked"))))
+    (herdr-connect path)
+    (should (herdr-connected-p))
+    (should (= 1 (plist-get (herdr--connection-capabilities herdr--conn)
+                           :endpoint_protocol_generation)))
+    (should (equal (mapcar #'cadr
+                          (reverse (herdr-mock--server-received-requests server)))
+                   '("ping" "pane.list" "events.subscribe" "session.snapshot")))
+    (should (equal "working" (herdr-agent-agent-status
+                         (herdr-model-find-agent "w1:p1"))))))
+
+(ert-deftest herdr-v090-empty-session ()
+  "A fresh headless server need not contain a workspace or focused pane."
+  (with-herdr-mock path server
+    (herdr-test--use-protocol22 server)
+    (herdr-mock-set-snapshot server
+                             '(:protocol 22 :version "0.9.0" :workspaces nil
+                               :tabs nil :panes nil :agents nil :layouts nil))
+    (clrhash (herdr-mock--server-panes server))
+    (clrhash (herdr-mock--server-agents server))
+    (should (herdr-connect path))
+    (should-not (herdr-workspaces))
+    (should-not (herdr-focused-workspace))))
+
+(ert-deftest herdr-v090-snapshot-replays-newer-events-in-order ()
+  "Snapshot installation cannot replace events delivered during its RPC."
+  (with-herdr-mock path server
+    (herdr-test--use-protocol22 server)
+    (let ((request (symbol-function 'herdr-protocol-request))
+          (herdr-event-agent-status-hook nil) statuses)
+      (add-hook 'herdr-event-agent-status-hook
+                (lambda (_)
+                  (push (herdr-agent-agent-status
+                         (herdr-model-find-agent "w1:p1")) statuses)))
+      (cl-letf (((symbol-function 'herdr-protocol-request)
+                 (lambda (method params &rest args)
+                   (let ((result (apply request method params args)))
+                     (when (equal method "session.snapshot")
+                       (herdr--on-event "pane_agent_status_changed"
+                                        '(:pane_id "w1:p1" :workspace_id "w1"
+                                          :agent_status "blocked"))
+                       (herdr--on-event "pane_agent_status_changed"
+                                        '(:pane_id "w1:p1" :workspace_id "w1"
+                                          :agent_status "done")))
+                     result))))
+        (herdr-connect path))
+      (should (equal (nreverse statuses) '("blocked" "done")))
+      (should (equal "done" (herdr-agent-agent-status
+                        (herdr-model-find-agent "w1:p1")))))))
+
+(ert-deftest herdr-v090-pane-created-before-subscribe-is-covered ()
+  "A pane absent from enumeration but present in the snapshot is subscribed."
+  (with-herdr-mock path server
+    (herdr-test--use-protocol22 server)
+    (let ((request (symbol-function 'herdr-protocol-request)) injected)
+      (cl-letf (((symbol-function 'herdr-protocol-request)
+                 (lambda (method params &rest args)
+                   (let ((result (apply request method params args)))
+                     (when (and (equal method "pane.list") (not injected))
+                       (setq injected t)
+                       (let ((pane '(:pane_id "w1:p2" :workspace_id "w1"
+                                     :tab_id "w1:t1" :terminal_id "term_two"
+                                     :revision 0 :agent_status "unknown")))
+                         (puthash "w1:p2" pane (herdr-mock--server-panes server))
+                         (push pane (plist-get (herdr-mock--server-snapshot server)
+                                               :panes))))
+                     result))))
+        (herdr-connect path))
+      (let* ((requests (herdr-mock--server-received-requests server))
+             (subs (cl-remove-if-not
+                    (lambda (req) (equal (cadr req) "events.subscribe")) requests)))
+        (should (= 2 (length subs)))
+        (should (cl-find "w1:p2" (plist-get (nth 2 (car subs)) :subscriptions)
+                         :key (lambda (sub) (plist-get sub :pane_id)) :test #'equal)))
+      (should (herdr-connected-p)))))
+
+(ert-deftest herdr-v090-rebuild-recovers-gap-status-and-pins-endpoint ()
+  "Status changed while detached is recovered without an initial status push."
+  (with-herdr-mock path server
+    (herdr-test--use-protocol22 server)
+    (herdr-connect path)
+    (let ((request (symbol-function 'herdr-protocol-request))
+          (old (herdr--connection-subscription-proc herdr--conn))
+          (herdr-socket-path "/unused/wrong-endpoint.sock"))
+      (cl-letf (((symbol-function 'herdr-protocol-request)
+                 (lambda (method params &rest args)
+                   (when (equal method "pane.list")
+                     (should-not (herdr-protocol-subscription-alive-p old))
+                     (setf (plist-get
+                            (car (plist-get (herdr-mock--server-snapshot server) :agents))
+                            :agent_status) "blocked"))
+                   (apply request method params args))))
+        (herdr--resubscribe))
+      (should (herdr-connected-p))
+      (should (equal path (herdr--connection-socket-path herdr--conn)))
+      (should (equal "blocked" (herdr-agent-agent-status
+                           (herdr-model-find-agent "w1:p1")))))))
+
+(ert-deftest herdr-v090-reconnect-uses-live-order-and-resets-backoff ()
+  "Reconnect uses the same subscribe-first ordering as initial connect."
+  (with-herdr-mock path server
+    (herdr-test--use-protocol22 server)
+    (herdr-connect path)
+    (herdr--stop-subscription herdr--conn)
+    (setf (herdr--connection-connected herdr--conn) nil
+          (herdr--connection-reconnect-attempts herdr--conn) 4
+          (herdr-mock--server-received-requests server) nil)
+    (herdr--reconnect)
+    (should (herdr-connected-p))
+    (should (= 0 (herdr--connection-reconnect-attempts herdr--conn)))
+    (should (equal (mapcar #'cadr
+                          (reverse (herdr-mock--server-received-requests server)))
+                   '("ping" "pane.list" "events.subscribe" "session.snapshot")))))
+
+(ert-deftest herdr-v090-snapshot-error-replays-and-closes-stream ()
+  "An RPC error still replays received events and leaves no orphan stream."
+  (with-herdr-mock path server
+    (herdr-test--use-protocol22 server)
+    (herdr-connect path)
+    (let ((request (symbol-function 'herdr-protocol-request))
+          (conn herdr--conn))
+      (cl-letf (((symbol-function 'herdr-protocol-request)
+                 (lambda (method params &rest args)
+                   (if (equal method "session.snapshot")
+                       (progn
+                         (herdr--on-event "pane_agent_status_changed"
+                                          '(:pane_id "w1:p1" :workspace_id "w1"
+                                            :agent_status "blocked"))
+                         (signal 'herdr-request-error '("injected failure")))
+                     (apply request method params args)))))
+        (should-error (herdr--synchronize-live conn) :type 'herdr-request-error))
+      (should (equal "blocked" (herdr-agent-agent-status
+                           (herdr-model-find-agent "w1:p1"))))
+      (should-not (herdr--connection-subscription-proc conn)))))
+
+(ert-deftest herdr-v090-subscription-failure-is-bounded ()
+  "A missing ACK cannot loop forever or advertise a connected client."
+  (with-herdr-mock path server
+    (herdr-test--use-protocol22 server)
+    (let ((starts 0))
+      (cl-letf (((symbol-function 'herdr--start-subscription)
+                 (lambda (&rest _) (cl-incf starts) nil)))
+        (should-error (herdr-connect path) :type 'herdr-connection-error))
+      (should (= starts 3))
+      (should-not herdr--conn)
+      (should-not herdr--resubscribe-timer))))
+
+(ert-deftest herdr-v090-rebuild-failure-enters-backoff ()
+  "A failed rebuild does not leave partial coverage reported as connected."
+  (with-herdr-mock path server
+    (herdr-test--use-protocol22 server)
+    (herdr-connect path)
+    (let ((herdr-reconnect-delay 60))
+      (cl-letf (((symbol-function 'herdr--start-subscription)
+                 (lambda (&rest _) nil)))
+        (herdr--resubscribe))
+      (should-not (herdr-connected-p))
+      (should (= 1 (herdr--connection-reconnect-attempts herdr--conn)))
+      (should (timerp (herdr--connection-reconnect-timer herdr--conn)))
+      (should-not herdr--resubscribe-timer))))
+
+(ert-deftest herdr-v090-pane-list-boundary-validation ()
+  "Unknown fields and empty arrays are valid; absent/malformed ids are not."
+  (should-not (herdr-model-pane-list-ids '(:panes [] :future t)))
+  (should (equal '("w1:p1")
+                 (herdr-model-pane-list-ids
+                  '(:panes [(:pane_id "w1:p1" :future t)]))))
+  (dolist (result '(nil (:panes 3) (:panes [(:pane_id 7)])
+                   (:panes [(:pane_id "")])))
+    (should-error (herdr-model-pane-list-ids result) :type 'herdr-protocol-error)))
+
 (provide 'herdr-protocol-test)
 ;;; herdr-protocol-test.el ends here

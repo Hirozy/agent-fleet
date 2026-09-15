@@ -32,15 +32,14 @@
 ;;
 ;; The connection flow mirrors `docs/PROTOCOL.md`:
 ;;
-;;   discover socket -> ping (check protocol) -> session.snapshot
-;;       -> replace cache -> events.subscribe -> live
+;;   discover socket -> ping -> pane.list -> events.subscribe
+;;       -> session.snapshot -> replace cache + replay queued events -> live
 ;;
 ;; On subscription loss: mark disconnected, schedule reconnect with
-;; exponential backoff; on reconnect, ping -> snapshot (wholesale
-;; cache replace) -> re-subscribe with a recomputed per-pane set.
-;; The client never invents a missed-event replay: a fresh snapshot is the
-;; canonical resync.  Herdr may drain its bounded EventHub buffer when a new
-;; subscription starts, so model handlers are explicitly replay-idempotent.
+;; exponential backoff.  Protocol 22 uses the same subscribe-first flow for
+;; reconnect and pane-set rebuilds.  Older servers retain snapshot-first
+;; startup because they may replay retained events.  Snapshots recover current
+;; state, not an invented history of transitions missed while disconnected.
 
 ;;; Code:
 
@@ -58,8 +57,8 @@
 This is a fixed invariant, not a user setting: the server's protocol
 (from `ping') must be at least this.  A server with a HIGHER protocol
 is accepted (the client tolerates unknown fields).  The client is
-verified against Herdr 0.8.2 (protocol 20); the permissive constant
-(19) also accepts the earlier 0.8.0 baseline.")
+verified against Herdr 0.9.0 (protocol 22); the permissive constant
+also retains the earlier protocol 19/20 compatibility path.")
 
 (defcustom herdr-reconnect-max-attempts 12
   "Maximum reconnection attempts before giving up.
@@ -127,16 +126,14 @@ server is never added here.")
 
 (defvar herdr-synced-hook nil
   "Hook run after the cache is wholesale-replaced from a session snapshot.
-Fires from `herdr-connect' and `herdr--reconnect' immediately after
-`herdr-model-set-cache', before the subscription stream is (re)started.
-Each function is called with one argument (nil).  This is the canonical
-resync signal: a fresh snapshot is the authoritative state, and replayed
-events from the EventHub ring buffer arrive only later via the
-subscription.  Consumers that need the current state should read it via
-`herdr-agents' / `herdr-model-cache' at hook-fire time.
+Fires from connect and reconnect, and also protocol-22 subscription rebuilds.
+For protocol 22 the stream is established before the snapshot and queued
+events are replayed before this hook.  Older servers notify before starting
+the stream.  Each function receives one argument (nil).  Consumers should
+read the current cache via `herdr-agents' / `herdr-model-cache'.
 
 `herdr-connected-p' is NOT guaranteed to return t when this hook runs —
-the subscription is not yet live.  Consumers must not call `herdr-connect'
+bootstrap may still be in progress.  Consumers must not call `herdr-connect'
 or `herdr-disconnect' from within the hook, as the connection is
 mid-bootstrap.")
 
@@ -164,12 +161,90 @@ after a disconnect is a transition.")
 
 ;;; --- Connection lifecycle -----------------------------------------
 
+(defvar herdr--synchronizing nil
+  "Non-nil during a live-only subscription/snapshot reconciliation.
+The synchronous caller owns failure recovery and pane-set reconciliation.")
+
+(defun herdr--stop-subscription (conn)
+  "Close CONN's stream intentionally, without triggering recovery."
+  (when-let* ((proc (herdr--connection-subscription-proc conn)))
+    (setf (herdr--connection-subscription-proc conn) nil)
+    (herdr-protocol-unsubscribe proc)))
+
+(defun herdr--synchronize-live (conn)
+  "Reconcile protocol-22 CONN using one live-only stream at a time.
+Enumerate panes, subscribe and await ACK, then install a fresh snapshot
+under event deferral.  Compare subscribed ids with the post-event cache to
+cover panes created between enumeration and subscription.  Retry at most
+three times, then let the caller use normal connection failure recovery.
+Snapshots recover final state, not transition history during a stream gap."
+  (let ((herdr-socket-path (herdr--connection-socket-path conn))
+        (herdr--synchronizing t)
+        (attempt 0) complete success)
+    (unwind-protect
+        (progn
+          (while (and (not complete) (< attempt 3))
+            (cl-incf attempt)
+            (herdr--stop-subscription conn)
+            (let ((ids (herdr-model-pane-list-ids
+                        (herdr-protocol-request "pane.list" nil)))
+                  proc)
+              ;; Flush each attempt separately.  Events from a discarded
+              ;; attempt must never be replayed over a later snapshot.
+              (herdr-call-with-deferred-events
+               (lambda ()
+                 (setq proc
+                       (herdr--start-subscription
+                        conn (herdr-events-subscriptions-for-pane-ids ids)))
+                 (when (herdr--await-subscription proc)
+                   (herdr-model-set-cache
+                    (herdr-model-parse-snapshot
+                     (herdr-protocol-request "session.snapshot" nil))))))
+              (setq complete
+                    (and (herdr-protocol-subscription-alive-p proc)
+                         (herdr-protocol-subscription-started-p proc)
+                         (equal (sort (copy-sequence ids) #'string<)
+                                (sort (mapcar #'herdr-pane-id
+                                              (herdr-model-panes))
+                                      #'string<))))))
+          (unless complete
+            (signal 'herdr-connection-error
+                    (list :reason 'subscription-failed
+                          :path herdr-socket-path)))
+          (let ((herdr--synchronizing nil))
+            (run-hook-with-args 'herdr-synced-hook nil))
+          ;; A hook can pump process output; do not publish a dead stream.
+          (unless (herdr-protocol-subscription-alive-p
+                   (herdr--connection-subscription-proc conn))
+            (setq complete nil)
+            (signal 'herdr-connection-error
+                    (list :reason 'subscription-failed)))
+          (setq success t))
+      (unless success (herdr--stop-subscription conn)))))
+
+(defun herdr--connect-live (path pong)
+  "Connect to protocol-22 server PATH using verified PONG metadata."
+  (let ((conn (make-herdr--connection
+               :socket-path path :protocol (plist-get pong :protocol)
+               :version (plist-get pong :version)
+               :capabilities (plist-get pong :capabilities))))
+    (setq herdr--conn conn)
+    (condition-case err
+        (progn
+          (herdr--synchronize-live conn)
+          (setf (herdr--connection-connected conn) t)
+          (herdr--notify-connection-state)
+          t)
+      (error
+       (herdr-disconnect)
+       (signal (car err) (cdr err))))))
+
 ;;;###autoload
 (defun herdr-connect (&optional socket-path)
   "Connect to a Herdr server and start mirroring its state.
 SOCKET-PATH overrides the discovered socket (see `herdr-socket-path').
-Performs: ping (protocol check) -> session.snapshot -> cache ->
-events.subscribe.  Returns t on success; signals a `herdr-error'
+Protocol 22 subscribes before installing its snapshot; older protocols use
+snapshot-first startup.  Returns t on success; signals a `herdr-error'
 condition on failure.  Reconnecting an already-live connection first
 disconnects."
   (interactive)
@@ -187,26 +262,28 @@ disconnects."
            (caps (plist-get pong :capabilities))
            (ver (plist-get pong :version)))
       (herdr--check-protocol proto)
-      (let* ((snap (herdr-protocol-request "session.snapshot" nil))
-             (session (herdr-model-parse-snapshot snap)))
-        (herdr-model-set-cache session)
-        (run-hook-with-args 'herdr-synced-hook nil)
-        (let ((conn (make-herdr--connection
-                     :socket-path path :protocol proto
-                     :version ver :capabilities caps
-                     :connected t :reconnect-attempts 0)))
-          (setq herdr--conn conn)
-          (let ((proc (herdr--start-subscription conn)))
-            (unless (herdr--await-current-subscription conn proc)
-              ;; A successful ping/snapshot is not a usable fleet
-              ;; connection without the event stream.  Do not report a
-              ;; false success or leave a reconnect timer behind.
-              (herdr-disconnect)
-              (signal 'herdr-connection-error
-                      (list :reason 'subscription-failed :path path))))
-          (herdr--log 'info "connected to Herdr %s (protocol %s)" ver proto)
-          (herdr--notify-connection-state)
-          t)))))
+      (if (>= proto 22)
+          (herdr--connect-live path pong)
+        (let* ((snap (herdr-protocol-request "session.snapshot" nil))
+               (session (herdr-model-parse-snapshot snap)))
+          (herdr-model-set-cache session)
+          (run-hook-with-args 'herdr-synced-hook nil)
+          (let ((conn (make-herdr--connection
+                       :socket-path path :protocol proto
+                       :version ver :capabilities caps
+                       :connected t :reconnect-attempts 0)))
+            (setq herdr--conn conn)
+            (let ((proc (herdr--start-subscription conn)))
+              (unless (herdr--await-current-subscription conn proc)
+		;; A successful ping/snapshot is not a usable fleet
+		;; connection without the event stream.  Do not report a
+		;; false success or leave a reconnect timer behind.
+		(herdr-disconnect)
+		(signal 'herdr-connection-error
+			(list :reason 'subscription-failed :path path))))
+            (herdr--log 'info "connected to Herdr %s (protocol %s)" ver proto)
+            (herdr--notify-connection-state)
+            t))))))
 
 (defun herdr--check-protocol (server-protocol)
   "Signal `herdr-protocol-error' if SERVER-PROTOCOL is absent or too old."
@@ -216,18 +293,19 @@ disconnects."
             (list :server server-protocol
                   :required herdr-required-protocol-version))))
 
-(defun herdr--start-subscription (conn)
+(defun herdr--start-subscription (conn &optional subscriptions)
   "Open the long-lived subscription stream for CONN.
 Unsubscribes any previously-live subscription on CONN first (so a
 reconnect never leaves a second live stream pushing duplicate events).
 Returns the new subscription process (which may be nil if the socket
-could not be opened)."
+could not be opened).  SUBSCRIPTIONS overrides the cache-derived set."
   (let ((old (herdr--connection-subscription-proc conn)))
     (when (herdr-protocol-subscription-alive-p old)
       (herdr-protocol-unsubscribe old)))
   (let ((herdr-socket-path (or (herdr--connection-socket-path conn)
                                herdr-socket-path))
-        (subs (herdr-events-subscriptions-for (herdr-model-cache))))
+        (subs (or subscriptions
+                  (herdr-events-subscriptions-for (herdr-model-cache)))))
     (let ((proc (herdr-protocol-subscribe
                  subs
                  #'herdr--on-event
@@ -242,7 +320,8 @@ could not be opened)."
                 (not (herdr-protocol-subscription-started-p proc))
                 (< (float-time) deadline))
       (accept-process-output proc 0.05))
-    (and (herdr-protocol-subscription-started-p proc) t)))
+    (and (herdr-protocol-subscription-alive-p proc)
+         (herdr-protocol-subscription-started-p proc) t)))
 
 (defun herdr--await-current-subscription (conn original)
   "Await ORIGINAL, or a resubscribe that replaced it on CONN.
@@ -308,7 +387,8 @@ order and replayed in arrival order by `herdr-call-with-deferred-events'.")
 (defun herdr--dispatch-event-now (kind data)
   "Dispatch pushed event KIND with DATA and schedule any needed resubscribe."
   (let ((descriptor (herdr-events-dispatch kind data)))
-    (when (herdr-events-rebuild-needed-p descriptor)
+    (when (and (not herdr--synchronizing)
+               (herdr-events-rebuild-needed-p descriptor))
       ;; Defer + coalesce: a burst of pane-set changes triggers a single
       ;; teardown/resubscribe rather than one per event.
       (unless herdr--resubscribe-pending
@@ -349,7 +429,8 @@ are replayed even if FUNCTION signals.  Nested calls share the outer queue."
 
 (defun herdr--resubscribe ()
   "Tear down and re-establish the subscription with a fresh per-pane set.
-First reconciles the cache against `pane.list' (ground truth) so a stale
+Protocol 22 uses subscribe-first snapshot reconciliation.  Older servers
+first reconcile the cache against `pane.list' (ground truth) so a stale
 pane id — a `pane_created' replayed from the EventHub ring buffer whose
 matching close aged out — is dropped and remembered gone, never reaching
 the per-pane subscribe batch (one stale id rejects the whole batch on
@@ -357,22 +438,32 @@ real Herdr)."
   (setq herdr--resubscribe-pending nil)
   (setq herdr--resubscribe-timer nil)
   (let ((conn herdr--conn))
-    (when (and conn (herdr--connection-connected conn))
-      (let ((old (herdr--connection-subscription-proc conn)))
-        (when (herdr-protocol-subscription-alive-p old)
-          (herdr-protocol-unsubscribe old)))
-      (herdr--reconcile-panes)
-      (herdr--log 'debug "resubscribing (pane set changed)")
-      ;; Reuse the connection helper so an explicit socket override remains
-      ;; in force after pane-set changes as well as after full reconnects.
-      (let ((proc (herdr--start-subscription conn)))
-        (setf (herdr--connection-subscription-proc conn) proc)
-        (unless (herdr--await-current-subscription conn proc)
-          ;; Rejection callbacks normally mark the connection lost.  A
-          ;; silent/unacknowledged stream needs the same recovery path.
-          (when (herdr--connection-connected conn)
-            (herdr--on-subscription-lost
-             (list :type 'closed :reason 'subscribe-ack-timeout))))))))
+    (when (and conn (herdr--connection-connected conn)
+               (not herdr--synchronizing))
+      (if (>= (or (herdr--connection-protocol conn) 0) 22)
+          (condition-case err
+              (herdr--synchronize-live conn)
+            (error
+             (herdr--stop-subscription conn)
+             (herdr--log 'warn "resubscribe failed: %s"
+                         (error-message-string err))
+             (herdr--on-subscription-lost
+              (list :type 'closed :reason 'resubscribe-failed))))
+        (let ((old (herdr--connection-subscription-proc conn)))
+          (when (herdr-protocol-subscription-alive-p old)
+            (herdr-protocol-unsubscribe old)))
+	(herdr--reconcile-panes)
+	(herdr--log 'debug "resubscribing (pane set changed)")
+	;; Reuse the connection helper so an explicit socket override remains
+	;; in force after pane-set changes as well as after full reconnects.
+	(let ((proc (herdr--start-subscription conn)))
+          (setf (herdr--connection-subscription-proc conn) proc)
+          (unless (herdr--await-current-subscription conn proc)
+            ;; Rejection callbacks normally mark the connection lost.  A
+            ;; silent/unacknowledged stream needs the same recovery path.
+            (when (herdr--connection-connected conn)
+              (herdr--on-subscription-lost
+               (list :type 'closed :reason 'subscribe-ack-timeout)))))))))
 
 (defun herdr--on-subscription-lost (errdata)
   "Error callback: mark disconnected and schedule a reconnect.
@@ -381,7 +472,8 @@ Idempotent: a no-op if we are already disconnected (e.g. the close
 sentinel firing after the send-failed/rejected path already reported),
 preventing duplicate reconnect timers."
   (let ((conn herdr--conn))
-    (when (and conn (herdr--connection-connected conn))
+    (when (and conn (herdr--connection-connected conn)
+               (not herdr--synchronizing))
       (setf (herdr--connection-connected conn) nil)
       (setf (herdr--connection-subscription-proc conn) nil)
       (herdr--log 'warn "subscription lost: %S" errdata)
@@ -415,7 +507,7 @@ double error-callbacks), so one loss never schedules two timers."
                     (run-at-time delay nil #'herdr--reconnect)))))))))
 
 (defun herdr--reconnect ()
-  "Attempt to re-establish the connection (ping -> snapshot -> resubscribe).
+  "Attempt to re-establish the connection using its protocol's sync order.
 On success marks connected and resets the backoff; on any failure
 (including a subscribe that did not produce a live process) schedules
 another attempt WITHOUT resetting the backoff, so a persistently-failing
@@ -436,27 +528,33 @@ server still reaches `herdr-reconnect-max-attempts' and gives up."
               (setf (herdr--connection-version conn) (plist-get pong :version))
               (setf (herdr--connection-capabilities conn)
                     (plist-get pong :capabilities)))
-            (let* ((snap (herdr-protocol-request "session.snapshot" nil))
-                   (session (herdr-model-parse-snapshot snap)))
-              (herdr-model-set-cache session))
-            (run-hook-with-args 'herdr-synced-hook nil)
-            ;; Let buffered pane events rebuild the subscription during the
-            ;; ack wait just as they do during the initial connection.
-            (setf (herdr--connection-connected conn) t)
-            (let ((proc (herdr--start-subscription conn)))
-              (if (herdr--await-current-subscription conn proc)
-                  (progn
-                    (setf (herdr--connection-connected conn) t)
-                    (setf (herdr--connection-reconnect-attempts conn) 0)
-                    (setf (herdr--connection-reconnect-timer conn) nil)
-                    (herdr--log 'info "reconnected to Herdr")
-                    t)
-                ;; ping+snapshot worked but the subscription did not land;
-                ;; do not advertise connected, do not reset the backoff.
-                (setf (herdr--connection-connected conn) nil)
-                (herdr--log 'warn "reconnect: subscription not live")
-                (unless (herdr--connection-reconnect-timer conn)
-                  (herdr--schedule-reconnect)))))
+            (if (>= (herdr--connection-protocol conn) 22)
+                (progn
+                  (herdr--synchronize-live conn)
+                  (setf (herdr--connection-connected conn) t
+                        (herdr--connection-reconnect-attempts conn) 0)
+                  (herdr--log 'info "reconnected to Herdr"))
+              (let* ((snap (herdr-protocol-request "session.snapshot" nil))
+                     (session (herdr-model-parse-snapshot snap)))
+		(herdr-model-set-cache session))
+              (run-hook-with-args 'herdr-synced-hook nil)
+              ;; Let buffered pane events rebuild the subscription during the
+              ;; ack wait just as they do during the initial connection.
+              (setf (herdr--connection-connected conn) t)
+              (let ((proc (herdr--start-subscription conn)))
+		(if (herdr--await-current-subscription conn proc)
+                    (progn
+                      (setf (herdr--connection-connected conn) t)
+                      (setf (herdr--connection-reconnect-attempts conn) 0)
+                      (setf (herdr--connection-reconnect-timer conn) nil)
+                      (herdr--log 'info "reconnected to Herdr")
+                      t)
+                  ;; ping+snapshot worked but the subscription did not land;
+                  ;; do not advertise connected, do not reset the backoff.
+                  (setf (herdr--connection-connected conn) nil)
+                  (herdr--log 'warn "reconnect: subscription not live")
+                  (unless (herdr--connection-reconnect-timer conn)
+                    (herdr--schedule-reconnect))))))
         (error
          (setf (herdr--connection-connected conn) nil)
          (herdr--log 'warn "reconnect failed: %s" (error-message-string err))

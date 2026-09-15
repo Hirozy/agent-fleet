@@ -38,6 +38,7 @@
 ;;; Code:
 
 (require 'cl-lib)
+(require 'seq)
 (require 'subr-x)
 
 
@@ -218,6 +219,24 @@ incomplete pane counts must fail closed rather than imply an empty tab."
              (bad))))
        workspaces))
     (herdr-model-parse-snapshot result)))
+
+(defun herdr-model-pane-list-ids (result)
+  "Validate a `pane.list' RESULT and return its unique pane ids.
+An empty array is valid; a missing array or malformed identity is not.
+Ignore unknown fields so additive protocol changes remain compatible."
+  (unless (and (listp result) (plist-member result :panes)
+               (or (listp (plist-get result :panes))
+                   (vectorp (plist-get result :panes))))
+    (signal 'herdr-protocol-error
+            (list :method "pane.list" :reason 'malformed-result)))
+  (let (ids)
+    (seq-doseq (row (plist-get result :panes))
+      (let ((id (and (listp row) (plist-get row :pane_id))))
+        (unless (and (stringp id) (not (string-empty-p id)))
+          (signal 'herdr-protocol-error
+                  (list :method "pane.list" :reason 'invalid-pane-id)))
+        (push id ids)))
+    (delete-dups ids)))
 
 (defun herdr-model-parse-snapshot (result)
   "Build a `herdr-session' from a snapshot RESULT plist.
