@@ -121,7 +121,7 @@ authoritative snapshot is requested."
 ;; remembered gone is a stale replay, not a real new pane.  `apply-event'
 ;; flags these :replayp; rebuilding for them would resubscribe per replay,
 ;; and each resubscribe replays again — an infinite loop.  See
-;; `herdr-model-apply-event' and `herdr--reconcile-panes' (herdr.el).
+;; `herdr-model-apply-event' and `herdr--synchronize-live' (herdr.el).
 
 (defconst herdr-events--rebuild-kinds
   '("workspace_closed" "tab_closed"
@@ -135,11 +135,10 @@ When true, the caller (herdr.el) rebuilds the per-pane subscription set
 (`pane.agent_status_changed' is pane-scoped, so a new pane needs a new
 per-pane subscription and the server accepts no additions to a live
 stream).  A REPLAYED event (DESCRIPTOR's :replayp is non-nil) is not a
-change: older Herdr servers drain retained events on every subscribe, so a
-`pane_created' for a pane already cached (or remembered gone) adds no new
-pane — rebuilding for it would resubscribe on every replayed create, and
-each resubscribe itself replays, looping.  See `herdr-model-apply-event'
-for how replays are flagged."
+change: a `pane_created' for a pane already cached (or remembered gone)
+adds no new pane — rebuilding for it would resubscribe on every such
+event, and each resubscribe might re-receive it, looping.  See
+`herdr-model-apply-event' for how replays are flagged."
   (and descriptor
        (not (plist-get descriptor :replayp))
        (member (plist-get descriptor :event)

@@ -202,10 +202,11 @@ invalid-session-name rather than silently treated as legacy."
   "A malformed pong without a protocol is not accepted as compatible.
 `herdr-required-protocol-version' is a fixed constant, not a setting."
   (should-error (herdr--check-protocol nil) :type 'herdr-protocol-error)
-  (should-error (herdr--check-protocol "20") :type 'herdr-protocol-error)
+  (should-error (herdr--check-protocol "22") :type 'herdr-protocol-error)
   (should-error (herdr--check-protocol 18) :type 'herdr-protocol-error)
-  (should-not (herdr--check-protocol 19))
-  (should-not (herdr--check-protocol 20)))
+  (should-error (herdr--check-protocol 21) :type 'herdr-protocol-error)
+  (should-not (herdr--check-protocol 22))
+  (should-not (herdr--check-protocol 23)))
 
 (ert-deftest herdr-schema-fixture-pins-critical-request-response-shapes ()
   "The checked-in schema guards fields that mocks previously got wrong."
@@ -262,11 +263,11 @@ invalid-session-name rather than silently treated as legacy."
 ;;; --- One-shot request/response via mock ---------------------------
 
 (ert-deftest herdr-protocol-ping ()
-  "ping returns a pong plist with protocol 20."
+  "ping returns a pong plist with protocol 22."
   (with-herdr-mock path srv
     (let ((pong (herdr-protocol-ping :timeout 2.0)))
       (should (equal (plist-get pong :type) "pong"))
-      (should (equal (plist-get pong :protocol) 20)))))
+      (should (equal (plist-get pong :protocol) 22)))))
 
 (ert-deftest herdr-protocol-snapshot ()
   "session.snapshot returns a snapshot with the canned shape."
@@ -396,7 +397,7 @@ is created under ~/.config."
       (herdr-protocol-test--drain 1.0)
       (should (= calls 1))
       (should (equal (plist-get result :type) "pong"))
-      (should (equal (plist-get result :protocol) 20)))))
+      (should (equal (plist-get result :protocol) 22)))))
 
 (ert-deftest herdr-protocol-async-server-error ()
   "An async server error delivers (error ERRDATA) with :type/:code once."
@@ -460,12 +461,13 @@ is created under ~/.config."
   "events.subscribe acks, then pushed events reach the callback."
   (with-herdr-mock path srv
     (let (events err)
-      (herdr-mock-set-pending-events
-       srv '(("workspace_focused" . (:workspace_id "w9"))))
       (let ((proc (herdr-protocol-subscribe
                    '((("type" . "workspace.focused")))
                    (lambda (ev data) (push (cons ev data) events))
                    (lambda (e) (setq err e)))))
+        (herdr-protocol-test--drain 1.0)
+        ;; Push the first event live (after the subscribe ack).
+        (herdr-mock-push-event srv "workspace_focused" '(:workspace_id "w9"))
         (herdr-protocol-test--drain 1.0)
         (should events)
         (should (equal (car (car events)) "workspace_focused"))
@@ -677,75 +679,16 @@ mock server is stopped so every reconnect attempt fails."
     (cl-letf (((symbol-function 'herdr-protocol-socket-path)
                (lambda () "/tmp/herdr-test.sock"))
               ((symbol-function 'herdr-protocol-ping)
-               (lambda (&rest _) '(:protocol 20 :version "mock")))
+               (lambda (&rest _) '(:protocol 22 :version "mock")))
               ((symbol-function 'herdr-protocol-request)
                (lambda (&rest _)
-                 '(:protocol 20 :version "mock" :workspaces () :tabs ()
+                 '(:protocol 22 :version "mock" :workspaces () :tabs ()
                    :panes () :agents ())))
               ((symbol-function 'herdr-protocol-subscribe)
                (lambda (&rest _) nil)))
       (should-error (herdr-connect) :type 'herdr-connection-error)
       (should-not herdr--conn)
       (should-not (herdr-model-cache)))))
-
-(ert-deftest herdr-resubscribe-allows-an-event-driven-replacement ()
-  "Pane-set rebuild waits for the current stream, not only the original one."
-  (let* ((conn (make-herdr--connection :connected t))
-         (herdr--conn conn)
-         (herdr--resubscribe-pending t)
-         (herdr--resubscribe-timer 'placeholder)
-         awaited)
-    (cl-letf (((symbol-function 'herdr-protocol-subscription-alive-p)
-               (lambda (_) nil))
-              ((symbol-function 'herdr--reconcile-panes) #'ignore)
-              ((symbol-function 'herdr--start-subscription)
-               (lambda (_conn) 'original-stream))
-              ((symbol-function 'herdr--await-current-subscription)
-               (lambda (seen-conn original)
-                 (setq awaited (list seen-conn original))
-                 t)))
-      (herdr--resubscribe)
-      (should (equal (list conn 'original-stream) awaited))
-      (should (herdr--connection-connected conn)))))
-
-
-(ert-deftest herdr-replay-stale-pane-does-not-break-connection ()
-  "A replayed `pane_created' for a closed pane must not leave us disconnected.
-The EventHub ring buffer replays on every subscribe; a `pane_created' for
-a pane whose matching `pane_closed' aged out of the bounded ring re-inserts
-the dead id into the cache.  The per-pane subscribe set then includes the
-stale id, and real Herdr rejects the WHOLE batch (`pane_get(...)?' →
-pane_not_found) → `on-subscription-lost' → reconnect → replay → loop,
-leaving `herdr-connected-p' nil (the reported bug).  The fix: `pane.list'
-reconciliation before each resubscribe drops stale ids, and the
-`gone-panes' replay guard stops the re-insert on the next replay — so the
-connection stays live without a reconnect."
-  (with-herdr-mock path srv
-    (herdr-mock-set-agent-handlers srv)
-    ;; A replayed create for a pane the snapshot does NOT report (its close
-    ;; aged out of the ring): the bug condition.  The mock rejects any
-    ;; per-pane subscribe referencing a pane it does not report as live,
-    ;; mirroring real Herdr's `pane_get(...)?' batch rejection.
-    (herdr-mock-set-pending-events srv
-      '(("pane_created" . (:pane (:pane_id "w1:p2" :workspace_id "w1"
-                                   :tab_id "w1:t1" :agent "codex"
-                                   :agent_status "idle" :cwd "/x")))))
-    (let ((herdr-reconnect-delay 0.1)
-          (herdr-reconnect-max-delay 0.2)
-          (herdr-reconnect-max-attempts 3))
-      (herdr-connect)
-      ;; Let the replay land, the rebuild fire, the reconcile + resubscribe
-      ;; settle.  Without the fix this loops on stale-pane rejection until
-      ;; max-attempts gives up (herdr--conn nil); with it, the reconcile
-      ;; drops the stale id before the resubscribe and the connection holds.
-      (herdr-protocol-test--drain 3.0)
-      (should (herdr-connected-p))
-      ;; The stale pane was dropped by reconciliation and remembered gone
-      ;; (so a further replayed create for it is ignored, not re-inserted).
-      (should-not (herdr-model-find-pane "w1:p2"))
-      (should (gethash "w1:p2"
-                       (herdr-session-gone-panes (herdr-model-cache)))))))
-
 
 ;;; --- Helpers ------------------------------------------------------
 
@@ -757,16 +700,9 @@ connection stays live without a reconnect."
 
 ;;; --- Herdr 0.9 live-only subscriptions -----------------------------
 
-(defun herdr-test--use-protocol22 (server)
-  "Make SERVER advertise the Herdr 0.9 wire contract."
-  (herdr-mock-set-agent-handlers server)
-  (setf (herdr-mock--server-protocol server) 22)
-  (setf (plist-get (herdr-mock--server-snapshot server) :protocol) 22))
-
 (ert-deftest herdr-v090-connect-live-before-snapshot ()
   "Live-only subscriptions precede snapshots; retained history is ignored."
   (with-herdr-mock path server
-    (herdr-test--use-protocol22 server)
     (setf (herdr-mock--server-pending-events server)
           '(("pane.agent_status_changed" .
              (:pane_id "w1:p1" :workspace_id "w1" :agent_status "blocked"))))
@@ -783,7 +719,6 @@ connection stays live without a reconnect."
 (ert-deftest herdr-v090-empty-session ()
   "A fresh headless server need not contain a workspace or focused pane."
   (with-herdr-mock path server
-    (herdr-test--use-protocol22 server)
     (herdr-mock-set-snapshot server
                              '(:protocol 22 :version "0.9.0" :workspaces nil
                                :tabs nil :panes nil :agents nil :layouts nil))
@@ -796,7 +731,6 @@ connection stays live without a reconnect."
 (ert-deftest herdr-v090-snapshot-replays-newer-events-in-order ()
   "Snapshot installation cannot replace events delivered during its RPC."
   (with-herdr-mock path server
-    (herdr-test--use-protocol22 server)
     (let ((request (symbol-function 'herdr-protocol-request))
           (herdr-event-agent-status-hook nil) statuses)
       (add-hook 'herdr-event-agent-status-hook
@@ -822,7 +756,6 @@ connection stays live without a reconnect."
 (ert-deftest herdr-v090-pane-created-before-subscribe-is-covered ()
   "A pane absent from enumeration but present in the snapshot is subscribed."
   (with-herdr-mock path server
-    (herdr-test--use-protocol22 server)
     (let ((request (symbol-function 'herdr-protocol-request)) injected)
       (cl-letf (((symbol-function 'herdr-protocol-request)
                  (lambda (method params &rest args)
@@ -848,7 +781,6 @@ connection stays live without a reconnect."
 (ert-deftest herdr-v090-rebuild-recovers-gap-status-and-pins-endpoint ()
   "Status changed while detached is recovered without an initial status push."
   (with-herdr-mock path server
-    (herdr-test--use-protocol22 server)
     (herdr-connect path)
     (let ((request (symbol-function 'herdr-protocol-request))
           (old (herdr--connection-subscription-proc herdr--conn))
@@ -870,7 +802,6 @@ connection stays live without a reconnect."
 (ert-deftest herdr-v090-reconnect-uses-live-order-and-resets-backoff ()
   "Reconnect uses the same subscribe-first ordering as initial connect."
   (with-herdr-mock path server
-    (herdr-test--use-protocol22 server)
     (herdr-connect path)
     (herdr--stop-subscription herdr--conn)
     (setf (herdr--connection-connected herdr--conn) nil
@@ -886,7 +817,6 @@ connection stays live without a reconnect."
 (ert-deftest herdr-v090-snapshot-error-replays-and-closes-stream ()
   "An RPC error still replays received events and leaves no orphan stream."
   (with-herdr-mock path server
-    (herdr-test--use-protocol22 server)
     (herdr-connect path)
     (let ((request (symbol-function 'herdr-protocol-request))
           (conn herdr--conn))
@@ -907,7 +837,6 @@ connection stays live without a reconnect."
 (ert-deftest herdr-v090-subscription-failure-is-bounded ()
   "A missing ACK cannot loop forever or advertise a connected client."
   (with-herdr-mock path server
-    (herdr-test--use-protocol22 server)
     (let ((starts 0))
       (cl-letf (((symbol-function 'herdr--start-subscription)
                  (lambda (&rest _) (cl-incf starts) nil)))
@@ -919,7 +848,6 @@ connection stays live without a reconnect."
 (ert-deftest herdr-v090-rebuild-failure-enters-backoff ()
   "A failed rebuild does not leave partial coverage reported as connected."
   (with-herdr-mock path server
-    (herdr-test--use-protocol22 server)
     (herdr-connect path)
     (let ((herdr-reconnect-delay 60))
       (cl-letf (((symbol-function 'herdr--start-subscription)

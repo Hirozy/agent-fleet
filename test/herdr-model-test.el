@@ -10,7 +10,7 @@
 
 (defun herdr-model-test--snapshot ()
   "A canned snapshot plist for tests."
-  '(:protocol 20 :version "0.8.2"
+  '(:protocol 22 :version "0.8.2"
     :focused_workspace_id "w1" :focused_tab_id "w1:t1"
     :focused_pane_id "w1:p1"
     :workspaces ((:workspace_id "w1" :label "demo" :number 1
@@ -44,7 +44,7 @@ The workspace WS-ID has wire LABEL and a single root pane (`WS-ID:p1',
 cwd PANE-CWD).  When LABEL = basename(PANE-CWD) the workspace has no
 custom name (label auto-derived from cwd); otherwise the parse
 post-pass freezes LABEL as `custom-name' (a pre-connect rename)."
-  `(:protocol 20 :version "0.8.2"
+  `(:protocol 22 :version "0.8.2"
     :focused_workspace_id ,ws-id :focused_tab_id ,(concat ws-id ":t1")
     :focused_pane_id ,(concat ws-id ":p1")
     :workspaces ((:workspace_id ,ws-id :label ,label :number 1
@@ -74,7 +74,7 @@ post-pass freezes LABEL as `custom-name' (a pre-connect rename)."
     (should (= 1 (length (herdr-model-panes session))))
     (should (= 1 (length (herdr-model-agents session))))
     (should (equal (herdr-session-focused-workspace-id session) "w1"))
-    (should (equal (herdr-session-protocol session) 20))))
+    (should (equal (herdr-session-protocol session) 22))))
 
 (ert-deftest herdr-model-parse-snapshot-tolerates-unknown-fields ()
   "Unknown fields in the snapshot are ignored, not stored."
@@ -87,7 +87,7 @@ post-pass freezes LABEL as `custom-name' (a pre-connect rename)."
   (should-error (herdr-model-parse-snapshot nil) :type 'herdr-protocol-error)
   (should-error
    (herdr-model-parse-snapshot
-    '(:protocol 20 :workspaces () :tabs () :panes ()))
+    '(:protocol 22 :workspaces () :tabs () :panes ()))
    :type 'herdr-protocol-error))
 
 (ert-deftest herdr-model-find-agent ()
@@ -513,7 +513,7 @@ stale here; this distinguishes the live-derived-label behavior."
 the first tab's root pane), not a split pane.  A split pane's cwd
 change must not change the label; the root pane's cwd change must."
   (let ((session (herdr-model-parse-snapshot
-                  `(:protocol 20 :version "0.8.2"
+                  `(:protocol 22 :version "0.8.2"
                     :focused_workspace_id "w1" :focused_tab_id "w1:t1"
                     :focused_pane_id "w1:p1"
                     :workspaces ((:workspace_id "w1" :label "root" :number 1
