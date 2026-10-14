@@ -645,23 +645,23 @@ response lacks a workspace or root pane."
                 (or kind "agent"))))
     (format "%s-%d" base agent-fleet--name-counter)))
 
-(defun agent-fleet--suggest-name (workspace-id kind)
-  "Suggest a default agent name for a new agent in WORKSPACE-ID.
-Return `<label>-<N>': <label> is the workspace's display name
-\(`herdr-workspace-label') and <N> is the smallest positive integer
-whose `<label>-<N>' is not already a live agent's name, so successive
-agents in one workspace get distinct serials.  When WORKSPACE-ID is
-nil or no cached workspace matches it, fall back to
-`agent-fleet--fresh-name' (KIND), the global kind+counter default."
-  (let ((ws (and workspace-id (herdr-find-workspace workspace-id))))
-    (if ws
-        (let ((label (herdr-workspace-label ws))
-              (n 1))
-          (while (herdr-model-find-agent-by-name
-                  (format "%s-%d" label n))
-            (cl-incf n))
-          (format "%s-%d" label n))
-      (agent-fleet--fresh-name kind))))
+(declare-function agent-fleet-project-root-for-cwd "agent-fleet-project" (dir))
+
+(defun agent-fleet--suggest-name (cwd kind)
+  "Suggest a name from CWD's Project basename, or its directory basename.
+Append the smallest positive serial unused across all cached agents.
+For a root directory without a basename, use KIND as the label.
+The directory fallback is only a name label, not a Project identity."
+  (require 'agent-fleet-project)
+  (let* ((root (agent-fleet-project-root-for-cwd cwd))
+         (label (file-name-nondirectory
+                 (directory-file-name (expand-file-name (or root cwd)))))
+         (n 1))
+    (when (string-empty-p label)
+      (setq label (agent-fleet--kind-wire-name kind)))
+    (while (herdr-model-find-agent-by-name (format "%s-%d" label n))
+      (cl-incf n))
+    (format "%s-%d" label n)))
 
 ;;;###autoload
 (cl-defun agent-fleet-start (kind &key name cwd workspace pane args
@@ -688,8 +688,8 @@ When called interactively, the user is always prompted to pick the
 workspace the agent starts in (unless :workspace/:pane/:worktree is given
 explicitly); the agent then opens as a fresh tab in the selected
 workspace, rather than a new frame.  The name prompt is prefilled with
-`<workspace-label>-<serial>' — the workspace's display name plus the
-smallest serial not already a live agent's name; accept it or type your
+`<project-or-directory-name>-<serial>' using the selected working directory
+and the smallest serial not already a live agent's name; accept it or type your
 own.  The working-directory prompt defaults to the calling buffer's
 `default-directory' and accepts any existing directory, including one
 without a Project.  After a successful interactive start, the agent's
@@ -715,15 +715,12 @@ Returns the `herdr-agent' struct for the started agent.  Signals an
    (let* ((choices (agent-fleet--kind-choices))
           (sel (completing-read "Agent kind: " (mapcar #'car choices) nil t))
           (kind (cdr (assoc sel choices #'equal)))
-          ;; Resolve the workspace before the name so the prompt can
-          ;; suggest a workspace-derived default.  Passing :workspace
-          ;; short-circuits the body's own --read-workspace, so the
-          ;; workspace is prompted exactly once.
+          ;; Pass the chosen workspace so the body does not prompt again.
           (ws-id (agent-fleet--read-workspace "Start in workspace: "))
-          (suggested (agent-fleet--suggest-name ws-id kind))
-          (nm (read-string "Name: " suggested))
           (cwd (read-directory-name "Working directory: "
-                                    default-directory nil t)))
+                                    default-directory nil t))
+          (suggested (agent-fleet--suggest-name cwd kind))
+          (nm (read-string "Name: " suggested)))
      (list kind :workspace ws-id :cwd (expand-file-name cwd)
            :name (if (string-empty-p nm) suggested nm))))
   (agent-fleet--ensure-connected)

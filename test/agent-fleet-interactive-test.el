@@ -730,14 +730,14 @@ message for quick auditing."
 ;;; --- Agent control commands -----------------------------------------
 
 (ert-deftest agent-fleet-interactive-start ()
-  "Interactive start reads kind/workspace/name/cwd and provisions with them.
-The name prompt is prefilled with a workspace-derived suggestion
+  "Interactive start reads kind/workspace/cwd/name and provisions with them.
+The name prompt is prefilled with a Project-derived suggestion
 \(`<label>-<serial>'), and the workspace picked interactively is the one
 used for provisioning — the body does not prompt a second time."
   (let ((herdr-model--cache (agent-fleet-interactive-test--session))
         (agent-fleet--name-counter 0)
         (agent-fleet-agent-started-hook nil)
-        name-init provisioned-ws provisioned-cwd captured)
+        name-init provisioned-ws provisioned-cwd captured directory-read)
     (cl-letf (((symbol-function 'completing-read)
                (lambda (prompt &rest _)
                  (cond
@@ -746,13 +746,19 @@ used for provisioning — the body does not prompt a second time."
                   (t (error "unexpected completing-read: %s" prompt)))))
               ((symbol-function 'read-string)
                (lambda (_prompt &optional initial-input &rest _)
+                 (should directory-read)
                  (setq name-init initial-input)
                  "reviewer"))
               ((symbol-function 'read-directory-name)
                (lambda (_prompt directory _default mustmatch &rest _)
                  (should (equal directory default-directory))
                  (should mustmatch)
+                 (setq directory-read t)
                  temporary-file-directory))
+              ((symbol-function 'agent-fleet-project-root-for-cwd)
+               (lambda (cwd)
+                 (should (equal cwd temporary-file-directory))
+                 "/repos/chosen-project"))
               ((symbol-function 'agent-fleet--ensure-connected) #'ignore)
               ((symbol-function 'agent-fleet--provision-pane)
                (lambda (ws-id cwd &rest _)
@@ -769,7 +775,7 @@ used for provisioning — the body does not prompt a second time."
       (let ((agent (call-interactively #'agent-fleet-start)))
         (should (equal "reviewer" (herdr-agent-name agent)))
         (should (equal "codex" (herdr-agent-agent agent)))))
-    (should (equal "demo-1" name-init))
+    (should (equal "chosen-project-1" name-init))
     (should (equal "w1" provisioned-ws))
     (should (equal (expand-file-name temporary-file-directory) provisioned-cwd))
     (should (equal "agent.start" (car captured)))
