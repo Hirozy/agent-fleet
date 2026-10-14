@@ -730,14 +730,14 @@ message for quick auditing."
 ;;; --- Agent control commands -----------------------------------------
 
 (ert-deftest agent-fleet-interactive-start ()
-  "Interactive start reads kind/workspace/name and provisions with them.
+  "Interactive start reads kind/workspace/name/cwd and provisions with them.
 The name prompt is prefilled with a workspace-derived suggestion
 \(`<label>-<serial>'), and the workspace picked interactively is the one
 used for provisioning — the body does not prompt a second time."
   (let ((herdr-model--cache (agent-fleet-interactive-test--session))
         (agent-fleet--name-counter 0)
         (agent-fleet-agent-started-hook nil)
-        name-init provisioned-ws captured)
+        name-init provisioned-ws provisioned-cwd captured)
     (cl-letf (((symbol-function 'completing-read)
                (lambda (prompt &rest _)
                  (cond
@@ -748,10 +748,16 @@ used for provisioning — the body does not prompt a second time."
                (lambda (_prompt &optional initial-input &rest _)
                  (setq name-init initial-input)
                  "reviewer"))
+              ((symbol-function 'read-directory-name)
+               (lambda (_prompt directory _default mustmatch &rest _)
+                 (should (equal directory default-directory))
+                 (should mustmatch)
+                 temporary-file-directory))
               ((symbol-function 'agent-fleet--ensure-connected) #'ignore)
               ((symbol-function 'agent-fleet--provision-pane)
-               (lambda (ws-id &rest _)
-                 (setq provisioned-ws ws-id)
+               (lambda (ws-id cwd &rest _)
+                 (setq provisioned-ws ws-id
+                       provisioned-cwd cwd)
                  "w1:p2"))
               ((symbol-function 'herdr-request)
                (lambda (method &optional params &rest _)
@@ -765,6 +771,7 @@ used for provisioning — the body does not prompt a second time."
         (should (equal "codex" (herdr-agent-agent agent)))))
     (should (equal "demo-1" name-init))
     (should (equal "w1" provisioned-ws))
+    (should (equal (expand-file-name temporary-file-directory) provisioned-cwd))
     (should (equal "agent.start" (car captured)))
     (should (equal "reviewer"
                    (agent-fleet-interactive-test--param
