@@ -501,6 +501,13 @@ Notes:
   same pattern used for agents after `agent.start`.
 - **No polling (§25).**  `worktree.list` is called only on a user action
   (a command or the dashboard `w` key), never on a timer.
+- **Repository scope, not global enumeration.** `worktree.list` uses the
+  explicit `workspace_id` or `cwd`; with neither, it uses Herdr's active
+  Workspace. A non-Git source returns `not_git_worktree`. Cleanup first reads
+  the snapshot, then queries each Workspace explicitly and deduplicates the
+  results. Only this specific non-Git error is tolerated; other errors fail
+  closed. Repository list results are upserted without clearing unrelated
+  cached worktrees. Removal events evict deleted entries.
 
 ### 8.4 Phase 6 Magit integration (no new wire protocol)
 
@@ -516,8 +523,18 @@ are then called with that root as `default-directory`; cherry-pick, merge,
 and worktree deletion are Magit's own keys inside the status buffer (§71:
 "use Magit public API").  Magit is an optional dependency (§55): the entry
 points `user-error` when it is absent; `herdr-doctor` reports availability.
-The finished-worktree cleanup (`agent-fleet-worktree-cleanup`) reuses the
-Phase 5 `worktree.remove` RPC (§8.3), filtered to `done` agents.
+The finished-worktree cleanup (`agent-fleet-cleanup-worktrees`) reuses the
+Phase 5 `worktree.remove` RPC (§8.3). Task-owned worktrees use the same
+selection and execution pipeline, guarded by all remaining task members'
+authoritative completion. Unfinished agents and pending launches are protected.
+Agent-free terminals are explicitly labeled, selected, and confirmed, never
+assumed empty. Each removal rechecks a strict fresh `session.snapshot`,
+exact terminal identities, path/linkage and the original connection, with
+positive live-cache evidence vetoing stale responses. Cleanup never sends
+`force: true`. A successful response must
+acknowledge `worktree_removed` for the requested Workspace before client-side
+success or eager cache removal. There is no atomic conditional-remove RPC.
+Worktree list replacement defers pushed events until after cache installation.
 
 ### 8.5 Phase 7 parallel orchestration (no new wire protocol)
 
@@ -542,8 +559,12 @@ prompt each, and track their aggregate status — all client-side:
   workers, not RPC functions — `agent.read` is terminal state, never a
   structured final answer.  `agent-fleet-task-wait` pumps
   `accept-process-output` (event-driven, like `agent-fleet-wait`) and
-  returns STATUS only; `agent-fleet-task-cleanup` reuses the Phase 5
-  `worktree.remove` RPC per agent.
+  returns STATUS only. Task is a filter for the two cleanup commands, not
+  another deletion workflow. Worktree deletion requires every remaining member
+  to be present and done, regardless of historical completion timestamps.
+  Acknowledged removals immediately update task metadata; failures retain the
+  original worktree ownership for retry. Runtime cleanup excludes all
+  worktree-associated resources.
 - The **task is fleet-side metadata** (§41), not Herdr-cached: a registry
   of `agent-fleet-task` structs mapping pane-ids → task-ids, so the
   dashboard `T` filter and the Task column resolve without scanning.
@@ -631,8 +652,9 @@ Legacy replayed workspace labels do not override the cwd-derived value.
 ## 10. Selected RPC reference (outside the implemented workflow)
 
 The methods below are available in the Herdr socket API
-(<https://herdr.dev/docs/socket-api/>) but not currently issued by
-agent-fleet. They are documented here as a reference for future
+(<https://herdr.dev/docs/socket-api/>). Most are not currently issued by
+agent-fleet; the narrowly scoped cleanup uses are noted below. This is a
+reference for possible future
 feature work — workspace/tab management, layout export/import, pane
 navigation, notifications, plugins, and integrations. Parameter and
 result field names follow the Herdr JSON wire convention
@@ -649,7 +671,7 @@ result field names follow the Herdr JSON wire convention
 | `workspace.rename` | `{workspace_id, label}` | `WorkspaceInfo` |
 | `workspace.move` | `{workspace_id, before_workspace_id?}` | reordered list |
 | `workspace.move_block` | `{workspace_ids: [...], before_workspace_id?}` | authoritative ordered list (`workspace_ids` must be unique; the anchor cannot be part of the block) |
-| `workspace.close` | `{workspace_id, close_group?}` | closed ack |
+| `workspace.close` | `{workspace_id, close_group?}` | `{type: "ok"}` |
 | `workspace.report_metadata` | `{workspace_id, source, tokens, ttl_ms}` | metadata ack |
 
 Notes:
@@ -661,7 +683,16 @@ Notes:
   it does not change the workspace's identity or label.
 - In 0.9.0, closing a primary Workspace with open worktree Workspaces requires
   explicit `close_group: true`; otherwise the entire group is preserved.
-  Fleet rollback does not supply group intent.
+  Fleet rollback and cleanup do not supply group intent.
+- `agent-fleet-cleanup` closes an ordinary Workspace only when every terminal
+  in it was selected and revalidated. Otherwise it uses `tab.close` or
+  `pane.close` for the selected subset. It never calls `worktree.remove`.
+  Workspace worktree metadata is preserved in the model; fresh
+  `worktree.list`, snapshot linkage, and positive cache evidence all veto
+  runtime closure of worktree-associated resources. Missing/malformed lists
+  fail closed. `workspace.close` returns `Ok`, not `workspace_closed`;
+  the latter is the pushed event. Verified against the
+  [0.9.0 Workspace handler](https://github.com/herdrdev/herdr/blob/v0.9.0/src/app/api/workspaces.rs).
 
 ### 10.2 Tab management
 
@@ -681,10 +712,10 @@ Notes:
   terminal runtimes. Closing the last tab also closes its Workspace, unless
   an implicit worktree-group close requires confirmation. Verified in
   [Herdr 0.9.0 tab handlers](https://github.com/herdrdev/herdr/blob/v0.9.0/src/app/api/tabs.rs).
-- `agent-fleet-cleanup-tabs` is the explicitly requested cleanup operation:
-  it preserves tabs containing any agent and each Workspace's last tab.
-  Fresh snapshots and positive live-cache agent evidence guard every close;
-  there is no server-side atomic conditional-close RPC.
+- Tab closure is an internal step of runtime cleanup, not a separate command.
+  A fully selected ordinary Workspace is closed directly rather than leaving
+  its last tab behind. Fresh snapshots, exact selected membership and positive
+  live-cache evidence guard every close; no atomic conditional-close RPC exists.
 
 ### 10.3 Pane management (beyond §8.1)
 

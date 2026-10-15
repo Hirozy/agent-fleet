@@ -60,9 +60,14 @@
 ;;; --- Fetch helper ---------------------------------------------------
 
 (defun agent-fleet-worktree--fetch (&optional cwd)
+  "Fetch worktrees for CWD atomically with respect to pushed events."
+  (herdr-call-with-deferred-events
+   (lambda () (agent-fleet-worktree--fetch-1 cwd))))
+
+(defun agent-fleet-worktree--fetch-1 (&optional cwd)
   "Call `worktree.list' and upsert every result into the cache.
 CWD, when non-empty, scopes the query to the repo at that path (otherwise
-all known worktrees are listed).  Returns a cons (STRUCTS . SOURCE):
+Herdr's active workspace selects the repository).  Returns (STRUCTS . SOURCE):
 STRUCTS is the list of parsed worktree structs now in the cache, and
 SOURCE is the `WorktreeSourceInfo' plist (repo metadata) or nil.
 This operation is user-initiated and never runs from a timer."
@@ -71,16 +76,11 @@ This operation is user-initiated and never runs from a timer."
                                  `(("cwd" . ,cwd))
                                nil)))
          (source (plist-get res :source))
-         (raw (let ((w (plist-get res :worktrees)))
-                (cond ((listp w) w) ((vectorp w) (append w nil)) (t nil))))
-         ;; An unscoped list is authoritative for the complete worktree set.
-         ;; Drop stale entries before upserting; a scoped repo query cannot
-         ;; safely remove entries belonging to other repos.
-         (_reconciled (when (and (or (null cwd) (string-empty-p cwd))
-                                  (herdr-model-cache))
-                        (clrhash (herdr-session-worktrees
-                                  (herdr-model-cache)))))
-         (structs (delq nil (mapcar #'herdr-model-upsert-worktree raw))))
+         (structs (herdr-model-parse-worktree-list res)))
+    ;; WorktreeInfo has no repository identity for scoped replacement.
+    ;; Preserve other entries; removal events evict deleted worktrees.
+    (seq-doseq (row (plist-get res :worktrees))
+      (herdr-model-upsert-worktree row))
     (cons structs source)))
 
 
@@ -90,13 +90,14 @@ This operation is user-initiated and never runs from a timer."
 (defun agent-fleet-worktree-list (&optional cwd)
   "List Herdr worktrees and cache them.
 With a prefix arg, prompt for a repo CWD to scope the query; otherwise
-list all known worktrees.  Each result is upserted into the cache — the
+list the repository selected by Herdr's active workspace.  Each result is
+upserted into the cache without clearing other repositories — the
 only way to seed worktree state besides events (user-initiated, not
 polling).  Returns the worktree structs.  When called
 interactively, messages the count and paths."
   (interactive
    (list (when current-prefix-arg
-           (read-directory-name "Repo cwd (empty for all): "))))
+           (read-directory-name "Repo cwd: "))))
   (agent-fleet--ensure-connected)
   (let ((structs (car (agent-fleet-worktree--fetch cwd))))
     (when (called-interactively-p 'any)
@@ -187,6 +188,7 @@ pushed `worktree_removed' event also removes it.  Returns the RPC result."
   (let ((res (herdr-request "worktree.remove"
                             `(("workspace_id" . ,workspace-id)
                               ("force" . ,(if force t :false))))))
+    (herdr-protocol-validate-worktree-removed res workspace-id)
     ;; Eager cache removal (the `worktree_removed' event also removes it).
     (when-let* ((wt (herdr-model-find-worktree-for-workspace workspace-id)))
       (herdr-model-remove-worktree (herdr-worktree-path wt)))
@@ -296,66 +298,27 @@ messages when no worktree is open for the workspace."
   'agent-fleet-worktree-status "0.8.0")
 
 
-;;; --- Cleanup (delete finished worktrees) -----------------------
+;;; --- Explicit worktree cleanup ------------------------------------
 
 ;;;###autoload
-(defun agent-fleet-worktree-cleanup (&optional no-confirm)
-  "Remove the worktrees of all finished (`done') agents.
-Lists each done agent's worktree (name + path) and asks for confirmation
-before removing them via `agent-fleet-worktree-remove' (which issues
-`worktree.remove' and drops the worktree from the cache eagerly).  With
-non-nil NO-CONFIRM (prefix arg, interactively) skip the prompt.
-Agents that are not `done', or have no worktree, are left alone.  A
-worktree with uncommitted changes makes `worktree.remove' fail (it is
-not forced) — review it first with `d'/`m' — and is reported as failed.
-Returns the number of worktrees removed."
-  (interactive "P")
-  (agent-fleet--ensure-connected)
-  (let* ((done (cl-remove-if-not
-                (lambda (a) (eq 'done (agent-fleet-status a)))
-                (agent-fleet-list)))
-         (seen (make-hash-table :test 'equal))
-         (targets
-          (cl-remove-if-not
-           (lambda (a)
-             (when-let* ((wt (agent-fleet--worktree-for-agent a))
-                         (ws-id (herdr-worktree-open-workspace-id wt)))
-               (unless (gethash ws-id seen)
-                 (puthash ws-id t seen)
-                 t)))
-           done)))
-    (if (null targets)
-        (progn (message "No finished-agent worktrees to clean up") 0)
-      (let ((n (length targets))
-            removed failures)
-        (if (not (or no-confirm
-                     (y-or-n-p
-                      (mapconcat
-                       #'identity
-                       (append
-                        (list (format "Remove %d finished-agent worktree(s)?"
-                                      n))
-                        (mapcar (lambda (a)
-                                  (let ((wt (agent-fleet--worktree-for-agent a)))
-                                    (format "  %s  %s"
-                                            (herdr-agent-display-name a)
-                                            (herdr-worktree-path wt))))
-                                targets))
-                       "\n"))))
-            (progn (message "Canceled") 0)
-          (dolist (a targets)
-            (let ((ws-id (herdr-agent-workspace-id a)))
-              (condition-case _err
-                  (progn (agent-fleet-worktree-remove ws-id)
-                         (push a removed))
-                (error (push a failures)))))
-          (message "Removed %d/%d finished-agent worktree(s)%s"
-                   (length removed) n
-                   (if failures
-                       (format "; %d failed (review with `d'/`m')"
-                               (length failures))
-                     ""))
-          (length removed))))))
+(cl-defun agent-fleet-cleanup-worktrees (&key project task targets select no-confirm)
+  "Delete selected worktrees and their associated runtime resources.
+This is independent of `agent-fleet-cleanup', which never deletes code.
+Interactively filter by Project/Task, select worktrees, then confirm.
+All remaining task members must be present and done; no force is sent.
+From Lisp, TARGETS contains worktree Workspace IDs; omit it for a read-only
+candidate report.  SELECT opens selection.  NO-CONFIRM skips only the Lisp
+confirmation, not safety checks.  Return the same report plist as runtime
+cleanup.  Successful removals reconcile task metadata; failures retain it."
+  (interactive
+   (progn
+     (require 'agent-fleet-cleanup)
+     (append (agent-fleet-cleanup--read-filter) (list :select t))))
+  (require 'agent-fleet-cleanup)
+  (agent-fleet-cleanup--run t project task targets select no-confirm))
+
+(declare-function agent-fleet-cleanup--read-filter "agent-fleet-cleanup")
+(declare-function agent-fleet-cleanup--run "agent-fleet-cleanup")
 
 (provide 'agent-fleet-worktree)
 ;;; agent-fleet-worktree.el ends here

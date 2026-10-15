@@ -20,6 +20,7 @@
 (require 'agent-fleet-display)
 (require 'agent-fleet-magit)
 (require 'agent-fleet-worktree)
+(require 'agent-fleet-parallel)
 (require 'herdr-mock-server)
 (require 'agent-fleet-test)            ; harness: with-agent-fleet-mock, --pump
 
@@ -218,26 +219,26 @@ even when Magit is available."
 
 ;;; --- Worktree cleanup (delete finished worktrees) ----------------
 
-(ert-deftest agent-fleet-worktree-cleanup-removes-done-agent-worktrees ()
+(ert-deftest agent-fleet-cleanup-worktrees-removes-done-agent-worktrees ()
   "`worktree-cleanup' removes the worktrees of `done' agents (issuing
 `worktree.remove' for the done agent's workspace) and leaves non-done
 agents alone.  NO-CONFIRM skips the y-or-n prompt."
   (with-agent-fleet-mock path server
-    (let ((done-agent (agent-fleet-start 'claude :name "done-a"
+    (let ((agent-fleet--tasks nil)
+          (done-agent (agent-fleet-start 'claude :name "done-a"
                                          :worktree t :cwd "/tmp/repo1"))
           (live-agent (agent-fleet-start 'claude :name "live-a"
                                          :worktree t :cwd "/tmp/repo2")))
       (agent-fleet-test--pump)
       ;; drive the done-agent to `done' (status-only event patches the cache)
-      (herdr-mock-push-event server "pane_agent_status_changed"
-        `(:pane_id ,(herdr-agent-id done-agent) :agent_status "done"))
+      (herdr-mock--push-status server (herdr-agent-id done-agent) "done")
       (agent-fleet-test--pump)
       (should (eq 'done (agent-fleet-status done-agent)))
       (let* ((done-ws (herdr-agent-workspace-id done-agent))
              (live-ws (herdr-agent-workspace-id live-agent))
              (done-path (herdr-worktree-path
                          (agent-fleet--worktree-for-agent done-agent))))
-        (agent-fleet-worktree-cleanup t)   ; no-confirm
+        (agent-fleet-cleanup-worktrees :targets (list done-ws) :no-confirm t)
         ;; worktree.remove targeted the done agent's workspace
         (should (equal done-ws
                        (plist-get (agent-fleet-test--last-request
@@ -247,13 +248,13 @@ agents alone.  NO-CONFIRM skips the y-or-n prompt."
         (should-not (herdr-model-find-worktree done-path))
         (should (herdr-model-find-worktree-for-workspace live-ws))))))
 
-(ert-deftest agent-fleet-worktree-cleanup-nothing-done ()
+(ert-deftest agent-fleet-cleanup-worktrees-nothing-done ()
   "With no `done' agents, cleanup messages and removes nothing."
   (with-agent-fleet-mock path server
     (let ((agent (agent-fleet-start 'claude :name "live-a"
                                     :worktree t :cwd "/tmp/repo")))
       (agent-fleet-test--pump)
-      (should (eq 0 (agent-fleet-worktree-cleanup t)))
+      (should-not (plist-get (agent-fleet-cleanup-worktrees) :candidates))
       (should-not (agent-fleet-test--saw-request-p server "worktree.remove"))
       ;; the live agent's worktree is untouched
       (should (agent-fleet--worktree-for-agent agent)))))

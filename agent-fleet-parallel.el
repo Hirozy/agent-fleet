@@ -93,7 +93,7 @@ closed pane has disappeared from the live agent cache."
 (defvar agent-fleet--agent-tasks
   (make-hash-table :test 'equal)
   "Hash pane-id -> task-id, so an agent's task resolves without scanning.
-Populated by `agent-fleet-parallel'; cleared by `agent-fleet-task-cleanup'.")
+Populated by `agent-fleet-parallel'; reconciled after worktree cleanup.")
 
 (defvar agent-fleet--task-id-counter 0
   "Monotonic counter for `task-N' ids (mirrors `agent-fleet--name-counter').")
@@ -305,85 +305,48 @@ NO result extraction: returns task metadata only, never agent output — use
     task))
 
 
-;;; --- Cleanup (delete finished worktrees) ------------------------
+;;; --- Cleanup bookkeeping (no independent deletion workflow) ---------
 
-;;;###autoload
-(defun agent-fleet-task-cleanup (task &optional no-confirm)
-  "Remove the worktrees of TASK's agents, then drop the task.
-Delegates per-agent to `agent-fleet-worktree-remove' (which issues
-`worktree.remove' + eager cache removal).  By default only finished (`done')
-tasks are cleaned; a non-`done' task prompts to confirm removing live agents'
-worktrees.  NO-CONFIRM (prefix arg) skips every prompt.  Returns the number
-of worktrees removed."
-  (interactive
-   (let* ((choices (mapcar (lambda (task)
-                             (cons (format "%s (%s)"
-                                           (agent-fleet-task-title task)
-                                           (agent-fleet-task-state task))
-                                   (agent-fleet-task-id task)))
-                           (agent-fleet-task-list)))
-          (sel (if choices
-                   (completing-read "Cleanup task: " choices nil t)
-                 (user-error "No tasks to clean up"))))
-     (list (agent-fleet-task-find (cdr (assoc sel choices)))
-           current-prefix-arg)))
-  (let* ((agents (agent-fleet-task-agents task))
-         (finished-p (eq 'done (agent-fleet-task-state task))))
-    (when (or no-confirm
-              finished-p
-              (y-or-n-p (format "Task %s is %s; remove its %d worktree(s) anyway? "
-                                (agent-fleet-task-title task)
-                                (agent-fleet-task-state task)
-                                (length agents))))
-      (let* ((resolved
-              (mapcar
-               (lambda (pid)
-                 (let ((agent (agent-fleet--find-agent pid)))
-                   (cons pid
-                         ;; The recorded workspace owns the worktree.  A live
-                         ;; agent may since have moved to another workspace,
-                         ;; whose id is not a valid cleanup target for the
-                         ;; originally-created worktree.
-                         (or (cdr (assoc pid
-                                        (agent-fleet-task-workspaces task)))
-                             (and agent
-                                  (herdr-agent-workspace-id agent))))))
-               agents))
-             (seen-workspaces (make-hash-table :test 'equal))
-             removed-workspaces failed-workspaces)
-        (dolist (entry resolved)
-          (let ((ws-id (cdr entry)))
-            (when (and ws-id (not (gethash ws-id seen-workspaces)))
-              (puthash ws-id t seen-workspaces)
-              (condition-case _err
-                  (progn
-                    (agent-fleet-worktree-remove ws-id)
-                    (push ws-id removed-workspaces))
-                (error (push ws-id failed-workspaces))))))
-        ;; Forget only members whose worktree was actually removed.  Failed or
-        ;; unresolved members retain their task/workspace metadata so cleanup
-        ;; can be retried after the user resolves dirty-worktree conflicts.
-        (let* ((retained
-                (cl-remove-if
-                 (lambda (entry) (member (cdr entry) removed-workspaces))
-                 resolved))
-               (retained-pids (mapcar #'car retained)))
-          (dolist (entry resolved)
-            (unless (member (car entry) retained-pids)
-              (remhash (car entry) agent-fleet--agent-tasks)))
-          (if retained
-              (setf (agent-fleet-task-agents task) retained-pids
-                    (agent-fleet-task-workspaces task) retained)
-            (setq agent-fleet--tasks (delq task agent-fleet--tasks)))
-          (run-hook-with-args 'agent-fleet-task-changed-hook task)
-          (message "agent-fleet: removed %d/%d worktree(s) for task %s%s"
-                   (length removed-workspaces)
-                   (hash-table-count seen-workspaces)
-                   (agent-fleet-task-title task)
-                   (if (or failed-workspaces retained)
-                       "; failed members retained for retry"
-                     ""))
-          (length removed-workspaces))))))
+(defun agent-fleet-task-cleanup-members (workspace-id)
+  "Return remaining members of tasks owning WORKSPACE-ID.
+Use recorded original ownership even after agents move to other workspaces."
+  (delete-dups
+   (apply #'append
+          (mapcar
+           (lambda (task)
+             (when (or (rassoc workspace-id (agent-fleet-task-workspaces task))
+                       (cl-some
+                        (lambda (pid)
+                          (when-let* ((agent (agent-fleet--find-agent pid)))
+                            (equal workspace-id (herdr-agent-workspace-id agent))))
+                        (agent-fleet-task-agents task)))
+               (copy-sequence (agent-fleet-task-agents task))))
+           (agent-fleet-task-list)))))
+
+(defun agent-fleet-task-cleanup-record (workspace-id)
+  "Forget members whose owning WORKSPACE-ID was successfully removed.
+Update each task immediately after acknowledged removal so a later failure
+or quit cannot lose the identities needed to retry unfinished cleanup."
+  (dolist (task (copy-sequence agent-fleet--tasks))
+    (let* ((members (agent-fleet-task-agents task))
+           (removed
+            (cl-remove-if-not
+             (lambda (pid)
+               (equal workspace-id
+                      (or (cdr (assoc pid (agent-fleet-task-workspaces task)))
+                          (when-let* ((agent (agent-fleet--find-agent pid)))
+                            (herdr-agent-workspace-id agent)))))
+             members)))
+      (when removed
+        (dolist (pid removed) (remhash pid agent-fleet--agent-tasks))
+        (setf (agent-fleet-task-agents task)
+              (cl-set-difference members removed :test #'equal)
+              (agent-fleet-task-workspaces task)
+              (cl-remove-if (lambda (entry) (member (car entry) removed))
+                            (agent-fleet-task-workspaces task)))
+        (unless (agent-fleet-task-agents task)
+          (setq agent-fleet--tasks (delq task agent-fleet--tasks)))
+        (run-hook-with-args 'agent-fleet-task-changed-hook task)))))
 
 
 ;;; --- Live status tracking (hook) ------------------------------------
