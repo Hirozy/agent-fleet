@@ -623,25 +623,34 @@ variable marker."
     (should (equal "claude" (agent-fleet--kind-wire-name 'claude)))))
 
 (ert-deftest agent-fleet-suggest-name ()
-  "Default name suggestion is `<workspace-label>-<smallest free serial>',
-and falls back to the global kind+counter when there is no workspace."
+  "Use the Project name and find free serials across workspace boundaries."
   (let* ((session (herdr-model--empty-session))
          (herdr-model--cache session)
          (ws (make-herdr-workspace :id "ws1" :custom-name "demo")))
     (puthash "ws1" ws (herdr-session-workspaces session))
     ;; No agents yet: serial starts at 1.
-    (should (equal "demo-1" (agent-fleet--suggest-name "ws1" 'codex)))
-    ;; Occupy demo-1 and demo-2: the next free serial is 3.
-    (puthash "p1" (make-herdr-agent :id "p1" :workspace-id "ws1"
-                                    :name "demo-1" :agent "codex")
-             (herdr-session-agents session))
-    (puthash "p2" (make-herdr-agent :id "p2" :workspace-id "ws1"
-                                    :name "demo-2" :agent "codex")
-             (herdr-session-agents session))
-    (should (equal "demo-3" (agent-fleet--suggest-name "ws1" 'codex)))
-    ;; No workspace id: fall back to the global kind+counter default.
-    (let ((agent-fleet--name-counter 0))
-      (should (equal "codex-1" (agent-fleet--suggest-name nil 'codex))))))
+    (cl-letf (((symbol-function 'agent-fleet-project-root-for-cwd)
+               (lambda (_cwd) "/repos/demo")))
+      (should (equal "demo-1" (agent-fleet--suggest-name "/repos/demo/src" 'codex)))
+      ;; Occupy demo-1 and demo-2: the next free serial is 3.
+      (puthash "p1" (make-herdr-agent :id "p1" :workspace-id "ws1"
+                                      :name "demo-1" :agent "codex")
+               (herdr-session-agents session))
+      (puthash "p2" (make-herdr-agent :id "p2" :workspace-id "ws2"
+                                      :name "demo-2" :agent "codex")
+               (herdr-session-agents session))
+      (should (equal "demo-3" (agent-fleet--suggest-name "/worktrees/topic" 'codex)))
+      (remhash "p1" (herdr-session-agents session))
+      (should (equal "demo-1" (agent-fleet--suggest-name "/repos/demo" 'codex))))))
+
+(ert-deftest agent-fleet-suggest-name-without-project ()
+  "A directory label does not require a Project; roots use the agent kind."
+  (let ((herdr-model--cache (herdr-model--empty-session)))
+    (cl-letf (((symbol-function 'agent-fleet-project-root-for-cwd)
+               (lambda (_cwd) nil)))
+      (should (equal "orchestrator-1"
+                     (agent-fleet--suggest-name "/tmp/orchestrator/" 'codex)))
+      (should (equal "codex-1" (agent-fleet--suggest-name "/" 'codex))))))
 
 (ert-deftest agent-fleet-start-pi-agent-uses-pi-wire-kind ()
   "The internal `pi-agent' alias never reaches `agent.start' or auto names."
