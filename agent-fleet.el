@@ -690,8 +690,10 @@ explicitly); the agent then opens as a fresh tab in the selected
 workspace, rather than a new frame.  The name prompt is prefilled with
 `<workspace-label>-<serial>' — the workspace's display name plus the
 smallest serial not already a live agent's name; accept it or type your
-own.  After a successful interactive start, the agent's terminal is
-attached automatically (see `agent-fleet-attach').
+own.  The working-directory prompt defaults to the calling buffer's
+`default-directory' and accepts any existing directory, including one
+without a Project.  After a successful interactive start, the agent's
+terminal is attached automatically (see `agent-fleet-attach').
 
 Keyword args:
   :name        agent name (unique across live agents); auto-generated if nil
@@ -719,8 +721,10 @@ Returns the `herdr-agent' struct for the started agent.  Signals an
           ;; workspace is prompted exactly once.
           (ws-id (agent-fleet--read-workspace "Start in workspace: "))
           (suggested (agent-fleet--suggest-name ws-id kind))
-          (nm (read-string "Name: " suggested)))
-     (list kind :workspace ws-id
+          (nm (read-string "Name: " suggested))
+          (cwd (read-directory-name "Working directory: "
+                                    default-directory nil t)))
+     (list kind :workspace ws-id :cwd (expand-file-name cwd)
            :name (if (string-empty-p nm) suggested nm))))
   (agent-fleet--ensure-connected)
   (let ((candidate (agent-fleet--kind-wire-name kind)))

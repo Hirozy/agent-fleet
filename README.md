@@ -149,10 +149,12 @@ M-x agent-fleet-start
 ```
 
 The interactive command asks for an agent kind, the workspace to start
-in, and a name. A default of `<workspace-label>-<serial>` (for example
-`demo-1`) is suggested — press `RET` to accept it or type your own. Project,
-worktree, and programmatic entry points can supply a working directory, branch,
-and extra CLI arguments without expanding the ordinary interactive prompt.
+in, a name, and a working directory. A default of `<workspace-label>-<serial>` (for example
+`demo-1`) is suggested — press `RET` to accept it or type your own. The working
+directory defaults to the calling buffer's `default-directory`; press `RET`
+to accept it or select another existing directory. Directories without a
+Project are supported. Project, worktree, and programmatic entry points can
+also supply a working directory, branch, and extra CLI arguments.
 
 ## Dashboard
 
@@ -241,7 +243,7 @@ applicable.
 
 | Command | Action |
 |---|---|
-| `M-x agent-fleet-start` | Start an agent (prompts for kind and name) |
+| `M-x agent-fleet-start` | Start an agent (prompts for kind, workspace, name, and working directory) |
 | `M-x agent-fleet-prompt` | Send a prompt |
 | `M-x agent-fleet-prompt-and-wait` | Prompt and wait atomically for done/blocked |
 | `M-x agent-fleet-show-output` | Open output in an ordinary buffer |
