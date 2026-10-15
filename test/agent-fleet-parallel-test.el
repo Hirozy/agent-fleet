@@ -5,7 +5,7 @@
 ;; Tests: `agent-fleet-parallel' spawns N isolated worktree
 ;; agents and prompts each; the task model tracks aggregate state live
 ;; (not a race — done only when ALL agents finish); `task-wait'
-;; pumps events; `task-cleanup' removes worktrees.  All
+;; pumps events; worktree cleanup reconciles task metadata.  All
 ;; against the mock server (no real Herdr).
 ;; Run:
 ;;   emacs -batch -L . -L test -l ert -l herdr -l agent-fleet \
@@ -283,7 +283,7 @@ full state machine over three agents."
          (agent-fleet-task-changed-hook nil)
          (herdr-event-hook nil)
          (herdr-event-pane-hook '(agent-fleet-parallel--on-pane-event))
-         changed removed)
+         changed)
     (herdr-model-set-cache session)
     (herdr-model-upsert-agent-info
      '(:pane_id "w1:p1" :workspace_id "w1" :tab_id "w1:t1"
@@ -310,11 +310,12 @@ full state machine over three agents."
           (should (equal (list task) changed))
           ;; Cleanup must use the original worktree workspace (w1), not the
           ;; agent's current post-move workspace (w2).
-          (cl-letf (((symbol-function 'agent-fleet-worktree-remove)
-                     (lambda (workspace-id &optional _force)
-                       (push workspace-id removed))))
-            (should (= 1 (agent-fleet-task-cleanup task t)))
-            (should (equal '("w1") removed))))
+          (should (equal '("w2:p2") (agent-fleet-task-cleanup-members "w1")))
+          (should (equal '("w2:p2") (agent-fleet-task-cleanup-members "w2")))
+          (agent-fleet-task-cleanup-record "w2")
+          (should (agent-fleet-task-find "task-move"))
+          (agent-fleet-task-cleanup-record "w1")
+          (should-not (agent-fleet-task-find "task-move")))
       (herdr-model-clear-cache))))
 
 
@@ -364,74 +365,6 @@ others).  The unblocked agent is left working."
 
 
 ;;; --- Cleanup -----------------------------------------------------
-
-(ert-deftest agent-fleet-task-cleanup-removes-worktrees ()
-  "`task-cleanup' removes each agent's worktree via worktree.remove and
-drops the task from the registry.  A `done' task cleans without
-prompting."
-  (with-agent-fleet-mock path server
-    (agent-fleet-parallel-test--use-working-prompt server)
-    (let* ((task (agent-fleet-parallel
-                  '((claude . "do A") (codex . "do B"))
-                  :title "rev" :cwd "/tmp"))
-           (pids (agent-fleet-task-agents task))
-           (task-id (agent-fleet-task-id task)))
-      ;; finish the task so cleanup proceeds without a confirm prompt.
-      (dolist (pid pids)
-        (herdr-mock-push-event server "pane_agent_status_changed"
-                               `(:pane_id ,pid :agent_status "done")))
-      (agent-fleet-test--pump)
-      (should (eq 'done (agent-fleet-task-state task)))
-      (let ((removed (agent-fleet-task-cleanup task)))
-        (should (= 2 removed))
-        (should (= 2 (agent-fleet-parallel-test--count server "worktree.remove"))))
-      ;; task dropped from the registry; agents no longer map to it.
-      (should-not (agent-fleet-task-find task-id))
-      (dolist (pid pids)
-        (should-not (agent-fleet-task-for-agent pid))))))
-
-(ert-deftest agent-fleet-task-cleanup-survives-missing-agent-cache ()
-  "Task metadata retains workspace ids after exited agents are evicted."
-  (with-agent-fleet-mock path server
-    (agent-fleet-parallel-test--use-working-prompt server)
-    (let* ((task (agent-fleet-parallel '((claude . "do A"))
-                                       :title "missing" :cwd "/tmp"))
-           (pid (car (agent-fleet-task-agents task))))
-      (should (cdr (assoc pid (agent-fleet-task-workspaces task))))
-      (herdr-model-remove-agent pid)
-      (should (eq 'failed (agent-fleet-task-state task)))
-      (should (= 1 (agent-fleet-task-cleanup task t)))
-      (should (= 1 (agent-fleet-parallel-test--count
-                    server "worktree.remove"))))))
-
-(ert-deftest agent-fleet-task-cleanup-retains-failed-members-for-retry ()
-  "Partial cleanup keeps failed worktree metadata and drops only successes."
-  (let* ((task (make-agent-fleet-task
-                :id "task-partial" :title "partial" :prompt "review"
-                :agents '("w1:p1" "w2:p1")
-                :workspaces '(("w1:p1" . "w1") ("w2:p1" . "w2"))
-                :started-at 1.0 :finished-at 2.0))
-         (agent-fleet--tasks (list task))
-         (agent-fleet--agent-tasks (make-hash-table :test 'equal))
-         calls)
-    (puthash "w1:p1" "task-partial" agent-fleet--agent-tasks)
-    (puthash "w2:p1" "task-partial" agent-fleet--agent-tasks)
-    (cl-letf (((symbol-function 'agent-fleet--find-agent) (lambda (_) nil))
-              ((symbol-function 'agent-fleet-worktree-remove)
-               (lambda (workspace-id &optional _force)
-                 (push workspace-id calls)
-                 (when (equal workspace-id "w2")
-                   (error "dirty worktree")))))
-      (should (= 1 (agent-fleet-task-cleanup task t)))
-      (should (equal '("w1" "w2") (sort calls #'string<)))
-      (should (eq task (agent-fleet-task-find "task-partial")))
-      (should (equal '("w2:p1") (agent-fleet-task-agents task)))
-      (should (equal '(("w2:p1" . "w2"))
-                     (agent-fleet-task-workspaces task)))
-      (should-not (gethash "w1:p1" agent-fleet--agent-tasks))
-      (should (equal "task-partial"
-                     (gethash "w2:p1" agent-fleet--agent-tasks))))))
-
 
 (provide 'agent-fleet-parallel-test)
 ;;; agent-fleet-parallel-test.el ends here

@@ -74,7 +74,7 @@ the root-pane cwd.  CUSTOM-NAME is a user-set name captured from
 `herdr-model-parse-snapshot'); when set it wins over the cwd-derived
 name, matching the server's `display_name_from'."
   id cached-label custom-name number focused active-tab-id
-  tab-count pane-count agent-status)
+  tab-count pane-count agent-status worktree)
 
 (cl-defstruct herdr-tab
   "A Herdr tab within a workspace."
@@ -155,8 +155,8 @@ and `worktree.created'/`opened' events."
 
 ;;; --- Snapshot parsing ---------------------------------------------
 
-(defun herdr-model-parse-tab-cleanup-snapshot (result)
-  "Parse RESULT with strict topology checks for destructive tab cleanup.
+(defun herdr-model-parse-cleanup-snapshot (result)
+  "Parse RESULT with strict topology checks for destructive cleanup.
 Unlike ordinary display snapshots, missing identities, duplicate rows and
 incomplete pane counts must fail closed rather than imply an empty tab."
   (let* ((snap (or (plist-get result :snapshot) result))
@@ -166,7 +166,7 @@ incomplete pane counts must fail closed rather than imply an empty tab."
          (agents (make-hash-table :test 'equal)))
     (cl-labels
         ((bad () (signal 'herdr-protocol-error
-                         '(:reason incomplete-tab-cleanup-snapshot)))
+                         '(:reason incomplete-cleanup-snapshot)))
          (identity (row key)
            (let ((value (plist-get row key)))
              (unless (and (stringp value) (not (string-empty-p value)))
@@ -219,6 +219,33 @@ incomplete pane counts must fail closed rather than imply an empty tab."
              (bad))))
        workspaces))
     (herdr-model-parse-snapshot result)))
+
+(defun herdr-model-parse-worktree-list (result)
+  "Validate an authoritative worktree list RESULT and return parsed structs.
+Malformed or missing data must never imply there are no linked resources."
+  (unless (and (listp result) (equal (plist-get result :type) "worktree_list")
+               (plist-member result :worktrees)
+               (or (proper-list-p (plist-get result :worktrees))
+                   (vectorp (plist-get result :worktrees))))
+    (signal 'herdr-protocol-error '(:method "worktree.list" :reason malformed-list)))
+  (let ((seen (make-hash-table :test 'equal))
+        (owners (make-hash-table :test 'equal)) structs)
+    (seq-doseq (row (plist-get result :worktrees))
+      (unless (proper-list-p row)
+        (signal 'herdr-protocol-error
+                '(:method "worktree.list" :reason malformed-worktree)))
+      (let ((path (plist-get row :path))
+            (ws (plist-get row :open_workspace_id)))
+        (unless (and (stringp path) (not (string-empty-p path))
+                     (not (gethash path seen))
+                     (or (null ws) (and (stringp ws) (not (string-empty-p ws))
+                                       (not (gethash ws owners)))))
+          (signal 'herdr-protocol-error
+                  '(:method "worktree.list" :reason malformed-worktree)))
+        (puthash path t seen)
+        (when ws (puthash ws t owners))
+        (push (herdr-model--parse-worktree row) structs)))
+    (nreverse structs)))
 
 (defun herdr-model-pane-list-ids (result)
   "Validate a `pane.list' RESULT and return its unique pane ids.
@@ -306,7 +333,8 @@ later `workspace_renamed' event."
    :active-tab-id (plist-get w :active_tab_id)
    :tab-count (plist-get w :tab_count)
    :pane-count (plist-get w :pane_count)
-   :agent-status (plist-get w :agent_status)))
+   :agent-status (plist-get w :agent_status)
+   :worktree (plist-get w :worktree)))
 
 (defun herdr-model--parse-worktree (wt)
   "Parse a worktree plist WT (a WorktreeInfo) into a struct.

@@ -2,6 +2,8 @@ EMACS ?= emacs
 LOAD_PATH = -L . -L test
 SOURCES = herdr-protocol.el herdr-model.el herdr-events.el herdr.el agent-fleet.el agent-fleet-display.el agent-fleet-worktree.el agent-fleet-project.el agent-fleet-magit.el agent-fleet-parallel.el agent-fleet-attach.el agent-fleet-editor.el agent-fleet-dashboard.el
 TESTS = test/herdr-protocol-test.el test/herdr-model-test.el test/herdr-events-test.el test/herdr-integration-test.el test/agent-fleet-test.el test/agent-fleet-dashboard-test.el test/agent-fleet-project-test.el test/agent-fleet-worktree-test.el test/agent-fleet-magit-test.el test/agent-fleet-parallel-test.el test/agent-fleet-attach-test.el test/agent-fleet-editor-test.el test/agent-fleet-interactive-test.el
+SOURCES += agent-fleet-cleanup.el
+TESTS += test/agent-fleet-cleanup-test.el
 ALL_EL = $(SOURCES) test/herdr-mock-server.el $(TESTS)
 
 .PHONY: compile test test-live clean doctor autoloads
@@ -31,6 +33,7 @@ test: compile
 	  -l test/agent-fleet-magit-test.el -l test/agent-fleet-parallel-test.el \
 	  -l test/agent-fleet-editor-test.el \
 	  -l test/agent-fleet-attach-test.el -l test/agent-fleet-interactive-test.el \
+	  -l test/agent-fleet-cleanup-test.el \
 	  -f ert-run-tests-batch-and-exit
 
 # Live integration tests need a running Herdr server on the local socket.

@@ -568,6 +568,17 @@ unexpected acknowledgement as successful destructive completion."
             (list :method method :reason 'unexpected-ack :result result)))
   result)
 
+(defun herdr-protocol-validate-worktree-removed (result workspace-id)
+  "Require RESULT to acknowledge removal of WORKSPACE-ID explicitly."
+  (unless (and (listp result)
+               (equal (plist-get result :type) "worktree_removed")
+               (equal (plist-get result :workspace_id) workspace-id)
+               (stringp (plist-get result :path)))
+    (signal 'herdr-protocol-error
+            (list :method "worktree.remove" :reason 'unexpected-ack
+                  :result result)))
+  result)
+
 (cl-defun herdr-protocol-ping (&key (timeout herdr-protocol-ping-timeout))
   "Ping Herdr and return the pong result plist.
 The result looks like (:type \"pong\" :version <ver> :protocol <n>

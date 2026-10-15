@@ -325,7 +325,7 @@ Standalone worktree commands:
 - `M-x agent-fleet-worktree-open`
 - `M-x agent-fleet-worktree-status`
 - `M-x agent-fleet-worktree-remove`
-- `M-x agent-fleet-worktree-cleanup`
+- `M-x agent-fleet-cleanup-worktrees`
 
 Removal protects worktrees with uncommitted changes unless force is requested.
 Review the agent's changes before cleanup.
@@ -374,8 +374,8 @@ dashboard `T` key to focus on one task; the task title and its aggregate state
 then show in the mode line. Task state is derived from its members — `done`
 only when all agents are done, `blocked` when one is blocked — and no agent is
 killed when another finishes. Use `M-x agent-fleet-show-output` to
-inspect individual results, and `M-x agent-fleet-task-cleanup` to remove the
-task's worktrees after preserving any wanted changes.
+inspect individual results, and `M-x agent-fleet-cleanup-worktrees` with the
+Task filter to remove selected worktrees after preserving any wanted changes.
 
 ## Review changes with Magit
 
@@ -725,21 +725,75 @@ must be started manually. `agent-fleet-agent-editor-command` must invoke
 | `agent-fleet-attach-buffer-prefix` | `*agent:` | Prefix for attach buffer names (buffer is `PREFIX<name>*`) |
 | `agent-fleet-attach-inhibit-evil-escape` | `t` | Inhibit `evil-escape` locally in attach buffers to avoid duplicated input |
 
-## Clean up agent-free tabs
+## Cleanup
 
-Run `M-x agent-fleet-cleanup-tabs` to close tabs without agents in the
-currently connected Session, across its Workspaces. The command asks for
-confirmation because ordinary shells and other processes in those tabs also
-close. Agents in every state, including idle, done, unknown and starting,
-are protected; a done agent is still an agent.
+There are two independent commands, not a dispatcher menu:
 
-The last tab of each Workspace is retained to avoid closing the Workspace.
-The command checks a fresh snapshot before every close and stops issuing
-requests if the connection changes. It reports closed, skipped and failed
-tabs; failed closes can be retried by invoking the command again. Herdr has
-no atomic close-if-agent-free operation, so a concurrent agent launch after
-the final check can still race with closing. Do not launch agents in candidate
-tabs while cleanup runs. The live cache is updated by Herdr events.
+| Command | Effect |
+|---|---|
+| `M-x agent-fleet-cleanup` | Close selected runtime resources and reclaim ordinary tabs/Workspaces; never delete worktree directories |
+| `M-x agent-fleet-cleanup-worktrees` | Delete selected linked worktree directories and their associated runtime resources |
+
+Both commands use the same interaction: choose **All**, **Project**, or **Task**
+as a filter; press TAB to inspect candidate names and paths; select resource
+IDs separated by commas; review the exact actions; then confirm. Nothing is
+selected by default. Empty selection or declining confirmation makes no
+destructive request. A prefix argument never skips confirmation or forces
+removal. No cleanup runs automatically on startup or in the background.
+
+Runtime cleanup selects terminals. If every terminal in an ordinary Workspace
+is selected, it closes that Workspace, including its last tab. Otherwise it
+closes fully selected tabs or individual panes, preserving unselected neighbors.
+This includes historical Workspaces: they do not have to be recorded as
+Fleet-created, because deletion requires an explicit selection and confirmation.
+Agent-free terminals are **not** assumed empty: their candidate labels and the
+confirmation warn that shells and other processes will close. Inspect anything
+you do not recognize before selecting it. Worktree-associated resources are
+excluded entirely; use the worktree command after reviewing and preserving
+the code.
+
+Worktree cleanup is deliberately separate because deleting code is different
+from closing a terminal. It never sends force: dirty worktrees are left for
+review. A clean worktree is not proof that its commits have been preserved;
+save wanted changes and commits before confirming deletion. Worktrees without
+an open, verifiable runtime owner are reported as protected, not guessed from
+directory names.
+
+Task is a filter and a safety boundary, not another cleanup engine. An
+unfinished task protects its resources even if one member is done. Every
+remaining member must be present and done in authoritative state; a historical
+completion timestamp does not authorize deletion. Acknowledged worktree
+removals update member metadata immediately. Partial failures retain the
+remaining identities for retry, and the task record is dropped only after all
+its members have been cleaned. Missing members are reported as protected, not
+silently treated as successful.
+
+Every destructive request rechecks a fresh snapshot, the original connection,
+worktree linkage, and the exact approved terminal identities. Resources
+are checked using explicit Workspace-scoped worktree queries, never
+Herdr's active Workspace. Non-Git Workspaces remain eligible for runtime
+cleanup; other query errors stop cleanup, and positive worktree linkage still
+protects a resource even if a query reports a non-Git directory. New or moved
+panes and resumed agents invalidate that operation. A failed operation is
+reported without discarding its retry information; independent selected
+operations can still succeed. Herdr has no atomic conditional-close/remove
+RPC, so do not launch or resume agents, move panes, or change worktree ownership
+in the selected resources while cleanup runs. Workspace group closing is never
+enabled implicitly.
+
+For Lisp callers, both commands return a report with `:candidates`,
+`:protected`, `:closed`, `:failed`, and `:cancelled`. Without `:targets`
+or `:select`, they only inspect resources. Explicit `:targets` are pane IDs
+for runtime cleanup and hosting Workspace IDs for worktree cleanup.
+`:project` accepts a Project directory and `:task` a task object or ID.
+`:no-confirm t` skips only the final prompt for explicit Lisp targets, not
+the safety checks. `:select t` always asks for selection and confirmation.
+
+The former `agent-fleet-cleanup-tabs`, `agent-fleet-task-cleanup`,
+`agent-fleet-cleanup-task`, and `agent-fleet-worktree-cleanup` entry points
+are removed. Update bindings/callers to the two commands above; select
+**Task** to narrow worktree cleanup instead of invoking a task-specific command.
+The new Lisp API uses keyword arguments and returns a report instead of a count.
 
 ## Low-level Herdr client
 
@@ -770,6 +824,7 @@ Emacs
   +-- agent-fleet-worktree.el   isolated checkout management
   +-- agent-fleet-magit.el      optional status and diff integration
   +-- agent-fleet-parallel.el   multi-agent task orchestration
+  +-- agent-fleet-cleanup.el    explicit cleanup selection, guards, and execution
   +-- agent-fleet.el            agent lifecycle, target resolution, and control
   |
   +-- herdr.el                  connection and requests

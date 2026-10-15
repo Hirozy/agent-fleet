@@ -17,6 +17,7 @@
 (require 'herdr)
 (require 'agent-fleet)
 (require 'agent-fleet-worktree)
+(require 'agent-fleet-parallel)
 (require 'herdr-mock-server)
 (require 'agent-fleet-test)            ; harness: with-agent-fleet-mock, --pump
 
@@ -110,15 +111,15 @@ worktree dropped from the cache is restored."
                            structs)))
         (should (herdr-model-find-worktree path))))))
 
-(ert-deftest agent-fleet-worktree-list-removes-stale-unscoped-cache ()
-  "An unscoped worktree.list replaces, rather than only extends, the cache."
+(ert-deftest agent-fleet-worktree-list-preserves-other-repository-cache ()
+  "An implicit repository query must not clear unrelated cached entries."
   (with-agent-fleet-mock path server
     (herdr-model-upsert-worktree
      '(:path "/tmp/gone-worktree" :branch "gone"
        :open_workspace_id "gone"))
     (should (herdr-model-find-worktree "/tmp/gone-worktree"))
     (agent-fleet-worktree-list)
-    (should-not (herdr-model-find-worktree "/tmp/gone-worktree"))))
+    (should (herdr-model-find-worktree "/tmp/gone-worktree"))))
 
 (ert-deftest agent-fleet-worktree-remove-cleans-up ()
   "`worktree-remove' calls worktree.remove with the workspace id and drops
@@ -187,6 +188,41 @@ rather than erroring."
     (let ((agent (agent-fleet-start 'claude :name "plain"))) ; no :worktree
       (agent-fleet-test--pump)
       (should-not (agent-fleet-worktree-status agent)))))
+
+(ert-deftest agent-fleet-worktree-remove-requires-positive-ack ()
+  (let ((herdr-model--cache (herdr-model--empty-session)))
+    (herdr-model-upsert-worktree '(:path "/tmp/wt" :open_workspace_id "wt"))
+    (dolist (result '(nil (:type "ok")
+                         (:type "worktree_removed" :workspace_id "other" :path "/tmp/wt")))
+      (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+                ((symbol-function 'herdr-request) (lambda (&rest _) result)))
+        (should-error (agent-fleet-worktree-remove "wt") :type 'herdr-protocol-error)
+        (should (herdr-model-find-worktree "/tmp/wt"))))))
+
+(ert-deftest agent-fleet-worktree-fetch-replays-new-events-after-old-list ()
+  (let ((herdr-model--cache (herdr-model--empty-session)))
+    (cl-letf (((symbol-function 'herdr-request)
+               (lambda (&rest _)
+                 (herdr--on-event "worktree_created"
+                                  '(:worktree (:path "/tmp/new" :open_workspace_id "new")))
+                 '(:type "worktree_list" :worktrees nil))))
+      (agent-fleet-worktree--fetch)
+      (should (herdr-model-find-worktree "/tmp/new")))))
+
+(ert-deftest agent-fleet-worktree-fetch-replays-in-order-on-error ()
+  (let ((herdr-model--cache (herdr-model--empty-session)))
+    (cl-letf (((symbol-function 'herdr-request)
+               (lambda (&rest _)
+                 (herdr--on-event "worktree_created"
+                                  '(:worktree (:path "/tmp/new" :open_workspace_id "new")))
+                 (herdr--on-event "worktree_removed"
+                                  '(:worktree (:path "/tmp/new" :open_workspace_id "new")))
+                 (herdr--on-event "worktree_created"
+                                  '(:worktree (:path "/tmp/survivor" :open_workspace_id "last")))
+                 (signal 'herdr-request-error '(failed)))))
+      (should-error (agent-fleet-worktree--fetch) :type 'herdr-request-error)
+      (should-not (herdr-model-find-worktree "/tmp/new"))
+      (should (herdr-model-find-worktree "/tmp/survivor")))))
 
 (provide 'agent-fleet-worktree-test)
 ;;; agent-fleet-worktree-test.el ends here
