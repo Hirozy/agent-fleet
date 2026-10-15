@@ -227,7 +227,7 @@ choice rather than silently substituting)."
   "Return a collision-safe attach buffer name for NAME and PANE-ID.
 Keep the documented `*agent:NAME*' name when it is unused or already
 belongs to PANE-ID.  If another pane owns it, add the stable pane id so two
-unnamed agents with the same workspace-derived display name cannot reuse
+unnamed agents with the same directory-derived display name cannot reuse
 each other's live terminal."
   (let* ((base (agent-fleet-attach--buffer-name name))
          (buf (get-buffer base))

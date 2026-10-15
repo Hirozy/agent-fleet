@@ -228,13 +228,6 @@ when not connected or when PROJECT resolves to no root."
            (and r (string= r root))))
        (herdr-agents)))))
 
-(defun agent-fleet--workspace-for-root (root)
-  "Return a workspace id hosting an agent whose project root is ROOT, or nil.
-Used to co-locate a project's agents in one workspace (one
-project ↔ one workspace, by default).  Returns the first match."
-  (cl-loop for a in (herdr-agents)
-           when (equal (agent-fleet-project-for-agent a) root)
-           return (herdr-agent-workspace-id a)))
 
 
 ;;; --- Start for project ----------------------------------------------
@@ -244,9 +237,8 @@ project ↔ one workspace, by default).  Returns the first match."
                                                   (timeout-ms agent-fleet-start-timeout-ms)
                                                   focus worktree branch base)
   "Start a CLI agent of KIND in Emacs project PROJECT (default: current).
-Resolves the project root, then finds a Herdr workspace
-already serving this project (one with an agent in it); if none, reuses the
-focused workspace; if none, creates a workspace with `cwd=root'.  The agent
+Resolves the project root, then reuses a Herdr workspace hosting a same-Project
+agent or creates one with `cwd=root'.  Placement is internal.  The agent
 is started at `cwd=root' so the derived project association is immediate.
 
 With `:worktree t', the project root becomes the source repo for a fresh
@@ -255,9 +247,8 @@ normal working tree.  Optional BRANCH/BASE override the
 default branch selection.  When `:worktree t' is set, the workspace/pane
 resolution above is skipped — `worktree.create' provisions both.
 
-When called interactively, if no workspace serves this project and none
-is focused, the user is prompted to pick an existing workspace; the
-agent's terminal is then attached automatically after start (see
+When called interactively, no workspace selection is required; the
+agent's terminal is attached automatically after start (see
 `agent-fleet-attach').
 
 KIND is a symbol like `claude' (see `agent-fleet-agent-executables').
@@ -284,24 +275,10 @@ no project can be resolved."
   (let ((root (agent-fleet--project-root (or project (agent-fleet-project-current)))))
     (unless root
       (user-error "No current project; call from a project buffer or pass :project"))
-    (let ((interactive-p (called-interactively-p 'interactive)))
-      (if worktree
-          ;; A worktree start provisions its own workspace + pane via
-          ;; `worktree.create'; the project root is the source repo.
-          (agent-fleet-start kind :name name :cwd root :args args
-                                 :timeout-ms timeout-ms :focus focus
-                                 :worktree worktree :branch branch :base base
-                                 :attach interactive-p)
-        (let ((ws (or (agent-fleet--workspace-for-root root)
-                      (when (herdr-focused-workspace)
-                        (herdr-workspace-id (herdr-focused-workspace)))
-                      ;; Interactive with no project/focused workspace: pick
-                      ;; an existing one instead of silently creating a frame.
-                      (when interactive-p
-                        (agent-fleet--read-workspace "Start in workspace: ")))))
-          (agent-fleet-start kind :name name :cwd root :workspace ws
-                                 :args args :timeout-ms timeout-ms :focus focus
-                                 :attach interactive-p))))))
+    (agent-fleet-start kind :name name :cwd root :args args
+                           :timeout-ms timeout-ms :focus focus
+                           :worktree worktree :branch branch :base base
+                           :attach (called-interactively-p 'interactive))))
 
 
 ;;; --- Prompt DWIM: task reference from buffer context ----------------

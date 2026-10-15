@@ -175,9 +175,9 @@ pushed `worktree_removed' event also removes it.  Returns the RPC result."
           (default (and choices (caar choices)))
           (sel (completing-read
                 (if default
-                    (format "Remove worktree for workspace (default %s): "
+                    (format "Remove worktree (default %s): "
                             default)
-                  "Remove worktree for workspace: ")
+                  "Remove worktree: ")
                 choices nil t nil nil default)))
      (list (cdr (assoc sel choices)) current-prefix-arg)))
   (agent-fleet--ensure-connected)
@@ -211,8 +211,8 @@ is the agent's workspace."
 (defconst agent-fleet-worktree-buffer-name "*Agent Fleet Worktree*"
   "Name of the read-only worktree status view buffer.")
 
-(defun agent-fleet-worktree--render-worktree-buffer (wt ws-id source)
-  "Render worktree WT (workspace WS-ID, repo SOURCE) in its read-only buffer.
+(defun agent-fleet-worktree--render-worktree-buffer (wt _ws-id source)
+  "Render worktree WT and repo SOURCE in its read-only buffer.
 Shows worktree METADATA only.  SOURCE is a `WorktreeSourceInfo' plist or
 nil.  Return the buffer; display is the caller's responsibility."
   (let ((buf (get-buffer-create agent-fleet-worktree-buffer-name)))
@@ -220,7 +220,7 @@ nil.  Return the buffer; display is the caller's responsibility."
       (special-mode)                 ; read-only view: `q' quits, etc.
       (let ((inhibit-read-only t))
         (erase-buffer)
-        (insert (format "Worktree for workspace %s\n\n" (or ws-id "?")))
+        (insert "Agent worktree\n\n")
         (agent-fleet-worktree--insert-field "Path" (or (herdr-worktree-path wt) "?"))
         (agent-fleet-worktree--insert-field
          "Branch" (or (herdr-worktree-branch wt) "(detached)"))
@@ -269,8 +269,7 @@ exactly once regardless of presentation."
         (progn
           (agent-fleet-worktree--render-worktree-buffer wt ws-id source)
           wt)
-      (message "No worktree for %s (workspace %s)"
-               (herdr-agent-display-name agent) (or ws-id "?"))
+      (message "No worktree for %s" (herdr-agent-display-name agent))
       nil)))
 
 ;;;###autoload
