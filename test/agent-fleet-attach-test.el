@@ -295,9 +295,9 @@ avoid window side effects in batch."
          (workspace (make-herdr-workspace :id "w1" :cached-label "demo"
                                            :custom-name "demo"))
          (first (make-herdr-agent :id "w1:p1" :workspace-id "w1"
-                                  :agent "claude"))
+                                  :cwd "/tmp/demo" :agent "claude"))
          (second (make-herdr-agent :id "w1:p2" :workspace-id "w1"
-                                   :agent "codex"))
+                                   :cwd "/tmp/demo" :agent "codex"))
          (base (agent-fleet-attach--buffer-name "demo"))
          captured)
     (puthash "w1" workspace (herdr-session-workspaces session))

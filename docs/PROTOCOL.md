@@ -445,7 +445,15 @@ adds no protocol — it reuses the Phase 2 RPCs above:
 - `agent-fleet-start-for-project` resolves `(project-current)`, then calls
   `workspace.create` (with `cwd=root`, already documented) when no existing
   workspace hosts the project, and targets its returned `root_pane` directly.
-  When reusing an existing workspace it provisions via `pane.split {cwd?}`.
+  When reusing an existing workspace, interactive starts provision via
+  `tab.create {cwd?}`; programmatic starts without attachment use
+  `pane.split {cwd?}` when a suitable pane exists. Workspace selection is
+  internal: starts with a cwd reuse a workspace hosting a same-Project agent,
+  or an agent at the same canonical cwd when no Project resolves. The focused
+  workspace is not a fallback for an unrelated explicit cwd. Explicit
+  `:workspace`/`:pane` arguments remain available to Lisp callers.
+  Automatic reuse of a worktree-hosting workspace additionally requires the
+  target's checkout root to match that worktree's path, even for one Project.
 - `agent-fleet-project-agents` and the dashboard `P` filter match agents by
   the canonical root of their `cwd` (an `AgentInfo`/`PaneInfo` field), so
   multiple workspaces per repo (worktrees, §32) all resolve to one project.

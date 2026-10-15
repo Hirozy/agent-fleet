@@ -169,6 +169,8 @@ read-only, and returns the struct.  Metadata only (no pane output)."
               (should (get-buffer buf-name))
               (with-current-buffer buf-name
                 (should buffer-read-only)
+                (should (string-prefix-p "Agent worktree\n" (buffer-string)))
+                (should-not (string-match-p "workspace" (buffer-string)))
                 (should (eq 'quit-window
                             (lookup-key (current-local-map) (kbd "q"))))
                 (should (string-match-p (herdr-worktree-path wt)

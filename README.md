@@ -148,12 +148,13 @@ menu, or start an agent directly with:
 M-x agent-fleet-start
 ```
 
-The interactive command asks for an agent kind, the workspace to start
-in, a working directory, and a name. The suggested name is
+The interactive command asks for an agent kind, a working directory, and
+a name. Herdr Workspaces are selected or created internally; no Workspace
+selection is required. The suggested name is
 `<project-name>-<serial>`, falling back to `<directory-name>-<serial>` when
 the selected directory has no Project. For example, `ops-transformer-1` or
 `ops-transformer-dev-1`. The smallest positive serial unused by any cached
-agent is chosen, across all Workspaces. Press `RET` to accept the suggestion
+agent is chosen across the active connection. Press `RET` to accept the suggestion
 or type your own name. A directory label does not create a Project identity.
 For a root directory without a basename, the agent kind is used. The working
 directory defaults to the calling buffer's `default-directory`; press `RET`
@@ -248,7 +249,7 @@ applicable.
 
 | Command | Action |
 |---|---|
-| `M-x agent-fleet-start` | Start an agent (prompts for kind, workspace, working directory, and name) |
+| `M-x agent-fleet-start` | Start an agent (prompts for kind, working directory, and name) |
 | `M-x agent-fleet-prompt` | Send a prompt |
 | `M-x agent-fleet-prompt-and-wait` | Prompt and wait atomically for done/blocked |
 | `M-x agent-fleet-show-output` | Open output in an ordinary buffer |
@@ -262,16 +263,28 @@ applicable.
 | `M-x agent-fleet-status` | Show an agent's state |
 | `M-x agent-fleet-doctor` | Check socket, connection, manifests, and CLIs |
 
-When started interactively, you are always prompted to pick the workspace
-the agent starts in, and the agent opens as a fresh tab in that workspace
-— never a new frame. After a successful interactive start the agent's
-terminal is attached automatically (see
-[Attach to a live terminal](#attach-to-a-live-terminal)). Programming
-callers such as `agent-fleet-parallel` are unaffected: they pass an
-explicit workspace, are never prompted, and never attach.
+After a successful interactive start, the agent's terminal is attached
+automatically (see [Attach to a live terminal](#attach-to-a-live-terminal)).
+Fleet reuses an internal Herdr Workspace hosting an agent in the same Project.
+If that Workspace hosts a worktree, the target must belong to that exact
+checkout. Sharing a Project alone does not cross a worktree boundary.
+For a directory without a Project, it matches the canonical working directory
+instead; this does not create a Project identity. When no suitable Workspace
+exists, Fleet creates one and uses its root pane. Placement with an explicit
+working directory does not depend on the focused Herdr Workspace.
+
+Lisp callers can still specify `:workspace` or `:pane` explicitly. Calls without
+a working directory retain the focused-Workspace fallback for compatibility.
+Programmatic calls do not prompt or attach unless attachment is requested.
+Isolated worktree starts use the Workspace provisioned by Herdr for that worktree.
 
 Agent state comes directly from Herdr and is one of `idle`, `working`,
 `blocked`, `done`, or `unknown`.
+
+Agent labels prefer an explicit agent name, then the basename of the agent's
+own cwd, followed by terminal title, kind, and pane ID as fallbacks. Workspace
+labels do not affect agent names. Directory labels do not assign a Project;
+completion candidates use pane IDs to distinguish otherwise identical labels.
 
 Lifecycle hooks (`agent-fleet-agent-started-hook`,
 `agent-fleet-agent-status-changed-hook`, and `agent-fleet-agent-exited-hook`)
@@ -286,10 +299,10 @@ Start an agent for the current `project.el` project:
 M-x agent-fleet-start-for-project
 ```
 
-This reuses a workspace already serving the project, or the focused one; if
-neither exists, an interactive start prompts you to pick a workspace. Like
-`agent-fleet-start`, an interactive project start opens the agent as a new
-tab in that workspace and attaches the terminal afterward.
+This starts at the current Project root, using the same automatic internal
+placement as `agent-fleet-start`. No Workspace selection is required, including
+when the server has no existing Workspaces. An interactive project start
+attaches the terminal afterward.
 
 Here, Project means the logical codebase identity derived from an agent's cwd;
 it is deliberately distinct from a Herdr Workspace. Project detection defaults

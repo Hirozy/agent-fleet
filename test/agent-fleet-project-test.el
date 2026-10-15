@@ -195,6 +195,7 @@ Git common-root rule used for each agent cwd."
                        :focused nil :revision 0))
             (agent-fleet-test--pump)
             (let ((agents (agent-fleet-project-agents worktree)))
+              (should (equal "w1" (agent-fleet--workspace-for-cwd worktree)))
               (should (= 2 (length agents)))
               (should (equal '("w1:p2" "w1:p3")
                              (sort (mapcar #'herdr-agent-id agents)
@@ -251,30 +252,75 @@ other projects; the user always confirms (no auto-selection)."
         (delete-directory worktree t))
       (when (file-exists-p repo) (delete-directory repo t)))))
 
-(ert-deftest agent-fleet-project-workspace-for-root ()
-  "`--workspace-for-root' finds the workspace hosting a project's agent."
-  (let ((repo (agent-fleet-project-test--make-git-repo)))
-    (unwind-protect
-        (with-agent-fleet-mock path server
-          (herdr-mock-create-pane server
-            `(:pane_id "w1:p2" :workspace_id "w2" :agent "claude"
-              :agent_status "idle" :cwd ,repo
-              :terminal_id "term_p2" :tab_id "w2:t1"
-              :focused nil :revision 0))
-          (agent-fleet-test--pump)
-          (should (equal "w2" (agent-fleet--workspace-for-root
-                                (agent-fleet-project-root-for-cwd repo))))
-          ;; no agent in some other repo -> nil
-          (should-not (agent-fleet--workspace-for-root "/nonexistent/repo")))
-      (when (file-exists-p repo) (delete-directory repo t)))))
 
 
 ;;; --- Start for project -------------------------------------------
 
+(ert-deftest agent-fleet-workspace-selection-by-project-and-cwd ()
+  "Placement uses Project identity or canonical no-Project cwd, never focus."
+  (let* ((repo (agent-fleet-project-test--make-git-repo))
+         (plain (make-temp-file "af-placement-" t))
+         (herdr-model--cache (herdr-model--empty-session))
+         (agent (make-herdr-agent :id "p1" :workspace-id "w1" :cwd repo)))
+    (unwind-protect
+        (progn
+          (puthash "w1" (make-herdr-workspace :id "w1")
+                   (herdr-session-workspaces herdr-model--cache))
+          (puthash "p1" agent (herdr-session-agents herdr-model--cache))
+          (make-directory (expand-file-name "src" repo))
+          (should (equal "w1" (agent-fleet--workspace-for-cwd
+                               (expand-file-name "src" repo))))
+          (should-not (agent-fleet--workspace-for-cwd plain))
+          (setf (herdr-agent-cwd agent) plain)
+          (should (equal "w1" (agent-fleet--workspace-for-cwd
+                               (concat plain "/./"))))
+          (should-not (agent-fleet--workspace-for-cwd repo))
+          ;; A stale agent must not route provisioning into a missing workspace.
+          (remhash "w1" (herdr-session-workspaces herdr-model--cache))
+          (should-not (agent-fleet--workspace-for-cwd plain)))
+      (delete-directory repo t)
+      (delete-directory plain t))))
+
+(ert-deftest agent-fleet-start-cwd-creates-then-reuses-workspace ()
+  "A no-Project cwd ignores unrelated focus and reuses its new placement."
+  (let ((cwd (make-temp-file "af-start-cwd-" t)))
+    (unwind-protect
+        (with-agent-fleet-mock path server
+          (let* ((old-ws (herdr-workspace-id (herdr-focused-workspace)))
+                 (first (agent-fleet-start 'claude :cwd cwd))
+                 (second (agent-fleet-start 'codex :cwd (concat cwd "/./"))))
+            (should-not (equal old-ws (herdr-agent-workspace-id first)))
+            (should (equal (herdr-agent-workspace-id first)
+                           (herdr-agent-workspace-id second)))
+            (should (file-equal-p cwd (herdr-agent-cwd first)))
+            (should-not (agent-fleet-project-for-agent first))))
+      (delete-directory cwd t))))
+
+(ert-deftest agent-fleet-workspace-selection-respects-worktree-checkout ()
+  "A same-Project worktree workspace is reusable only for its own checkout."
+  (let* ((repo (agent-fleet-project-test--make-git-repo))
+         (worktree nil)
+         (herdr-model--cache (herdr-model--empty-session)))
+    (unwind-protect
+        (progn
+          (setq worktree (agent-fleet-project-test--add-linked-worktree repo))
+          (puthash "w1" (make-herdr-workspace :id "w1")
+                   (herdr-session-workspaces herdr-model--cache))
+          (puthash "p1" (make-herdr-agent :id "p1" :workspace-id "w1"
+                                          :cwd worktree)
+                   (herdr-session-agents herdr-model--cache))
+          (herdr-model-upsert-worktree
+           (list :path worktree :open_workspace_id "w1"))
+          (make-directory (expand-file-name "src" worktree))
+          (should (equal "w1" (agent-fleet--workspace-for-cwd
+                               (expand-file-name "src" worktree))))
+          (should-not (agent-fleet--workspace-for-cwd repo)))
+      (when worktree (delete-directory worktree t))
+      (delete-directory repo t))))
+
 (ert-deftest agent-fleet-start-for-project ()
   "Start an agent for a project: it starts at the project root and is
-project-associated.  Reuses the focused workspace when no project agent
-exists yet (one project ↔ one workspace), so no workspace.create."
+project-associated.  Creates a workspace rather than reusing unrelated focus."
   (let ((repo (agent-fleet-project-test--make-git-repo)))
     (unwind-protect
         (with-agent-fleet-mock path server
@@ -285,9 +331,9 @@ exists yet (one project ↔ one workspace), so no workspace.create."
             ;; and is project-associated by canonical cwd
             (should (agent-fleet-project-for-agent agent))
             (should (file-equal-p repo (agent-fleet-project-for-agent agent)))
-            ;; agent.start was issued; workspace.create was not (focused reused)
+            ;; An unrelated focused workspace is not used for this Project.
             (should (agent-fleet-test--saw-request-p server "agent.start"))
-            (should-not (agent-fleet-test--saw-request-p server "workspace.create"))))
+            (should (agent-fleet-test--saw-request-p server "workspace.create"))))
       (when (file-exists-p repo) (delete-directory repo t)))))
 
 

@@ -742,8 +742,8 @@ attach buffer and delete the child after attach succeeds.  Delegates to
 
 (defun agent-fleet-dashboard--new ()
   "Start a new agent from the dashboard.
-Delegates to `agent-fleet-start' (interactive: prompts for kind and
-name, picks a workspace when none is focused, and auto-attaches the
+Delegates to `agent-fleet-start' (interactive: prompts for kind, working
+directory, and name, selects placement internally, and auto-attaches the
 new agent's terminal).  From a child dashboard, the attach lands in
 the parent frame and the child closes on success, like `a' (attach).
 Unlike the row actions, this does not act on the agent at point."

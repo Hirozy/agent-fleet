@@ -1160,38 +1160,27 @@ Returns nil when there is no session (e.g. not yet connected)."
               (id (herdr-session-focused-pane-id s)))
     (gethash id (herdr-session-panes s))))
 
-(defun herdr-model--agent-workspace-label (agent)
-  "Return AGENT's workspace label, or nil.
-This is Herdr's primary identity for an agent (its sidebar shows
-`{workspace-label} · {kind}').  Returns nil when the agent has no
-workspace, the workspace is not in the cache, or its label is
-empty/nil."
-  (when-let* ((ws-id (herdr-agent-workspace-id agent))
-              (ws (herdr-model-find-workspace ws-id))
-              (label (herdr-workspace-label ws)))
-    (and (not (string-empty-p label)) label)))
 
 (defun herdr-model--agent-cwd-basename (agent)
-  "Return AGENT's cwd basename, or nil.
-Herdr derives a workspace name from the project directory when no label
-is set, so this is the identity fallback below the workspace label."
+  "Return AGENT's nonempty cwd basename, or nil."
   (when-let* ((cwd (herdr-agent-cwd agent)))
-    (and (not (string-empty-p cwd))
-         (file-name-nondirectory (directory-file-name cwd)))))
+    (let ((label (file-name-nondirectory (directory-file-name cwd))))
+      (unless (string-empty-p label) label))))
 
 (defun herdr-agent-display-name (agent)
-  "Return a human label for AGENT, matching Herdr's agent identity.
-Fallback order: name -> workspace-label -> cwd-basename ->
+  "Return an agent-centric human label for AGENT.
+Fallback order: name -> cwd-basename ->
 terminal-title-stripped -> terminal-title -> agent (kind) -> id
 \(pane-id).  An explicit `name' (set via `agent.start'/`agent.rename')
-always wins.  For TUI-started agents (no `name') the identity is the
-Herdr workspace label (else the cwd basename) — NOT the terminal title,
+always wins.  For unnamed agents the label uses their own cwd basename,
+independently of workspace labels.  It is not a Project identity.
+The label prefers cwd over the terminal title,
 which is the agent's current *task* (surfaced separately in the
 dashboard Task column).  The terminal title is only a late fallback for
-a malformed agent with no workspace/cwd.  Returns nil if AGENT is nil."
+an agent with no usable cwd.  Returns nil if AGENT is nil."
   (when agent
-    (or (herdr-agent-name agent)
-        (herdr-model--agent-workspace-label agent)
+    (or (let ((name (herdr-agent-name agent)))
+          (and name (not (string-empty-p name)) name))
         (herdr-model--agent-cwd-basename agent)
         (herdr-agent-terminal-title-stripped agent)
         (herdr-agent-terminal-title agent)

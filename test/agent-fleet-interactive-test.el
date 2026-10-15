@@ -730,19 +730,19 @@ message for quick auditing."
 ;;; --- Agent control commands -----------------------------------------
 
 (ert-deftest agent-fleet-interactive-start ()
-  "Interactive start reads kind/workspace/cwd/name and provisions with them.
+  "Interactive start reads kind/cwd/name and provisions with them.
 The name prompt is prefilled with a Project-derived suggestion
-\(`<label>-<serial>'), and the workspace picked interactively is the one
-used for provisioning — the body does not prompt a second time."
+\(`<label>-<serial>'); workspace placement is internal."
   (let ((herdr-model--cache (agent-fleet-interactive-test--session))
         (agent-fleet--name-counter 0)
         (agent-fleet-agent-started-hook nil)
         name-init provisioned-ws provisioned-cwd captured directory-read)
+    ;; This test reuses an ordinary workspace, not the fixture's worktree.
+    (clrhash (herdr-session-worktrees herdr-model--cache))
     (cl-letf (((symbol-function 'completing-read)
                (lambda (prompt &rest _)
                  (cond
                   ((string-match-p "Agent kind" prompt) "codex")
-                  ((string-match-p "workspace" prompt) "w1 (demo)")
                   (t (error "unexpected completing-read: %s" prompt)))))
               ((symbol-function 'read-string)
                (lambda (_prompt &optional initial-input &rest _)
@@ -760,6 +760,8 @@ used for provisioning — the body does not prompt a second time."
                  (should (equal cwd temporary-file-directory))
                  "/repos/chosen-project"))
               ((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+              ((symbol-function 'agent-fleet-project-agents)
+               (lambda (_root) (list (herdr-find-agent "w1:p1"))))
               ((symbol-function 'agent-fleet--provision-pane)
                (lambda (ws-id cwd &rest _)
                  (setq provisioned-ws ws-id
@@ -1123,7 +1125,6 @@ for a deterministic project."
               ((symbol-function 'agent-fleet--ensure-connected) #'ignore)
               ((symbol-function 'project-current) (lambda (&rest _) 'project))
               ((symbol-function 'agent-fleet--project-root) (lambda (_) "/repo"))
-              ((symbol-function 'agent-fleet--workspace-for-root) (lambda (_) "w1"))
               ((symbol-function 'agent-fleet-start)
                (lambda (&rest args)
                  (setq captured args)
@@ -1132,7 +1133,7 @@ for a deterministic project."
     (should (eq 'claude (car captured)))
     (should (equal "project-agent" (plist-get (cdr captured) :name)))
     (should (equal "/repo" (plist-get (cdr captured) :cwd)))
-    (should (equal "w1" (plist-get (cdr captured) :workspace)))))
+    (should-not (plist-get (cdr captured) :workspace))))
 
 (ert-deftest agent-fleet-interactive-worktrees ()
   "Every worktree command covers interactive path input, prefix and confirmation."

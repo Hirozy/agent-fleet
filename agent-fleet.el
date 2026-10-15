@@ -493,36 +493,6 @@ pane.  Returns `(:workspace-id WS :pane-id PANE)' or signals."
       (herdr-model--upsert-pane (herdr-model-cache) root-pane))
     `(:workspace-id ,workspace-id :pane-id ,pane-id)))
 
-(defun agent-fleet--create-workspace (cwd)
-  "Create a Herdr workspace (with CWD if given) and return its id."
-  (plist-get (agent-fleet--create-workspace-provisioning cwd) :workspace-id))
-
-(defun agent-fleet--resolve-workspace-id (&optional workspace cwd)
-  "Return a workspace id to start an agent in.
-WORKSPACE wins if given; else the focused workspace; else a new one
-(created with CWD if given)."
-  (cond
-   (workspace workspace)
-   ((herdr-focused-workspace) (herdr-workspace-id (herdr-focused-workspace)))
-   (t (agent-fleet--create-workspace cwd))))
-
-(defun agent-fleet--read-workspace (prompt)
-  "Prompt for a cached workspace via `completing-read', returning its id.
-Each choice is labeled `id (display-name)'.  Signals `user-error' if no
-workspace is cached."
-  (let ((wss (herdr-workspaces)))
-    (if (null wss)
-        (user-error "No Herdr workspace; start one first")
-      (let* ((choices (mapcar
-                       (lambda (ws)
-                         (cons (format "%s (%s)"
-                                       (herdr-workspace-id ws)
-                                       (herdr-workspace-label ws))
-                               (herdr-workspace-id ws)))
-                       wss))
-             (sel (completing-read prompt choices nil t))
-             (cell (assoc sel choices #'equal)))
-        (cdr cell)))))
 
 (defun agent-fleet--kind-choices ()
   "Return an alist (EXECUTABLE . KIND-SYMBOL) for interactive kind prompts.
@@ -646,6 +616,41 @@ response lacks a workspace or root pane."
     (format "%s-%d" base agent-fleet--name-counter)))
 
 (declare-function agent-fleet-project-root-for-cwd "agent-fleet-project" (dir))
+(declare-function agent-fleet-project-agents "agent-fleet-project" (&optional project))
+
+(defun agent-fleet--workspace-for-cwd (cwd)
+  "Return a cached workspace hosting an agent matching CWD, or nil.
+Use shared Project identity when available; otherwise match canonical cwd
+only among agents without a Project.  Never use focus as a fallback."
+  (require 'agent-fleet-project)
+  (let* ((root (agent-fleet-project-root-for-cwd cwd))
+         (canonical (and (not root) (file-directory-p cwd)
+                         (directory-file-name (file-truename cwd))))
+         (agents (if root (agent-fleet-project-agents root) (herdr-agents))))
+    (cl-loop for agent in agents
+             for ws = (herdr-agent-workspace-id agent)
+             for dir = (herdr-agent-cwd agent)
+             when (and (herdr-find-workspace ws)
+                       (agent-fleet--workspace-accepts-cwd-p ws cwd)
+                       (or root
+                           (and canonical (stringp dir)
+                                (not (string-empty-p dir))
+                                (file-directory-p dir)
+                                (equal canonical
+                                       (directory-file-name (file-truename dir)))
+                                (null (agent-fleet-project-root-for-cwd dir)))))
+             return ws)))
+
+(defun agent-fleet--workspace-accepts-cwd-p (workspace-id cwd)
+  "Whether WORKSPACE-ID's worktree boundary permits placement at CWD.
+A worktree-hosting workspace requires the same checkout, not merely the
+same Project.  Unknown or inaccessible checkout roots are not reused."
+  (let ((wt (herdr-model-find-worktree-for-workspace workspace-id)))
+    (or (null wt)
+        (when-let* ((path (herdr-worktree-path wt))
+                    (root (and (file-directory-p cwd)
+                               (locate-dominating-file cwd ".git"))))
+          (and (file-directory-p path) (file-equal-p root path))))))
 
 (defun agent-fleet--suggest-name (cwd kind)
   "Suggest a name from CWD's Project basename, or its directory basename.
@@ -684,10 +689,9 @@ Ordinary panes provisioned for this command receive
 reused PANE and a worktree root pane retain their existing environment because
 their Herdr operations do not support an environment override.
 
-When called interactively, the user is always prompted to pick the
-workspace the agent starts in (unless :workspace/:pane/:worktree is given
-explicitly); the agent then opens as a fresh tab in the selected
-workspace, rather than a new frame.  The name prompt is prefilled with
+Interactive starts ask for kind, working directory, and name.  Placement
+is selected internally by Project or canonical cwd; an unmatched directory
+gets a new workspace and root pane.  The name prompt is prefilled with
 `<project-or-directory-name>-<serial>' using the selected working directory
 and the smallest serial not already a live agent's name; accept it or type your
 own.  The working-directory prompt defaults to the calling buffer's
@@ -698,7 +702,7 @@ terminal is attached automatically (see `agent-fleet-attach').
 Keyword args:
   :name        agent name (unique across live agents); auto-generated if nil
   :cwd         working directory for the new pane (required with :worktree)
-  :workspace   workspace id to start in (default: focused, picked, or created)
+  :workspace   explicit workspace id; otherwise match cwd or create one
   :pane        reuse an existing pane id instead of provisioning one
   :args        list of extra CLI arg strings passed to the agent
   :timeout-ms  startup timeout (Herdr requires > 3000)
@@ -712,17 +716,17 @@ Keyword args:
 Returns the `herdr-agent' struct for the started agent.  Signals an
 `agent-fleet-error' (or a `herdr-error') on failure."
   (interactive
-   (let* ((choices (agent-fleet--kind-choices))
-          (sel (completing-read "Agent kind: " (mapcar #'car choices) nil t))
-          (kind (cdr (assoc sel choices #'equal)))
-          ;; Pass the chosen workspace so the body does not prompt again.
-          (ws-id (agent-fleet--read-workspace "Start in workspace: "))
-          (cwd (read-directory-name "Working directory: "
-                                    default-directory nil t))
-          (suggested (agent-fleet--suggest-name cwd kind))
-          (nm (read-string "Name: " suggested)))
-     (list kind :workspace ws-id :cwd (expand-file-name cwd)
-           :name (if (string-empty-p nm) suggested nm))))
+   (progn
+     (agent-fleet--ensure-connected)
+     (let* ((choices (agent-fleet--kind-choices))
+            (sel (completing-read "Agent kind: " (mapcar #'car choices) nil t))
+            (kind (cdr (assoc sel choices #'equal)))
+            (cwd (read-directory-name "Working directory: "
+                                      default-directory nil t))
+            (suggested (agent-fleet--suggest-name cwd kind))
+            (nm (read-string "Name: " suggested)))
+       (list kind :cwd (expand-file-name cwd)
+             :name (if (string-empty-p nm) suggested nm)))))
   (agent-fleet--ensure-connected)
   (let ((candidate (agent-fleet--kind-wire-name kind)))
     (unless (and kind (stringp candidate) (not (string-empty-p candidate)))
@@ -753,29 +757,20 @@ Returns the `herdr-agent' struct for the started agent.  Signals an
                                 (list :step 'worktree-cwd)))
                       (agent-fleet--provision-worktree
                        cwd :branch branch :base base :focus focus)))
+         (existing-workspace
+          (unless (or wt-result pane)
+            (or workspace
+                (if cwd
+                    (agent-fleet--workspace-for-cwd cwd)
+                  ;; Preserve the no-cwd programmatic compatibility path.
+                  (when (herdr-focused-workspace)
+                    (herdr-workspace-id (herdr-focused-workspace)))))))
          (created-workspace
-          (when (and (null wt-result) (null pane) (null workspace)
-                     (null (herdr-focused-workspace))
-                     ;; Interactive starts prompt for an existing workspace
-                     ;; instead of silently provisioning a new one.
-                     (not interactive-p))
+          (when (and (null wt-result) (null pane) (null existing-workspace))
             (agent-fleet--create-workspace-provisioning cwd focus)))
          (ws-id (or (and wt-result (plist-get wt-result :workspace-id))
                     (plist-get created-workspace :workspace-id)
-                    workspace
-                    ;; An interactive start always lets the user pick the
-                    ;; workspace (manual selection is required), even when
-                    ;; one is focused — so this branch comes before the
-                    ;; focused-workspace shortcut.  Wrapper commands pass
-                    ;; their own resolved :workspace, so they skip this.
-                    (and (null pane) interactive-p
-                         (agent-fleet--read-workspace "Start in workspace: "))
-                    ;; Programming callers reuse the focused workspace, or
-                    ;; fall through to creating one.  An explicit pane is
-                    ;; already a complete target, so none of these run then.
-                    (and (null pane) (herdr-focused-workspace)
-                         (herdr-workspace-id (herdr-focused-workspace)))
-                    (and (null pane) (agent-fleet--create-workspace cwd))))
+                    existing-workspace workspace))
          (pane-id (or (and wt-result (plist-get wt-result :pane-id))
                       (plist-get created-workspace :pane-id)
                       pane
@@ -1094,11 +1089,9 @@ the agent has no display name."
 
 
 (defun agent-fleet--list-label (agent)
-  "Return a one-line label for AGENT as Herdr's sidebar shows it.
-`{display-name} · {kind}' — the display name (workspace identity, or an
-explicit name when assigned) plus the agent kind, which disambiguates
-agents sharing one workspace (e.g. a Claude and a Codex in the same
-project).  Falls back to the display name alone when the kind is nil."
+  "Return a one-line agent label as `{display-name} · {kind}'.
+The display name is the explicit agent name or its own cwd basename.
+Falls back to the display name alone when the kind is nil."
   (let ((name (herdr-agent-display-name agent))
         (kind (herdr-agent-agent agent)))
     (if (and kind (not (string-empty-p kind)))
@@ -1481,8 +1474,8 @@ timer.  See `agent-fleet-connection-state'.")
   "Surface PANE-ID as :pane-id and add :name/:kind from the cache.
 The raw model descriptor carries the entity id under :id; agent-fleet
 hooks document :pane-id as the public key, so we always add it.  :name
-\(via `herdr-agent-display-name', the workspace identity, falling back to
-the cwd basename / terminal title when the agent has no name) and :kind
+\(via `herdr-agent-display-name', falling back to the agent's own cwd
+basename / terminal title when it has no name) and :kind
 are filled when the agent is still cached (an exited agent may already
 have been removed eagerly)."
   (let ((agent (or (plist-get descriptor :agent)

@@ -574,34 +574,15 @@ without it the hook would fire twice."
       (should-not (equal (herdr-agent-name a1) (herdr-agent-name a2))))))
 
 
-;;; --- Interactive workspace picking + auto-attach -------------------
+;;; --- Automatic placement + auto-attach -----------------------------
 
 (defun agent-fleet-test--unfocused-session ()
-  "Return a cache with one workspace (w1) but no focused workspace or panes.
-This is the state that triggers the interactive workspace picker: a
-workspace exists to choose, yet none is focused, so a non-interactive
-start would fall through to creating a new frame."
+  "Return a cache with one workspace (w1) but no focused workspace or panes."
   (let ((session (herdr-model--empty-session)))
     (puthash "w1" (make-herdr-workspace :id "w1" :custom-name "demo")
              (herdr-session-workspaces session))
     session))
 
-(ert-deftest agent-fleet-read-workspace-returns-chosen-id ()
-  "The interactive workspace picker offers cached workspaces via
-`completing-read' and returns the selected workspace id (not its label)."
-  (let ((herdr-model--cache (agent-fleet-test--unfocused-session)))
-    (cl-letf (((symbol-function 'completing-read)
-               (lambda (_prompt collection &rest _)
-                 (car (car collection)))))   ; pick the first choice
-      (should (equal "w1"
-                     (agent-fleet--read-workspace "Start in workspace: "))))))
-
-(ert-deftest agent-fleet-read-workspace-errors-when-none-cached ()
-  "With no workspace cached the picker signals `user-error' rather than
-returning nil (which would silently fall through to creating a new frame)."
-  (let ((herdr-model--cache (herdr-model--empty-session)))
-    (should-error (agent-fleet--read-workspace "Start in workspace: ")
-                  :type 'user-error)))
 
 (ert-deftest agent-fleet-kind-choices-maps-executable-to-symbol ()
   "Interactive kind prompts display the executable name (what the user runs
@@ -662,12 +643,8 @@ variable marker."
       (should (string-prefix-p "pi-" (herdr-agent-name agent)))
       (should-not (string-prefix-p "pi-agent-" (herdr-agent-name agent))))))
 
-(ert-deftest agent-fleet-start-interactive-picks-workspace-and-opens-tab ()
-  "An interactive start always prompts for the workspace (manual selection
-is required) and opens the agent as a fresh tab in it — not a new frame,
-and not a pane split.  `called-interactively-p' is stubbed to model the
-command-loop case: in batch a plain `call-interactively' does not set it
-(the interactive test suite uses the same convention)."
+(ert-deftest agent-fleet-start-explicit-workspace-opens-tab ()
+  "An explicit workspace remains authoritative and needs no chooser."
   (let ((herdr-model--cache (agent-fleet-test--unfocused-session))
         (agent-fleet-agent-started-hook nil)
         methods)
@@ -675,8 +652,7 @@ command-loop case: in batch a plain `call-interactively' does not set it
               ((symbol-function 'agent-fleet--ensure-connected) #'ignore)
               ((symbol-function 'agent-fleet-attach) #'ignore) ; attach tested elsewhere
               ((symbol-function 'completing-read)
-               (lambda (_prompt collection &rest _)
-                 (car (car collection))))   ; pick the first workspace
+               (lambda (&rest _) (ert-fail "Unexpected workspace prompt")))
               ((symbol-function 'herdr-request)
                (lambda (method &optional _params &rest _)
                  (push method methods)
@@ -692,18 +668,15 @@ command-loop case: in batch a plain `call-interactively' does not set it
                               :name "arch" :agent "claude"
                               :agent_status "idle")))
                    (_ (error "unexpected request %s" method))))))
-      (should (herdr-agent-p (agent-fleet-start 'claude :name "arch"))))
+      (should (herdr-agent-p
+               (agent-fleet-start 'claude :name "arch" :workspace "w1"))))
     (should (member "tab.create" methods))
     (should-not (member "pane.split" methods))
     (should-not (member "workspace.create" methods))
     (should (member "agent.start" methods))))
 
-(ert-deftest agent-fleet-start-interactive-prompts-even-when-workspace-focused ()
-  "An interactive start prompts for the workspace even when one is already
-focused — it does not silently reuse the focused workspace.  The selected
-workspace receives a fresh tab, not a split of the focused pane.  This is
-the regression for the reported bug where a focused workspace let the
-start skip selection entirely."
+(ert-deftest agent-fleet-start-no-cwd-retains-focused-compatibility ()
+  "A caller omitting cwd keeps the focused workspace without a chooser."
   (let* ((session (agent-fleet-test--unfocused-session))
          ;; Give w1 a focused pane so the focused-workspace shortcut would
          ;; apply (and a pane.split would be attempted) without the fix.
@@ -739,7 +712,7 @@ start skip selection entirely."
                                 :agent_status "idle")))
                      (_ (error "unexpected request %s" method))))))
         (should (herdr-agent-p (agent-fleet-start 'claude :name "arch")))))
-    (should completing-read-called)
+    (should-not completing-read-called)
     (should (member "tab.create" methods))
     (should-not (member "pane.split" methods))
     (should-not (member "workspace.create" methods))))
@@ -757,7 +730,7 @@ programming callers."
     (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
               ((symbol-function 'agent-fleet-attach)
                (lambda (&rest _) (setq attach-called t)))
-              ((symbol-function 'agent-fleet--read-workspace)
+              ((symbol-function 'completing-read)
                (lambda (&rest _) (setq read-called t) nil))
               ((symbol-function 'herdr-request)
                (lambda (method &optional _params &rest _)
@@ -1041,10 +1014,13 @@ status authoritative."
                             :text))))
 
 (ert-deftest herdr-agent-display-name-fallbacks ()
-  "display-name falls back through workspace/cwd/title/kind/pane-id.
-These use bare structs (no cache), so the workspace-label and cwd-basename
-steps are nil and the chain reaches the terminal title / kind / id — the
-late fallbacks for a malformed agent with no workspace or cwd."
+  "Display names fall back through cwd/title/kind/pane-id."
+  (should (equal "worker"
+                 (herdr-agent-display-name
+                  (make-herdr-agent :name "" :cwd "/tmp/worker/"))))
+  (should (equal "w1:p1"
+                 (herdr-agent-display-name
+                  (make-herdr-agent :cwd "/" :id "w1:p1"))))
   ;; name wins
   (should (equal "arch"
                  (herdr-agent-display-name
@@ -1065,32 +1041,26 @@ late fallbacks for a malformed agent with no workspace or cwd."
                   (make-herdr-agent :id "w1:p1"))))
   (should-not (herdr-agent-display-name nil)))
 
-(ert-deftest herdr-agent-display-name-prefers-workspace-label ()
-  "display-name shows the Herdr workspace identity, NOT the terminal title.
-The terminal title is the agent's current task (e.g. a Claude agent's
-task text); Herdr's identity is the workspace label.  An agent in
-workspace w1 (label \"demo\") with a task title \"building foo\" must
-display as \"demo\", and `agent-fleet-list' messages it as \"demo · claude\".
-The terminal title/cwd arrive in the PaneInfo (a `pane_created' event
-carries them); `pane_agent_detected' carries only the agent kind, so
-this uses `pane_created' to establish the agent with its pane fields."
+(ert-deftest herdr-agent-display-name-ignores-workspace-label ()
+  "Unnamed agents use their own cwd, independently of workspace labels."
   (with-agent-fleet-mock path server
     (herdr-mock-create-pane server
       `(:pane_id "w1:p2" :workspace_id "w1" :agent "claude"
         :agent_status "idle" :terminal_title "building foo"
-        :terminal_title_stripped "building foo" :cwd "/tmp/demo"
+        :terminal_title_stripped "building foo" :cwd "/tmp/worker-checkout"
         :terminal_id "term_p2" :tab_id "w1:t1" :focused nil
         :revision 0))
     (agent-fleet-test--pump)
     (let ((agent (herdr-find-agent "w1:p2")))
       (should agent)
-      ;; workspace label "demo" wins over the task title "building foo"
-      (should (equal "demo" (herdr-agent-display-name agent)))
+      (should (equal "worker-checkout" (herdr-agent-display-name agent)))
+      (setf (herdr-workspace-custom-name (herdr-find-workspace "w1")) "renamed")
+      (should (equal "worker-checkout" (herdr-agent-display-name agent)))
       ;; the terminal title is still reachable for the Task column
       (should (equal "building foo"
                      (herdr-agent-terminal-title-stripped agent)))
-      ;; the list label matches Herdr's "{workspace} · {kind}"
-      (should (equal "demo · claude" (agent-fleet--list-label agent))))))
+      (should (equal "worker-checkout · claude"
+                     (agent-fleet--list-label agent))))))
 
 (ert-deftest agent-fleet-get-caches ()
   "get fetches authoritative info and caches it."
