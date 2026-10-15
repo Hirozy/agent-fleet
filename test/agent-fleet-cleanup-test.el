@@ -191,30 +191,6 @@
                  :type 'herdr-protocol-error)
    (should-not (agent-fleet-cleanup-test--writes requests))))
 
-(ert-deftest agent-fleet-cleanup-interactive-selection-confirmation-and-empty ()
-  (agent-fleet-cleanup-test--with-server
-   (save-window-excursion
-     (let (asked)
-       (cl-letf (((symbol-function 'agent-fleet-cleanup--read-filter) (lambda () nil))
-                 ((symbol-function 'yes-or-no-p) (lambda (_) (setq asked t) nil)))
-         (let ((current-prefix-arg '(4)))
-           (call-interactively #'agent-fleet-cleanup))
-         (unwind-protect
-             (progn
-               (should-not agent-fleet-cleanup--view-selected)
-               (should-error (agent-fleet-cleanup-continue) :type 'user-error)
-               (goto-char (agent-fleet-cleanup--position "p4"))
-               (agent-fleet-cleanup-toggle)
-               (agent-fleet-cleanup-continue)
-               (should (eq 'preview agent-fleet-cleanup--view-phase))
-               (should-not asked)
-               (agent-fleet-cleanup-continue)
-               (should asked)
-               (should (eq 'preview agent-fleet-cleanup--view-phase))
-               (agent-fleet-cleanup-back)
-               (should (eq 'select agent-fleet-cleanup--view-phase)))
-           (kill-buffer (current-buffer))))
-       (should-not (agent-fleet-cleanup-test--writes requests))))))
 
 (ert-deftest agent-fleet-cleanup-worktree-selection-does-not-call-runtime-close ()
   (agent-fleet-cleanup-test--with-server
@@ -311,23 +287,6 @@
      (should (plist-get (agent-fleet-cleanup :targets '("w1")) :failed))
      (should-not (agent-fleet-cleanup-test--writes requests)))))
 
-(ert-deftest agent-fleet-cleanup-worktree-always-confirms-interactive-selection ()
-  (agent-fleet-cleanup-test--with-server
-   (setq worktrees '((:path "/tmp/w1" :open_workspace_id "w1" :is_linked_worktree t)))
-   (save-window-excursion
-     (let (asked)
-       (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) (setq asked t) nil)))
-         (agent-fleet-cleanup :select t :no-confirm t)
-         (unwind-protect
-             (progn
-               (goto-char (agent-fleet-cleanup--position "w1"))
-               (agent-fleet-cleanup-toggle)
-               (agent-fleet-cleanup-continue)
-               (should (string-match-p "DELETE /tmp/w1" (buffer-string)))
-               (agent-fleet-cleanup-continue)
-               (should asked)
-               (should-not (agent-fleet-cleanup-test--writes requests)))
-           (kill-buffer (current-buffer))))))))
 
 (ert-deftest agent-fleet-cleanup-runtime-refuses-new-group-scope ()
   (agent-fleet-cleanup-test--with-server
@@ -458,51 +417,7 @@
    (should-error (agent-fleet-cleanup :targets '("p1") :no-confirm t) :type 'user-error)
    (should-not (agent-fleet-cleanup-test--writes requests))))
 
-(ert-deftest agent-fleet-cleanup-view-rechecks-preview-and-reopens-unselected ()
-  (agent-fleet-cleanup-test--with-server
-   (save-window-excursion
-     (let ((window-count (length (window-list))))
-       (agent-fleet-cleanup :select t)
-       (unwind-protect
-           (progn
-             (should (= window-count (length (window-list))))
-             (goto-char (agent-fleet-cleanup--position "p1"))
-             (agent-fleet-cleanup-toggle)
-             (agent-fleet-cleanup-continue)
-             (setf (plist-get (car (plist-get snapshot :agents)) :agent_status) "working")
-             (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) t)))
-               (agent-fleet-cleanup-continue))
-             (should (eq 'result agent-fleet-cleanup--view-phase))
-             (should (string-match-p "FAILED" (buffer-string)))
-             (should-not (agent-fleet-cleanup-test--writes requests))
-             (agent-fleet-cleanup-continue)
-             (should-not agent-fleet-cleanup--view-selected)
-             (should-not (agent-fleet-cleanup--position "p1"))
-             (goto-char (point-min))
-             (should-error (agent-fleet-cleanup-toggle) :type 'user-error)
-             (agent-fleet-cleanup :select t)
-             (should-not agent-fleet-cleanup--view-selected))
-         (kill-buffer (current-buffer)))))))
 
-(ert-deftest agent-fleet-cleanup-view-success-result-and-refresh ()
-  (agent-fleet-cleanup-test--with-server
-   (save-window-excursion
-     (agent-fleet-cleanup :select t)
-     (unwind-protect
-         (progn
-           (goto-char (agent-fleet-cleanup--position "p4"))
-           (agent-fleet-cleanup-toggle)
-           (agent-fleet-cleanup-continue)
-           (should (string-match-p "No code directories will be deleted" (buffer-string)))
-           (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) t)))
-             (agent-fleet-cleanup-continue))
-           (should (eq 'result agent-fleet-cleanup--view-phase))
-           (should (string-match-p "OK" (buffer-string)))
-           (should (= 1 (length (agent-fleet-cleanup-test--writes requests))))
-           (agent-fleet-cleanup-continue)
-           (should (eq 'select agent-fleet-cleanup--view-phase))
-           (should-not agent-fleet-cleanup--view-selected))
-       (kill-buffer (current-buffer))))))
 
 (ert-deftest agent-fleet-cleanup-task-filter-only-shown-when-records-exist ()
   (let ((agent-fleet--tasks nil) choices)
@@ -541,22 +456,133 @@
      (should (equal '("p1") (agent-fleet-task-agents task)))
      (should (equal '(("p1" . "w2")) (agent-fleet-task-workspaces task))))))
 
-(ert-deftest agent-fleet-cleanup-view-does-not-reuse-approval-across-connections ()
+
+(defmacro agent-fleet-cleanup-test--with-menu (steps &rest body)
+  "Run BODY with scripted menu STEPS, rejecting buffer-based presentation."
+  (declare (indent 1))
+  `(let ((menu-steps ,steps) (confirm-answer t) (confirmations nil)
+         (origin-buffer (current-buffer)) (origin-window (selected-window)))
+     (cl-letf (((symbol-function 'agent-fleet-cleanup--menu-read)
+                (lambda (prompt entries)
+                  (unless menu-steps (ert-fail "Unexpected menu"))
+                  (let* ((step (pop menu-steps))
+                         (action (if (functionp step) (funcall step prompt entries) step)))
+                    (should (member action (mapcar #'cdr entries)))
+                    action)))
+               ((symbol-function 'yes-or-no-p)
+                (lambda (prompt)
+                  (should-not use-short-answers)
+                  (push prompt confirmations) confirm-answer))
+               ((symbol-function 'switch-to-buffer) (lambda (&rest _) (ert-fail "Buffer switch")))
+               ((symbol-function 'pop-to-buffer) (lambda (&rest _) (ert-fail "Buffer popup")))
+               ((symbol-function 'display-buffer) (lambda (&rest _) (ert-fail "Buffer display"))))
+       ,@body
+       (should-not menu-steps)
+       (should (eq origin-buffer (current-buffer)))
+       (should (eq origin-window (selected-window))))))
+
+(ert-deftest agent-fleet-cleanup-menu-completion-adapter ()
+  (cl-letf (((symbol-function 'completing-read)
+             (lambda (_prompt table &rest _)
+               (should (equal '("Cancel" "[ ] Runtime") (all-completions "" table)))
+               "[ ] Runtime")))
+    (should (equal '(toggle . "p1")
+                   (agent-fleet-cleanup--menu-read
+                    "Select: " '(("Cancel" . cancel) ("[ ] Runtime" toggle . "p1"))))))
+  (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "")))
+    (should (eq 'cancel (agent-fleet-cleanup--menu-read "Select: " '(("Cancel" . cancel)))))))
+
+(ert-deftest agent-fleet-cleanup-menu-cancel-and-empty-selection ()
   (agent-fleet-cleanup-test--with-server
-   (save-window-excursion
+   (agent-fleet-cleanup-test--with-menu
+       (list (lambda (_prompt entries)
+               (should-not (rassq 'preview entries))
+               (should-not (cl-some (lambda (e) (string-prefix-p "[x]" (car e))) entries))
+               'cancel))
+     (should (plist-get (agent-fleet-cleanup :select t) :cancelled))
+     (should-not confirmations)
+     (should-not (agent-fleet-cleanup-test--writes requests)))))
+
+(ert-deftest agent-fleet-cleanup-menu-back-preserves-selection-without-execution ()
+  (agent-fleet-cleanup-test--with-server
+   (agent-fleet-cleanup-test--with-menu
+       (list '(toggle . "p1") 'preview 'back
+             (lambda (_prompt entries)
+               (should (string-prefix-p "[x]" (car (rassoc '(toggle . "p1") entries))))
+               '(toggle . "p1"))
+             (lambda (_prompt entries)
+               (should-not (rassq 'preview entries)) 'cancel))
+     (should (plist-get (agent-fleet-cleanup :select t) :cancelled))
+     (should-not (agent-fleet-cleanup-test--writes requests)))))
+
+(ert-deftest agent-fleet-cleanup-menu-mixed-preview-confirm-result ()
+  (agent-fleet-cleanup-test--with-server
+   (setq worktrees '((:path "/tmp/w1" :open_workspace_id "w1" :is_linked_worktree t)))
+   (agent-fleet-cleanup-test--with-menu
+       (list '(toggle . "p4") '(toggle . "w1") 'preview
+             (lambda (prompt entries)
+               (should (string-match-p "DELETE" prompt))
+               (should (cl-some (lambda (e) (string-match-p "/tmp/w1" (car e))) entries))
+               'execute)
+             (lambda (_prompt entries)
+               (should (cl-some (lambda (e) (string-prefix-p "OK:" (car e))) entries))
+               'done))
+     (let ((result (agent-fleet-cleanup :select t :no-confirm t)))
+       (should (equal '("w2" "w1") (plist-get result :closed))))
+     (should (= 1 (length confirmations)))
+     (should (string-match-p "/tmp/w1" (car confirmations)))
+     (should (equal '("workspace.close" "worktree.remove")
+                    (mapcar #'car (agent-fleet-cleanup-test--writes requests)))))))
+
+(ert-deftest agent-fleet-cleanup-menu-declining-confirmation-does-not-clean ()
+  (agent-fleet-cleanup-test--with-server
+   (agent-fleet-cleanup-test--with-menu
+       '((toggle . "p4") preview execute cancel)
+     (setq confirm-answer nil)
+     (should (plist-get (agent-fleet-cleanup :select t :no-confirm t) :cancelled))
+     (should (= 1 (length confirmations)))
+     (should (string-match-p "No code directories will be deleted" (car confirmations)))
+     (should-not (agent-fleet-cleanup-test--writes requests)))))
+
+(ert-deftest agent-fleet-cleanup-menu-preview-revalidates-state-and-connection ()
+  (dolist (change '(state connection))
+    (agent-fleet-cleanup-test--with-server
+     (agent-fleet-cleanup-test--with-menu
+         (list '(toggle . "p1") 'preview
+               (lambda (_prompt _entries)
+                 (if (eq change 'connection)
+                     (setq herdr--conn (make-herdr--connection))
+                   (setf (plist-get (car (plist-get snapshot :agents)) :agent_status) "working"))
+                 'execute)
+               (lambda (_prompt entries)
+                 (should (cl-some (lambda (e) (string-prefix-p "FAILED:" (car e))) entries))
+                 'done))
+       (should (plist-get (agent-fleet-cleanup :select t) :failed))
+       (should-not (agent-fleet-cleanup-test--writes requests))))))
+
+(ert-deftest agent-fleet-cleanup-menu-results-refresh-clears-marks ()
+  (agent-fleet-cleanup-test--with-server
+   (agent-fleet-cleanup-test--with-menu
+       (list '(toggle . "p4") 'preview 'execute 'reload
+             (lambda (_prompt entries)
+               (should-not (cl-some (lambda (e) (string-prefix-p "[x]" (car e))) entries))
+               (should-not (rassq 'preview entries))
+               'cancel))
+     (should (equal '("w2") (plist-get (agent-fleet-cleanup :select t) :closed)))
+     (should (>= snapshot-count 3))
+     (should (= 1 (length (agent-fleet-cleanup-test--writes requests)))))))
+
+(ert-deftest agent-fleet-cleanup-menu-protected-entry-never-selectable ()
+  (agent-fleet-cleanup-test--with-server
+   (setf (plist-get (car (plist-get snapshot :agents)) :agent_status) "working")
+   (agent-fleet-cleanup-test--with-menu
+       (list (lambda (_prompt entries)
+               (should-not (rassoc '(toggle . "p1") entries))
+               (cdr (cl-find-if (lambda (e) (eq (car-safe (cdr e)) 'protected)) entries)))
+             (lambda (_prompt entries)
+               (should-not (rassq 'preview entries)) 'cancel))
      (agent-fleet-cleanup :select t)
-     (unwind-protect
-         (progn
-           (goto-char (agent-fleet-cleanup--position "p1"))
-           (agent-fleet-cleanup-toggle)
-           (agent-fleet-cleanup-continue)
-           (setq herdr--conn (make-herdr--connection))
-           (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) t)))
-             (agent-fleet-cleanup-continue))
-           (should (plist-get agent-fleet-cleanup--view-report :failed))
-           (should-not (agent-fleet-cleanup-test--writes requests))
-           (should-error (agent-fleet-cleanup-refresh) :type 'herdr-connection-error))
-       (kill-buffer (current-buffer))))))
+     (should-not (agent-fleet-cleanup-test--writes requests)))))
 
 (provide 'agent-fleet-cleanup-test)
 ;;; agent-fleet-cleanup-test.el ends here

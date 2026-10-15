@@ -566,7 +566,7 @@ prompt each, and track their aggregate status — all client-side:
   worktree removals separately remove original worktree ownership. A moved
   member's other resource is retained for retry. The task record is removed
   only when both obligations are empty. Worktree terminals are not separately
-  selectable runtime resources in the unified selection buffer.
+  selectable runtime resources in the unified completion menu.
 - The **task is fleet-side metadata** (§41), not Herdr-cached: a registry
   of `agent-fleet-task` structs mapping pane-ids → task-ids, so the
   dashboard `T` filter and the Task column resolve without scanning.

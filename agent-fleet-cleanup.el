@@ -384,7 +384,7 @@ Revalidate the original identities, not a newly broadened selection."
 
 (defun agent-fleet-cleanup--run (project task targets select no-confirm)
   "Inspect or clean resources for PROJECT, TASK and TARGETS.
-SELECT opens the resource buffer.  NO-CONFIRM is only for explicit Lisp targets."
+SELECT uses interactive menus.  NO-CONFIRM is only for explicit Lisp targets."
   (agent-fleet--ensure-connected)
   (when project
     (setq project (or (agent-fleet-project-root-for-cwd project)
@@ -393,7 +393,7 @@ SELECT opens the resource buffer.  NO-CONFIRM is only for explicit Lisp targets.
          (report (agent-fleet-cleanup--report context project task))
          (candidates (plist-get report :candidates)))
     (if select
-        (agent-fleet-cleanup--open context report project task)
+        (agent-fleet-cleanup--menu context report project task)
       (let* ((selected
               (mapcar
                (lambda (id)
@@ -413,211 +413,156 @@ SELECT opens the resource buffer.  NO-CONFIRM is only for explicit Lisp targets.
           (agent-fleet-cleanup--execute context report operations))
          (t (append report (list :cancelled t))))))))
 
-;;; Resource selection / preview / result buffer
+;;; Minibuffer menu workflow
 
-(defvar-local agent-fleet-cleanup--view-context nil)
-(defvar-local agent-fleet-cleanup--view-report nil)
-(defvar-local agent-fleet-cleanup--view-selected nil)
-(defvar-local agent-fleet-cleanup--view-operations nil)
-(defvar-local agent-fleet-cleanup--view-project nil)
-(defvar-local agent-fleet-cleanup--view-task nil)
-(defvar-local agent-fleet-cleanup--view-phase 'select)
+(defun agent-fleet-cleanup--menu-read (prompt entries)
+  "Read one of ENTRIES through the user's completion UI using PROMPT.
+ENTRIES map display labels to action values.  Empty input cancels."
+  (let* ((table (lambda (string predicate action)
+                  (if (eq action 'metadata)
+                      '(metadata (display-sort-function . identity)
+                                 (cycle-sort-function . identity))
+                    (complete-with-action action entries string predicate))))
+         (choice (completing-read prompt table nil t)))
+    (or (cdr (assoc choice entries)) 'cancel)))
 
-(defvar agent-fleet-cleanup-mode-map
-  (let ((map (make-sparse-keymap)))
-    (set-keymap-parent map special-mode-map)
-    (define-key map (kbd "SPC") #'agent-fleet-cleanup-toggle)
-    (define-key map (kbd "RET") #'agent-fleet-cleanup-continue)
-    (define-key map (kbd "n") #'agent-fleet-cleanup-next)
-    (define-key map (kbd "p") #'agent-fleet-cleanup-previous)
-    (define-key map (kbd "g") #'agent-fleet-cleanup-refresh)
-    (define-key map (kbd "b") #'agent-fleet-cleanup-back)
-    (define-key map (kbd "<escape>") #'agent-fleet-cleanup-back)
-    map)
-  "Local keys for explicit resource cleanup.")
+(defun agent-fleet-cleanup--selection-menu (report selected)
+  "Toggle resources in REPORT, starting with SELECTED IDs.
+Return selected candidate objects for preview, or nil on cancellation."
+  (catch 'finished
+    (while t
+      (let* ((candidates (plist-get report :candidates))
+             (entries
+              (append
+               '(("Cancel" . cancel))
+               (when selected '(("Preview selection" . preview)))
+               (mapcar
+                (lambda (c)
+                  (cons (format "[%s] [%s] %s"
+                                (if (member (plist-get c :id) selected) "x" " ")
+                                (if (eq (plist-get c :kind) 'worktree) "Worktree" "Runtime")
+                                (plist-get c :label))
+                        (cons 'toggle (plist-get c :id))))
+                candidates)
+               (mapcar (lambda (p)
+                         (cons (format "[Protected] %s: %s" (car p) (cdr p))
+                               (cons 'protected (cdr p))))
+                       (plist-get report :protected))))
+             (action (agent-fleet-cleanup--menu-read
+                      (format "Cleanup resources (%d selected; RET toggles): " (length selected))
+                      entries)))
+        (pcase action
+          ('cancel (throw 'finished nil))
+          ('preview
+           (when selected
+             (throw 'finished
+                    (cl-remove-if-not (lambda (c) (member (plist-get c :id) selected))
+                                      candidates))))
+          (`(toggle . ,id)
+           (unless (cl-find id candidates :key (lambda (c) (plist-get c :id)) :test #'equal)
+             (user-error "Unknown cleanup resource"))
+           (setq selected (if (member id selected) (delete id selected)
+                            (append selected (list id)))))
+          (`(protected . ,reason) (message "Protected: %s" reason)))))))
 
-(define-derived-mode agent-fleet-cleanup-mode special-mode "Fleet-Cleanup"
-  "Select resources with SPC, preview with RET, then confirm with RET.
-Use n/p to navigate, b or Escape to go back, g to refresh, and q to quit.")
+(defun agent-fleet-cleanup--preview-menu (selected operations)
+  "Show approved OPERATIONS for SELECTED resources in a completion menu.
+Return execute, back, or cancel.  Inspecting an operation never executes it."
+  (catch 'finished
+    (while t
+      (let ((action
+             (agent-fleet-cleanup--menu-read
+              (if (cl-some (lambda (c) (eq (plist-get c :kind) 'worktree)) selected)
+                  "Preview: DELETE code directories; preserve changes/commits first: "
+                "Preview: close terminals/processes; NO code directories deleted: ")
+              (append '(("Back to selection" . back)
+                        ("Confirm cleanup" . execute)
+                        ("Cancel" . cancel))
+                      (cl-loop for op in operations for n from 1
+                               collect (cons (format "%d. %s" n (plist-get op :label))
+                                             (cons 'detail (plist-get op :label))))))))
+        (pcase action
+          ((or 'back 'execute 'cancel) (throw 'finished action))
+          (`(detail . ,label) (message "%s" label)))))))
 
-(defun agent-fleet-cleanup--position (id)
-  "Return the start of resource ID in the current buffer, or nil."
-  (let ((pos (point-min)))
-    (while (and (< pos (point-max))
-                (not (equal id (get-text-property pos 'agent-fleet-cleanup-resource))))
-      (setq pos (next-single-property-change pos 'agent-fleet-cleanup-resource
-                                             nil (point-max))))
-    (and (< pos (point-max)) pos)))
+(defun agent-fleet-cleanup--result-menu (report operations)
+  "Show REPORT and approved OPERATIONS without opening a result buffer."
+  (let ((label (lambda (id)
+                 (or (plist-get (cl-find id operations
+                                        :key (lambda (op) (plist-get op :id))
+                                        :test #'equal) :label)
+                     id))))
+    (catch 'finished
+      (while t
+        (let ((action
+               (agent-fleet-cleanup--menu-read
+                (format "Cleanup: %d succeeded, %d protected, %d failed: "
+                        (length (plist-get report :closed))
+                        (length (plist-get report :protected))
+                        (length (plist-get report :failed)))
+                (append
+                 '(("Done" . done) ("Back to resources (refresh)" . reload))
+                 (mapcar (lambda (id)
+                           (let ((text (concat "OK: " (funcall label id))))
+                             (cons text (cons 'detail text))))
+                         (plist-get report :closed))
+                 (mapcar (lambda (entry)
+                           (let ((text (format "FAILED: %s: %s" (funcall label (car entry))
+                                               (error-message-string (cdr entry)))))
+                             (cons text (cons 'detail text))))
+                         (plist-get report :failed))
+                 (mapcar (lambda (entry)
+                           (let ((text (format "Protected: %s: %s" (car entry) (cdr entry))))
+                             (cons text (cons 'detail text))))
+                         (plist-get report :protected))))))
+          (pcase action
+            ((or 'done 'cancel) (throw 'finished 'done))
+            ('reload (throw 'finished 'reload))
+            (`(detail . ,text) (message "%s" text))))))))
 
-(defun agent-fleet-cleanup--render ()
-  "Render the current cleanup step without changing the approved identities."
-  (let ((inhibit-read-only t)
-        (old-id (get-text-property (point) 'agent-fleet-cleanup-resource)))
-    (erase-buffer)
-    (insert (format "Agent Fleet / Cleanup / %s\n\n"
-                    agent-fleet-cleanup--view-phase))
-    (pcase agent-fleet-cleanup--view-phase
-      ('select
-       (insert (format "Selected: %d    SPC mark   RET preview   n/p move   g refresh   q quit\n\n"
-                       (length agent-fleet-cleanup--view-selected)))
-       (dolist (c (plist-get agent-fleet-cleanup--view-report :candidates))
-         (let ((id (plist-get c :id)))
-           (insert (propertize
-                    (format "[%s] [%s] %s\n\n"
-                            (if (member id agent-fleet-cleanup--view-selected) "x" " ")
-                            (if (eq (plist-get c :kind) 'worktree) "Worktree" "Runtime")
-                            (plist-get c :label))
-                    'agent-fleet-cleanup-resource id))))
-       (unless (plist-get agent-fleet-cleanup--view-report :candidates)
-         (insert "No eligible resources.\n\n"))
-       (insert "Protected (not selectable):\n")
-       (dolist (entry (plist-get agent-fleet-cleanup--view-report :protected))
-         (insert (format "  %s: %s\n" (car entry) (cdr entry)))))
-      ('preview
-       (insert (agent-fleet-cleanup--preview-text
-                (cl-remove-if-not
-                 (lambda (c) (member (plist-get c :id) agent-fleet-cleanup--view-selected))
-                 (plist-get agent-fleet-cleanup--view-report :candidates))
-                agent-fleet-cleanup--view-operations))
-       (insert "\nRET confirm    b / Escape return to selection    q cancel\n"))
-      ('result
-       (dolist (id (plist-get agent-fleet-cleanup--view-report :closed))
-         (insert (format "OK    %s\n" (agent-fleet-cleanup--result-label id))))
-       (dolist (entry (plist-get agent-fleet-cleanup--view-report :failed))
-         (insert (format "FAILED %s: %s\n" (agent-fleet-cleanup--result-label (car entry))
-                         (error-message-string (cdr entry)))))
-       (insert (format "\n%d protected resource(s). Failed resources retain retry information.\n"
-                       (length (plist-get agent-fleet-cleanup--view-report :protected))))
-       (insert "RET / g reload resources    q close\n")))
-    (goto-char (or (and old-id (agent-fleet-cleanup--position old-id))
-                   (point-min)))))
-
-(defun agent-fleet-cleanup--result-label (id)
-  "Describe result ID using the approved operation rather than container IDs."
-  (or (plist-get (cl-find id agent-fleet-cleanup--view-operations
-                          :key (lambda (op) (plist-get op :id)) :test #'equal) :label)
-      id))
-
-(defun agent-fleet-cleanup--open (context report project task)
-  "Open resource selection for CONTEXT and REPORT with PROJECT/TASK filters."
-  (let ((buffer (get-buffer-create "*Agent Fleet Cleanup*")))
-    (with-current-buffer buffer
-      (agent-fleet-cleanup-mode)
-      (setq agent-fleet-cleanup--view-context context
-            agent-fleet-cleanup--view-report report
-            agent-fleet-cleanup--view-project project
-            agent-fleet-cleanup--view-task task)
-      (agent-fleet-cleanup--render))
-    ;; Replace this window; never split or resize an attached terminal.
-    (switch-to-buffer buffer)
-    buffer))
-
-(defun agent-fleet-cleanup-toggle ()
-  "Toggle the resource at point; protected resources cannot be selected."
-  (interactive)
-  (unless (eq agent-fleet-cleanup--view-phase 'select)
-    (user-error "Return to resource selection first"))
-  (let ((id (get-text-property (point) 'agent-fleet-cleanup-resource)))
-    (unless id (user-error "No selectable resource at point"))
-    (setq agent-fleet-cleanup--view-selected
-          (if (member id agent-fleet-cleanup--view-selected)
-              (delete id agent-fleet-cleanup--view-selected)
-            (append agent-fleet-cleanup--view-selected (list id))))
-    (agent-fleet-cleanup--render)))
-
-(defun agent-fleet-cleanup-next ()
-  "Move to the next selectable resource."
-  (interactive)
-  (let* ((property 'agent-fleet-cleanup-resource)
-         (pos (next-single-property-change (point) property nil (point-max))))
-    (while (and (< pos (point-max)) (null (get-text-property pos property)))
-      (setq pos (next-single-property-change pos property nil (point-max))))
-    (goto-char pos)))
-
-(defun agent-fleet-cleanup-previous ()
-  "Move to the previous selectable resource."
-  (interactive)
-  (let* ((property 'agent-fleet-cleanup-resource)
-         (pos (point)))
-    (while (and (> pos (point-min))
-                (equal (get-text-property (1- pos) property)
-                       (get-text-property (point) property)))
-      (setq pos (previous-single-property-change pos property nil (point-min))))
-    (while (and (> pos (point-min)) (null (get-text-property (1- pos) property)))
-      (setq pos (previous-single-property-change pos property nil (point-min))))
-    (when (> pos (point-min))
-      (goto-char (previous-single-property-change pos property nil (point-min))))))
-
-(defun agent-fleet-cleanup-continue ()
-  "Preview selections, confirm approved operations, or reload results."
-  (interactive)
-  (pcase agent-fleet-cleanup--view-phase
-    ('select
-     (unless agent-fleet-cleanup--view-selected (user-error "Select resources first"))
-     (setq agent-fleet-cleanup--view-operations
-           (agent-fleet-cleanup--plan
-            (cl-remove-if-not
-             (lambda (c) (member (plist-get c :id) agent-fleet-cleanup--view-selected))
-             (plist-get agent-fleet-cleanup--view-report :candidates))
-            agent-fleet-cleanup--view-context)
-           agent-fleet-cleanup--view-phase 'preview)
-     (agent-fleet-cleanup--render))
-    ('preview
-     (let ((use-short-answers nil))
-       (when (yes-or-no-p
-              (if (cl-some (lambda (op) (eq (plist-get op :kind) 'worktree))
-                           agent-fleet-cleanup--view-operations)
-                  "Delete the worktree directories shown above and close selected terminals? "
-                "Close selected terminals and processes (no code directories deleted)? "))
-         (setq agent-fleet-cleanup--view-report
-               (agent-fleet-cleanup--execute agent-fleet-cleanup--view-context
-                                             agent-fleet-cleanup--view-report
-                                             agent-fleet-cleanup--view-operations)
-               agent-fleet-cleanup--view-phase 'result)
-         (agent-fleet-cleanup--render))))
-    ('result (agent-fleet-cleanup-refresh))))
-
-(defun agent-fleet-cleanup-refresh ()
-  "Fetch fresh resources, clearing all selections and previous approvals."
-  (interactive)
-  (agent-fleet-cleanup--check-connection
-   (plist-get agent-fleet-cleanup--view-context :connection))
-  (let* ((context (agent-fleet-cleanup--context (herdr-connection)))
-         (task agent-fleet-cleanup--view-task)
-         (report (if (and task
-                          (not (agent-fleet-task-find
-                                (if (stringp task) task (agent-fleet-task-id task)))))
-                     (list :candidates nil :protected nil)
-                   (agent-fleet-cleanup--report context agent-fleet-cleanup--view-project task))))
-    (setq agent-fleet-cleanup--view-context context
-          agent-fleet-cleanup--view-report report
-          agent-fleet-cleanup--view-selected nil
-          agent-fleet-cleanup--view-operations nil
-          agent-fleet-cleanup--view-phase 'select)
-    (agent-fleet-cleanup--render)))
-
-(defun agent-fleet-cleanup-back ()
-  "Return to selection, reload results, or leave without executing cleanup."
-  (interactive)
-  (pcase agent-fleet-cleanup--view-phase
-    ('preview
-     (setq agent-fleet-cleanup--view-phase 'select
-           agent-fleet-cleanup--view-operations nil)
-     (agent-fleet-cleanup--render))
-    ('result (agent-fleet-cleanup-refresh))
-    (_ (quit-window))))
+(defun agent-fleet-cleanup--menu (context report project task)
+  "Run selection, preview, confirmation and results as minibuffer menus.
+Keep approved CONTEXT identities through confirmation; PROJECT and TASK
+apply again only on explicit refresh.  Never display a dedicated buffer."
+  (let (selected result)
+    (catch 'finished
+      (while t
+        (setq selected (agent-fleet-cleanup--selection-menu
+                        report (mapcar (lambda (c) (plist-get c :id)) selected)))
+        (unless selected
+          (throw 'finished (or result (append report (list :cancelled t)))))
+        (let* ((operations (agent-fleet-cleanup--plan selected context))
+               (action (agent-fleet-cleanup--preview-menu selected operations))
+               (use-short-answers nil))
+          (pcase action
+            ('cancel (throw 'finished (or result (append report (list :cancelled t)))))
+            ('execute
+             (when (yes-or-no-p (concat (agent-fleet-cleanup--preview-text selected operations)
+                                        "\nProceed? "))
+               (setq result (agent-fleet-cleanup--execute context report operations))
+               (unless (eq (agent-fleet-cleanup--result-menu result operations) 'reload)
+                 (throw 'finished result))
+               (agent-fleet-cleanup--check-connection (plist-get context :connection))
+               (setq context (agent-fleet-cleanup--context (herdr-connection))
+                     report (if (and task
+                                     (not (agent-fleet-task-find
+                                           (if (stringp task) task (agent-fleet-task-id task)))))
+                                (list :candidates nil :protected nil)
+                              (agent-fleet-cleanup--report context project task))
+                     selected nil)))))))))
 
 ;;;###autoload
 (cl-defun agent-fleet-cleanup (&key project task targets select no-confirm)
   "Select runtime resources and worktrees in one cleanup workflow.
-Interactively choose a scope, mark resources with SPC, preview with RET,
-then confirm with RET.  Task is an Emacs-side filter, not a Herdr resource.
+Interactively choose a scope, toggle resources in the completion menu,
+preview the actions, and confirm.  No dedicated cleanup buffer is opened.
+Task is an Emacs-side filter, not a Herdr resource.
 No resources are selected by default.  No force is sent for worktree removal.
 From Lisp, TARGETS contains candidate IDs: pane IDs for runtime resources,
 hosting Workspace IDs for worktrees.  Omit TARGETS for a read-only report.
-SELECT opens the resource buffer and always requires explicit confirmation;
+SELECT uses menus and always requires explicit confirmation;
 NO-CONFIRM applies only to explicit Lisp targets.  Return the report with
-:candidates, :protected, :closed and :failed, or the opened selection buffer."
+:candidates, :protected, :closed and :failed."
   (interactive (append (agent-fleet-cleanup--read-filter) (list :select t)))
   (agent-fleet-cleanup--run project task targets select no-confirm))
 
