@@ -312,9 +312,13 @@ full state machine over three agents."
           ;; agent's current post-move workspace (w2).
           (should (equal '("w2:p2") (agent-fleet-task-cleanup-members "w1")))
           (should (equal '("w2:p2") (agent-fleet-task-cleanup-members "w2")))
-          (agent-fleet-task-cleanup-record "w2")
+          (agent-fleet-task-cleanup-record "w2" nil)
           (should (agent-fleet-task-find "task-move"))
-          (agent-fleet-task-cleanup-record "w1")
+          (agent-fleet-task-cleanup-record "w1" nil)
+          (should (agent-fleet-task-find "task-move"))
+          (should (equal '("w2:p2") (agent-fleet-task-agents task)))
+          (should-not (agent-fleet-task-workspaces task))
+          (agent-fleet-task-cleanup-record nil '("w2:p2"))
           (should-not (agent-fleet-task-find "task-move")))
       (herdr-model-clear-cache))))
 

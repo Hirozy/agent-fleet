@@ -523,7 +523,7 @@ are then called with that root as `default-directory`; cherry-pick, merge,
 and worktree deletion are Magit's own keys inside the status buffer (§71:
 "use Magit public API").  Magit is an optional dependency (§55): the entry
 points `user-error` when it is absent; `herdr-doctor` reports availability.
-The finished-worktree cleanup (`agent-fleet-cleanup-worktrees`) reuses the
+The unified cleanup command (`agent-fleet-cleanup`) reuses the
 Phase 5 `worktree.remove` RPC (§8.3). Task-owned worktrees use the same
 selection and execution pipeline, guarded by all remaining task members'
 authoritative completion. Unfinished agents and pending launches are protected.
@@ -559,12 +559,14 @@ prompt each, and track their aggregate status — all client-side:
   workers, not RPC functions — `agent.read` is terminal state, never a
   structured final answer.  `agent-fleet-task-wait` pumps
   `accept-process-output` (event-driven, like `agent-fleet-wait`) and
-  returns STATUS only. Task is a filter for the two cleanup commands, not
+  returns STATUS only. Task is a filter for the unified cleanup command, not
   another deletion workflow. Worktree deletion requires every remaining member
   to be present and done, regardless of historical completion timestamps.
-  Acknowledged removals immediately update task metadata; failures retain the
-  original worktree ownership for retry. Runtime cleanup excludes all
-  worktree-associated resources.
+  Acknowledged terminal closures remove runtime obligations; acknowledged
+  worktree removals separately remove original worktree ownership. A moved
+  member's other resource is retained for retry. The task record is removed
+  only when both obligations are empty. Worktree terminals are not separately
+  selectable runtime resources in the unified selection buffer.
 - The **task is fleet-side metadata** (§41), not Herdr-cached: a registry
   of `agent-fleet-task` structs mapping pane-ids → task-ids, so the
   dashboard `T` filter and the Task column resolve without scanning.
@@ -686,7 +688,8 @@ Notes:
   Fleet rollback and cleanup do not supply group intent.
 - `agent-fleet-cleanup` closes an ordinary Workspace only when every terminal
   in it was selected and revalidated. Otherwise it uses `tab.close` or
-  `pane.close` for the selected subset. It never calls `worktree.remove`.
+  `pane.close` for the selected subset. Selected worktrees instead use
+  `worktree.remove`; there is no runtime-close fallback for worktree resources.
   Workspace worktree metadata is preserved in the model; fresh
   `worktree.list`, snapshot linkage, and positive cache evidence all veto
   runtime closure of worktree-associated resources. Missing/malformed lists
