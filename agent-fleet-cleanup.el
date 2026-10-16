@@ -61,15 +61,19 @@ Do not replace the live cache: pushed events may provide newer veto evidence."
     (list :connection connection :session session :worktrees worktrees)))
 
 (defun agent-fleet-cleanup--worktree-p (ws-id context)
-  "Return non-nil when WS-ID has worktree linkage in CONTEXT or the cache."
-  (or (cl-find ws-id (plist-get context :worktrees)
-               :key #'herdr-worktree-open-workspace-id :test #'equal)
-      (herdr-model-find-worktree-for-workspace ws-id)
-      (when-let* ((ws (herdr-model-find-workspace
-                       (plist-get context :session) ws-id)))
-        (herdr-workspace-worktree ws))
-      (when-let* ((ws (herdr-model-find-workspace ws-id)))
-        (herdr-workspace-worktree ws))))
+  "Whether WS-ID has linked or unclassified worktree evidence.
+A known primary checkout never blocks runtime cleanup merely for being Git."
+  (or (cl-find-if
+       (lambda (wt) (and (equal ws-id (herdr-worktree-open-workspace-id wt))
+                         (not (herdr-model-worktree-primary-p wt))))
+       (plist-get context :worktrees))
+      (when-let* ((wt (herdr-model-find-worktree-for-workspace ws-id)))
+        (not (herdr-model-worktree-primary-p wt)))
+      (memq (herdr-model-workspace-worktree-linkage
+             (herdr-model-find-workspace (plist-get context :session) ws-id))
+            '(linked unknown))
+      (memq (herdr-model-workspace-worktree-linkage
+             (herdr-model-find-workspace ws-id)) '(linked unknown))))
 
 (defun agent-fleet-cleanup--done-p (agent)
   "Whether AGENT is present, done, and not awaiting launch."
@@ -129,29 +133,6 @@ confirmation explicitly warn that shells and other processes will close."
           (and agent (herdr-agent-agent agent))
           (and agent (herdr-agent-name agent)))))
 
-(defun agent-fleet-cleanup--read-filter ()
-  "Read a Project/Task filter, independent of the cleanup operation."
-  (pcase (completing-read "Cleanup range: "
-                          (append '("All" "Project")
-                                  (when (and (fboundp 'agent-fleet-task-list)
-                                             (agent-fleet-task-list))
-                                    '("Task (Emacs parallel group)"))) nil t)
-    ("Project"
-     (let ((project (agent-fleet-project-root-for-cwd
-                     (read-directory-name "Project directory: "))))
-       (unless project (user-error "No Project at that directory"))
-       (list :project project)))
-    ("Task (Emacs parallel group)"
-     (require 'agent-fleet-parallel)
-     (let* ((choices (mapcar
-                      (lambda (task)
-                        (cons (format "%s [%s]" (agent-fleet-task-title task)
-                                      (agent-fleet-task-id task)) task))
-                      (agent-fleet-task-list))))
-       (unless choices (user-error "No tasks"))
-       (list :task (cdr (assoc (completing-read "Task: " choices nil t)
-                               choices)))))
-    (_ nil)))
 
 (defun agent-fleet-cleanup--scope-ids (session project task)
   "Return allowed pane IDs for PROJECT and TASK in SESSION, or t for all."
@@ -189,7 +170,8 @@ WORKTREES selects code-directory deletion rather than runtime reclamation."
          (scope (agent-fleet-cleanup--scope-ids session project task))
          candidates protected)
     (if worktrees
-        (dolist (wt (plist-get context :worktrees))
+        (dolist (wt (cl-remove-if #'herdr-model-worktree-primary-p
+                                  (plist-get context :worktrees)))
           (let* ((ws-id (herdr-worktree-open-workspace-id wt))
                  (panes (and ws-id (cl-remove-if-not
                                     (lambda (p) (equal ws-id (herdr-pane-workspace-id p)))
@@ -554,16 +536,16 @@ apply again only on explicit refresh.  Never display a dedicated buffer."
 ;;;###autoload
 (cl-defun agent-fleet-cleanup (&key project task targets select no-confirm)
   "Select runtime resources and worktrees in one cleanup workflow.
-Interactively choose a scope, toggle resources in the completion menu,
+Interactively inspect all resources, toggle resources in the completion menu,
 preview the actions, and confirm.  No dedicated cleanup buffer is opened.
-Task is an Emacs-side filter, not a Herdr resource.
+There is no range prompt.  Task protection and bookkeeping apply automatically.
 No resources are selected by default.  No force is sent for worktree removal.
 From Lisp, TARGETS contains candidate IDs: pane IDs for runtime resources,
 hosting Workspace IDs for worktrees.  Omit TARGETS for a read-only report.
 SELECT uses menus and always requires explicit confirmation;
 NO-CONFIRM applies only to explicit Lisp targets.  Return the report with
 :candidates, :protected, :closed and :failed."
-  (interactive (append (agent-fleet-cleanup--read-filter) (list :select t)))
+  (interactive (list :select t))
   (agent-fleet-cleanup--run project task targets select no-confirm))
 
 (provide 'agent-fleet-cleanup)

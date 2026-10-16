@@ -374,8 +374,9 @@ dashboard `T` key to focus on one task; the task title and its aggregate state
 then show in the mode line. Task state is derived from its members — `done`
 only when all agents are done, `blocked` when one is blocked — and no agent is
 killed when another finishes. Use `M-x agent-fleet-show-output` to
-inspect individual results, and `M-x agent-fleet-cleanup` with the
-Task filter to remove selected worktrees after preserving any wanted changes.
+inspect individual results, and `M-x agent-fleet-cleanup` to remove selected
+worktrees after preserving any wanted changes. Task safety checks apply
+automatically across all remaining members.
 
 ## Review changes with Magit
 
@@ -729,21 +730,22 @@ must be started manually. `agent-fleet-agent-editor-command` must invoke
 
 Use `M-x agent-fleet-cleanup` for one resource-oriented workflow:
 
-1. Choose **All** or **Project**. **Task (Emacs parallel group)** appears only
-   when Fleet has task records; it is a filter, not a Herdr resource.
-2. In the resource completion menu, choose a resource with **RET** to toggle
+Cleanup inspects all resources directly, without an All/Project/Task range
+prompt. Task protection and bookkeeping apply automatically.
+
+1. In the resource completion menu, choose a resource with **RET** to toggle
    its `[ ]` / `[x]` mark. Nothing is selected by default. Protected entries
    only explain why they cannot be selected. Choose **Cancel** to leave.
-3. Choose **Preview selection** to inspect the exact operations in another
+2. Choose **Preview selection** to inspect the exact operations in another
    completion menu. **Back to selection** preserves marks for editing.
    Choosing an operation displays its details without executing it.
-4. Choose **Confirm cleanup**, then answer the explicit yes/no confirmation.
+3. Choose **Confirm cleanup**, then answer the explicit yes/no confirmation.
    Declining returns to resource selection; **Cancel** exits without cleanup.
-5. The result menu lists successes, protected resources, and failures.
+4. The result menu lists successes, protected resources, and failures.
    Choose **Done** to leave or **Back to resources (refresh)** to fetch fresh
    resources with no marks. **C-g** exits a menu; completed actions stay recorded.
 
-All steps use the same minibuffer completion UI as the scope selection,
+All steps use minibuffer completion menus,
 respecting the user's completion setup. No dedicated cleanup buffer, major
 mode, or local navigation keymap is opened, and the current buffer is not
 replaced. The menu shows **Runtime** resources (agent terminals or shells) and
@@ -752,7 +754,10 @@ A linked worktree appears once as a whole; its terminals cannot also be
 selected for separate closure. Workspace ownership stays an implementation
 detail, not another menu or resource browser.
 
-Runtime cleanup never deletes code directories. Fully selected ordinary
+Runtime cleanup never deletes code directories. A verified primary Git checkout
+is never a directory-deletion candidate and does not block eligible runtime
+cleanup. Linked or unclassified worktree ownership remains protected against
+separate runtime closure. Fully selected ordinary
 containers are reclaimed, including their last terminal; partial selections
 preserve unselected neighbors. Agent-free shells are not assumed empty:
 labels and confirmation warn that other processes may be closed.

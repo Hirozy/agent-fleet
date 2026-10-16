@@ -686,13 +686,13 @@ message for quick auditing."
 (ert-deftest agent-fleet-interactive-cleanup ()
   "The unified command opens selection even with a prefix argument."
   (let (calls)
-    (cl-letf (((symbol-function 'agent-fleet-cleanup--read-filter)
-               (lambda () (list :project "/tmp/project")))
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (&rest _) (ert-fail "Unexpected range prompt")))
               ((symbol-function 'agent-fleet-cleanup--run)
                (lambda (&rest args) (push args calls))))
       (let ((current-prefix-arg '(4)))
         (call-interactively #'agent-fleet-cleanup))
-      (should (equal '(("/tmp/project" nil nil t nil))
+      (should (equal '((nil nil nil t nil))
                      calls)))))
 
 (ert-deftest agent-fleet-interactive-doctors ()
