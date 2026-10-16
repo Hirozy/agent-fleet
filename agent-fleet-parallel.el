@@ -79,9 +79,11 @@
 AGENTS is a list of pane-id strings.  PROMPT is the shared task description
 (each agent may have received a distinct prompt text; this is the label).
 STARTED-AT / FINISHED-AT are float seconds (nil until the task is done).
-WORKSPACES maps pane ids to their originally-created worktree workspace ids,
+AGENTS retains runtime obligations until acknowledged closure.
+WORKSPACES independently maps pane ids to their original worktree owners,
 so cleanup still targets the owning worktree after a pane move or after a
-closed pane has disappeared from the live agent cache."
+closed pane has disappeared from the live agent cache.  Ownership entries
+can outlive AGENTS until the worktree removal itself is acknowledged."
   id title prompt agents workspaces started-at finished-at)
 
 
@@ -307,9 +309,10 @@ NO result extraction: returns task metadata only, never agent output — use
 
 ;;; --- Cleanup bookkeeping (no independent deletion workflow) ---------
 
-(defun agent-fleet-task-cleanup-members (workspace-id)
+(defun agent-fleet-task-cleanup-members (workspace-id &optional session)
   "Return remaining members of tasks owning WORKSPACE-ID.
-Use recorded original ownership even after agents move to other workspaces."
+Use recorded original ownership even after agents move to other workspaces.
+When SESSION is supplied, also match current ownership in that snapshot."
   (delete-dups
    (apply #'append
           (mapcar
@@ -317,34 +320,34 @@ Use recorded original ownership even after agents move to other workspaces."
              (when (or (rassoc workspace-id (agent-fleet-task-workspaces task))
                        (cl-some
                         (lambda (pid)
-                          (when-let* ((agent (agent-fleet--find-agent pid)))
+                          (when-let* ((agent (if session
+                                                (herdr-model-find-agent session pid)
+                                              (agent-fleet--find-agent pid))))
                             (equal workspace-id (herdr-agent-workspace-id agent))))
                         (agent-fleet-task-agents task)))
                (copy-sequence (agent-fleet-task-agents task))))
            (agent-fleet-task-list)))))
 
-(defun agent-fleet-task-cleanup-record (workspace-id)
-  "Forget members whose owning WORKSPACE-ID was successfully removed.
+(defun agent-fleet-task-cleanup-record (workspace-id pane-ids)
+  "Record acknowledged removal of WORKSPACE-ID and closure of PANE-IDS.
+WORKSPACE-ID is nil for runtime-only cleanup.  Runtime members and their
+original worktree ownership are independent obligations after a pane move.
 Update each task immediately after acknowledged removal so a later failure
 or quit cannot lose the identities needed to retry unfinished cleanup."
   (dolist (task (copy-sequence agent-fleet--tasks))
     (let* ((members (agent-fleet-task-agents task))
-           (removed
-            (cl-remove-if-not
-             (lambda (pid)
-               (equal workspace-id
-                      (or (cdr (assoc pid (agent-fleet-task-workspaces task)))
-                          (when-let* ((agent (agent-fleet--find-agent pid)))
-                            (herdr-agent-workspace-id agent)))))
-             members)))
-      (when removed
+           (removed (cl-intersection members pane-ids :test #'equal))
+           (ownership (agent-fleet-task-workspaces task))
+           (remaining (if workspace-id
+                          (cl-remove workspace-id ownership :key #'cdr :test #'equal)
+                        ownership)))
+      (when (or removed (not (equal ownership remaining)))
         (dolist (pid removed) (remhash pid agent-fleet--agent-tasks))
         (setf (agent-fleet-task-agents task)
               (cl-set-difference members removed :test #'equal)
-              (agent-fleet-task-workspaces task)
-              (cl-remove-if (lambda (entry) (member (car entry) removed))
-                            (agent-fleet-task-workspaces task)))
-        (unless (agent-fleet-task-agents task)
+              (agent-fleet-task-workspaces task) remaining)
+        (unless (or (agent-fleet-task-agents task)
+                    (agent-fleet-task-workspaces task))
           (setq agent-fleet--tasks (delq task agent-fleet--tasks)))
         (run-hook-with-args 'agent-fleet-task-changed-hook task)))))
 

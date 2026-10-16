@@ -20,6 +20,7 @@
 (require 'agent-fleet-display)
 (require 'agent-fleet-magit)
 (require 'agent-fleet-worktree)
+(require 'agent-fleet-cleanup)
 (require 'agent-fleet-parallel)
 (require 'herdr-mock-server)
 (require 'agent-fleet-test)            ; harness: with-agent-fleet-mock, --pump
@@ -219,7 +220,7 @@ even when Magit is available."
 
 ;;; --- Worktree cleanup (delete finished worktrees) ----------------
 
-(ert-deftest agent-fleet-cleanup-worktrees-removes-done-agent-worktrees ()
+(ert-deftest agent-fleet-cleanup-removes-done-agent-worktrees ()
   "`worktree-cleanup' removes the worktrees of `done' agents (issuing
 `worktree.remove' for the done agent's workspace) and leaves non-done
 agents alone.  NO-CONFIRM skips the y-or-n prompt."
@@ -238,7 +239,7 @@ agents alone.  NO-CONFIRM skips the y-or-n prompt."
              (live-ws (herdr-agent-workspace-id live-agent))
              (done-path (herdr-worktree-path
                          (agent-fleet--worktree-for-agent done-agent))))
-        (agent-fleet-cleanup-worktrees :targets (list done-ws) :no-confirm t)
+        (agent-fleet-cleanup :targets (list done-ws) :no-confirm t)
         ;; worktree.remove targeted the done agent's workspace
         (should (equal done-ws
                        (plist-get (agent-fleet-test--last-request
@@ -248,13 +249,13 @@ agents alone.  NO-CONFIRM skips the y-or-n prompt."
         (should-not (herdr-model-find-worktree done-path))
         (should (herdr-model-find-worktree-for-workspace live-ws))))))
 
-(ert-deftest agent-fleet-cleanup-worktrees-nothing-done ()
+(ert-deftest agent-fleet-cleanup-nothing-done ()
   "With no `done' agents, cleanup messages and removes nothing."
   (with-agent-fleet-mock path server
     (let ((agent (agent-fleet-start 'claude :name "live-a"
                                     :worktree t :cwd "/tmp/repo")))
       (agent-fleet-test--pump)
-      (should-not (plist-get (agent-fleet-cleanup-worktrees) :candidates))
+      (should-not (plist-get (agent-fleet-cleanup) :candidates))
       (should-not (agent-fleet-test--saw-request-p server "worktree.remove"))
       ;; the live agent's worktree is untouched
       (should (agent-fleet--worktree-for-agent agent)))))

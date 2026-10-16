@@ -298,27 +298,6 @@ messages when no worktree is open for the workspace."
   'agent-fleet-worktree-status "0.8.0")
 
 
-;;; --- Explicit worktree cleanup ------------------------------------
-
-;;;###autoload
-(cl-defun agent-fleet-cleanup-worktrees (&key project task targets select no-confirm)
-  "Delete selected worktrees and their associated runtime resources.
-This is independent of `agent-fleet-cleanup', which never deletes code.
-Interactively filter by Project/Task, select worktrees, then confirm.
-All remaining task members must be present and done; no force is sent.
-From Lisp, TARGETS contains worktree Workspace IDs; omit it for a read-only
-candidate report.  SELECT opens selection.  NO-CONFIRM skips only the Lisp
-confirmation, not safety checks.  Return the same report plist as runtime
-cleanup.  Successful removals reconcile task metadata; failures retain it."
-  (interactive
-   (progn
-     (require 'agent-fleet-cleanup)
-     (append (agent-fleet-cleanup--read-filter) (list :select t))))
-  (require 'agent-fleet-cleanup)
-  (agent-fleet-cleanup--run t project task targets select no-confirm))
-
-(declare-function agent-fleet-cleanup--read-filter "agent-fleet-cleanup")
-(declare-function agent-fleet-cleanup--run "agent-fleet-cleanup")
 
 (provide 'agent-fleet-worktree)
 ;;; agent-fleet-worktree.el ends here

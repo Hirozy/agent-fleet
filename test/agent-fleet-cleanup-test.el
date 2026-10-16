@@ -192,21 +192,34 @@
    (should-not (agent-fleet-cleanup-test--writes requests))))
 
 (ert-deftest agent-fleet-cleanup-interactive-selection-confirmation-and-empty ()
-  (dolist (selection '(nil ("p4")))
-    (agent-fleet-cleanup-test--with-server
+  (agent-fleet-cleanup-test--with-server
+   (save-window-excursion
      (let (asked)
        (cl-letf (((symbol-function 'agent-fleet-cleanup--read-filter) (lambda () nil))
-                 ((symbol-function 'completing-read-multiple) (lambda (&rest _) selection))
                  ((symbol-function 'yes-or-no-p) (lambda (_) (setq asked t) nil)))
          (let ((current-prefix-arg '(4)))
-           (call-interactively #'agent-fleet-cleanup)))
-       (should (eq (not (null selection)) (not (null asked))))
+           (call-interactively #'agent-fleet-cleanup))
+         (unwind-protect
+             (progn
+               (should-not agent-fleet-cleanup--view-selected)
+               (should-error (agent-fleet-cleanup-continue) :type 'user-error)
+               (goto-char (agent-fleet-cleanup--position "p4"))
+               (agent-fleet-cleanup-toggle)
+               (agent-fleet-cleanup-continue)
+               (should (eq 'preview agent-fleet-cleanup--view-phase))
+               (should-not asked)
+               (agent-fleet-cleanup-continue)
+               (should asked)
+               (should (eq 'preview agent-fleet-cleanup--view-phase))
+               (agent-fleet-cleanup-back)
+               (should (eq 'select agent-fleet-cleanup--view-phase)))
+           (kill-buffer (current-buffer))))
        (should-not (agent-fleet-cleanup-test--writes requests))))))
 
 (ert-deftest agent-fleet-cleanup-worktree-selection-does-not-call-runtime-close ()
   (agent-fleet-cleanup-test--with-server
    (setq worktrees '((:path "/tmp/w1" :open_workspace_id "w1" :is_linked_worktree t)))
-   (let ((report (agent-fleet-cleanup-worktrees :targets '("w1") :no-confirm t)))
+   (let ((report (agent-fleet-cleanup :targets '("w1") :no-confirm t)))
      (should (equal '("w1") (plist-get report :closed)))
      (should (equal '("worktree.remove") (mapcar #'car (agent-fleet-cleanup-test--writes requests))))
      (should (eq :false (alist-get "force" (cdar (agent-fleet-cleanup-test--writes requests))
@@ -219,7 +232,7 @@
      (setq agent-fleet--tasks
            (list (make-agent-fleet-task :id "task" :agents (list "p1" state)
                                         :workspaces '(("p1" . "w1")) :finished-at 1)))
-     (should-error (agent-fleet-cleanup-worktrees :task "task" :targets '("w1") :no-confirm t)
+     (should-error (agent-fleet-cleanup :task "task" :targets '("w1") :no-confirm t)
                    :type 'user-error)
      (should (agent-fleet-task-find "task"))
      (should-not (agent-fleet-cleanup-test--writes requests)))))
@@ -237,13 +250,13 @@
      (setq agent-fleet--tasks (list task) failures '("w2"))
      (puthash "p1" "task" agent-fleet--agent-tasks)
      (puthash "p4" "task" agent-fleet--agent-tasks)
-     (let ((report (agent-fleet-cleanup-worktrees :task task :targets '("w1" "w2") :no-confirm t)))
+     (let ((report (agent-fleet-cleanup :task task :targets '("w1" "w2") :no-confirm t)))
        (should (equal '("w1") (plist-get report :closed)))
        (should (equal '("p4") (agent-fleet-task-agents task)))
        (should-not (gethash "p1" agent-fleet--agent-tasks))
        (should (gethash "p4" agent-fleet--agent-tasks)))
      (setq failures nil)
-     (should (equal '("w2") (plist-get (agent-fleet-cleanup-worktrees
+     (should (equal '("w2") (plist-get (agent-fleet-cleanup
 					:task task :targets '("w2") :no-confirm t) :closed)))
      (should-not agent-fleet--tasks))))
 
@@ -295,18 +308,26 @@
                 (setq worktrees '((:path "/tmp/replaced" :open_workspace_id "w1"
 					 :is_linked_worktree t)))
                 t)))
-     (should (plist-get (agent-fleet-cleanup-worktrees :targets '("w1")) :failed))
+     (should (plist-get (agent-fleet-cleanup :targets '("w1")) :failed))
      (should-not (agent-fleet-cleanup-test--writes requests)))))
 
 (ert-deftest agent-fleet-cleanup-worktree-always-confirms-interactive-selection ()
   (agent-fleet-cleanup-test--with-server
    (setq worktrees '((:path "/tmp/w1" :open_workspace_id "w1" :is_linked_worktree t)))
-   (let (asked)
-     (cl-letf (((symbol-function 'completing-read-multiple) (lambda (&rest _) '("w1")))
-               ((symbol-function 'yes-or-no-p) (lambda (_) (setq asked t) nil)))
-       (should (plist-get (agent-fleet-cleanup-worktrees :select t :no-confirm t) :cancelled))
-       (should asked)
-       (should-not (agent-fleet-cleanup-test--writes requests))))))
+   (save-window-excursion
+     (let (asked)
+       (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) (setq asked t) nil)))
+         (agent-fleet-cleanup :select t :no-confirm t)
+         (unwind-protect
+             (progn
+               (goto-char (agent-fleet-cleanup--position "w1"))
+               (agent-fleet-cleanup-toggle)
+               (agent-fleet-cleanup-continue)
+               (should (string-match-p "DELETE /tmp/w1" (buffer-string)))
+               (agent-fleet-cleanup-continue)
+               (should asked)
+               (should-not (agent-fleet-cleanup-test--writes requests)))
+           (kill-buffer (current-buffer))))))))
 
 (ert-deftest agent-fleet-cleanup-runtime-refuses-new-group-scope ()
   (agent-fleet-cleanup-test--with-server
@@ -357,8 +378,9 @@
            (list :type "worktree_list"
                  :worktrees (list (list :path (concat "/repo/" ws)
                                         :is_linked_worktree t :open_workspace_id ws)))))
-   (should (= 2 (length (plist-get (agent-fleet-cleanup-worktrees) :candidates))))
-   (should-not (plist-get (agent-fleet-cleanup) :candidates))))
+   (should (= 2 (length (plist-get (agent-fleet-cleanup) :candidates))))
+   (should (cl-every (lambda (c) (eq (plist-get c :kind) 'worktree))
+                     (plist-get (agent-fleet-cleanup) :candidates)))))
 
 (ert-deftest agent-fleet-cleanup-non-git-does-not-erase-positive-linkage ()
   (agent-fleet-cleanup-test--with-server
@@ -377,10 +399,8 @@
              '(:type "worktree_list"
                :worktrees ((:path "/repo/wt" :is_linked_worktree t
                             :open_workspace_id "w1"))))))
-   (should (equal '("p4") (mapcar (lambda (c) (plist-get c :id))
-                                 (plist-get (agent-fleet-cleanup) :candidates))))
-   (should (equal '("w1") (mapcar (lambda (c) (plist-get c :id))
-                                 (plist-get (agent-fleet-cleanup-worktrees) :candidates))))))
+   (should (equal '("p4" "w1") (mapcar (lambda (c) (plist-get c :id))
+                                 (plist-get (agent-fleet-cleanup) :candidates))))))
 
 (ert-deftest agent-fleet-cleanup-unexpected-worktree-errors-remain-fatal ()
   (dolist (code '("workspace_not_found" "worktree_list_failed" "permission_denied"))
@@ -394,7 +414,149 @@
 (ert-deftest agent-fleet-cleanup-deduplicates-shared-repository-lists ()
   (agent-fleet-cleanup-test--with-server
    (setq worktrees '((:path "/repo/wt" :is_linked_worktree t :open_workspace_id "w1")))
-   (should (= 1 (length (plist-get (agent-fleet-cleanup-worktrees) :candidates))))))
+   (should (= 1 (cl-count 'worktree (plist-get (agent-fleet-cleanup) :candidates)
+                         :key (lambda (c) (plist-get c :kind)))))))
+
+(ert-deftest agent-fleet-cleanup-mixed-execution-keeps-distinct-effects ()
+  (agent-fleet-cleanup-test--with-server
+   (setq worktrees '((:path "/tmp/w2" :open_workspace_id "w2" :is_linked_worktree t)))
+   (let ((report (agent-fleet-cleanup :targets '("p1" "w2") :no-confirm t)))
+     (should (equal '("p1" "w2") (plist-get report :closed)))
+     (should (equal '("pane.close" "worktree.remove")
+                    (mapcar #'car (agent-fleet-cleanup-test--writes requests)))))))
+
+(ert-deftest agent-fleet-cleanup-moved-task-resources-clean-in-either-order ()
+  (dolist (order '(("p1" "w2") ("w2" "p1")))
+    (agent-fleet-cleanup-test--with-server
+     (setq worktrees '((:path "/tmp/w2" :open_workspace_id "w2" :is_linked_worktree t)))
+     (let ((task (make-agent-fleet-task :id "moved" :agents '("p1")
+                                       :workspaces '(("p1" . "w2")))))
+       (setq agent-fleet--tasks (list task))
+       (puthash "p1" "moved" agent-fleet--agent-tasks)
+       (should (plist-get (agent-fleet-cleanup :task task :targets (list (car order))
+                                              :no-confirm t) :closed))
+       (should (agent-fleet-task-find "moved"))
+       (if (equal (car order) "p1")
+           (progn
+             (should-not (agent-fleet-task-agents task))
+             (should (agent-fleet-task-workspaces task))
+             ;; The closed runtime is absent, not falsely treated as missing.
+             (setf (plist-get snapshot :agents) (cdr (plist-get snapshot :agents))
+                   (plist-get snapshot :panes) (cdr (plist-get snapshot :panes))
+                   (plist-get (car (plist-get snapshot :tabs)) :pane_count) 1))
+         (should (equal '("p1") (agent-fleet-task-agents task)))
+         (should-not (agent-fleet-task-workspaces task)))
+       (should (plist-get (agent-fleet-cleanup :task task :targets (cdr order)
+                                              :no-confirm t) :closed))
+       (should-not (agent-fleet-task-find "moved"))))))
+
+(ert-deftest agent-fleet-cleanup-moved-task-protects-whole-group-without-cache ()
+  (agent-fleet-cleanup-test--with-server
+   (setq agent-fleet--tasks
+         (list (make-agent-fleet-task :id "moved" :agents '("p1" "missing")
+                                      :workspaces '(("p1" . "w2")))))
+   (should-error (agent-fleet-cleanup :targets '("p1") :no-confirm t) :type 'user-error)
+   (should-not (agent-fleet-cleanup-test--writes requests))))
+
+(ert-deftest agent-fleet-cleanup-view-rechecks-preview-and-reopens-unselected ()
+  (agent-fleet-cleanup-test--with-server
+   (save-window-excursion
+     (let ((window-count (length (window-list))))
+       (agent-fleet-cleanup :select t)
+       (unwind-protect
+           (progn
+             (should (= window-count (length (window-list))))
+             (goto-char (agent-fleet-cleanup--position "p1"))
+             (agent-fleet-cleanup-toggle)
+             (agent-fleet-cleanup-continue)
+             (setf (plist-get (car (plist-get snapshot :agents)) :agent_status) "working")
+             (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) t)))
+               (agent-fleet-cleanup-continue))
+             (should (eq 'result agent-fleet-cleanup--view-phase))
+             (should (string-match-p "FAILED" (buffer-string)))
+             (should-not (agent-fleet-cleanup-test--writes requests))
+             (agent-fleet-cleanup-continue)
+             (should-not agent-fleet-cleanup--view-selected)
+             (should-not (agent-fleet-cleanup--position "p1"))
+             (goto-char (point-min))
+             (should-error (agent-fleet-cleanup-toggle) :type 'user-error)
+             (agent-fleet-cleanup :select t)
+             (should-not agent-fleet-cleanup--view-selected))
+         (kill-buffer (current-buffer)))))))
+
+(ert-deftest agent-fleet-cleanup-view-success-result-and-refresh ()
+  (agent-fleet-cleanup-test--with-server
+   (save-window-excursion
+     (agent-fleet-cleanup :select t)
+     (unwind-protect
+         (progn
+           (goto-char (agent-fleet-cleanup--position "p4"))
+           (agent-fleet-cleanup-toggle)
+           (agent-fleet-cleanup-continue)
+           (should (string-match-p "No code directories will be deleted" (buffer-string)))
+           (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) t)))
+             (agent-fleet-cleanup-continue))
+           (should (eq 'result agent-fleet-cleanup--view-phase))
+           (should (string-match-p "OK" (buffer-string)))
+           (should (= 1 (length (agent-fleet-cleanup-test--writes requests))))
+           (agent-fleet-cleanup-continue)
+           (should (eq 'select agent-fleet-cleanup--view-phase))
+           (should-not agent-fleet-cleanup--view-selected))
+       (kill-buffer (current-buffer))))))
+
+(ert-deftest agent-fleet-cleanup-task-filter-only-shown-when-records-exist ()
+  (let ((agent-fleet--tasks nil) choices)
+    (cl-letf (((symbol-function 'completing-read)
+               (lambda (_prompt collection &rest _) (setq choices collection) "All")))
+      (agent-fleet-cleanup--read-filter)
+      (should (equal '("All" "Project") choices))
+      (setq agent-fleet--tasks (list (make-agent-fleet-task :id "one")))
+      (agent-fleet-cleanup--read-filter)
+      (should (member "Task (Emacs parallel group)" choices)))))
+
+(ert-deftest agent-fleet-cleanup-moved-task-dirty-worktree-remains-retryable ()
+  (agent-fleet-cleanup-test--with-server
+   (setq worktrees '((:path "/tmp/w2" :open_workspace_id "w2" :is_linked_worktree t)))
+   (let ((task (make-agent-fleet-task :id "moved" :agents '("p1")
+                                     :workspaces '(("p1" . "w2")))))
+     (setq agent-fleet--tasks (list task) failures '("w2"))
+     (let ((report (agent-fleet-cleanup :task task :targets '("p1" "w2") :no-confirm t)))
+       (should (equal '("p1") (plist-get report :closed)))
+       (should (equal "w2" (caar (plist-get report :failed)))))
+     (should-not (agent-fleet-task-agents task))
+     (should (equal '(("p1" . "w2")) (agent-fleet-task-workspaces task)))
+     (should (agent-fleet-task-find "moved"))
+     (setq failures nil)
+     (should (equal '("w2")
+                    (plist-get (agent-fleet-cleanup :task task :targets '("w2") :no-confirm t)
+                               :closed)))
+     (should-not agent-fleet--tasks))))
+
+(ert-deftest agent-fleet-cleanup-missing-runtime-ack-preserves-task-obligations ()
+  (agent-fleet-cleanup-test--with-server
+   (let ((task (make-agent-fleet-task :id "moved" :agents '("p1")
+                                     :workspaces '(("p1" . "w2")))))
+     (setq agent-fleet--tasks (list task) ack nil)
+     (should (plist-get (agent-fleet-cleanup :targets '("p1") :no-confirm t) :failed))
+     (should (equal '("p1") (agent-fleet-task-agents task)))
+     (should (equal '(("p1" . "w2")) (agent-fleet-task-workspaces task))))))
+
+(ert-deftest agent-fleet-cleanup-view-does-not-reuse-approval-across-connections ()
+  (agent-fleet-cleanup-test--with-server
+   (save-window-excursion
+     (agent-fleet-cleanup :select t)
+     (unwind-protect
+         (progn
+           (goto-char (agent-fleet-cleanup--position "p1"))
+           (agent-fleet-cleanup-toggle)
+           (agent-fleet-cleanup-continue)
+           (setq herdr--conn (make-herdr--connection))
+           (cl-letf (((symbol-function 'yes-or-no-p) (lambda (_) t)))
+             (agent-fleet-cleanup-continue))
+           (should (plist-get agent-fleet-cleanup--view-report :failed))
+           (should-not (agent-fleet-cleanup-test--writes requests))
+           (should-error (agent-fleet-cleanup-refresh) :type 'herdr-connection-error))
+       (kill-buffer (current-buffer))))))
 
 (provide 'agent-fleet-cleanup-test)
 ;;; agent-fleet-cleanup-test.el ends here

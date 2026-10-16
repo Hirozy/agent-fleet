@@ -62,7 +62,6 @@
     (agent-fleet-worktree-open . agent-fleet-interactive-worktrees)
     (agent-fleet-worktree-remove . agent-fleet-interactive-worktrees)
     (agent-fleet-worktree-status . agent-fleet-interactive-worktrees)
-    (agent-fleet-cleanup-worktrees . agent-fleet-interactive-cleanup)
     (agent-fleet-magit-status . agent-fleet-interactive-magit)
     (agent-fleet-magit-diff . agent-fleet-interactive-magit)
     (agent-fleet-parallel . agent-fleet-interactive-parallel)
@@ -78,7 +77,13 @@
   "Public commands: standalone M-x entry points with autoload and docs.")
 
 (defconst agent-fleet-interactive-test--context-commands
-  '((agent-fleet-attach-prompt . agent-fleet-interactive-attach-current-agent)
+  '((agent-fleet-cleanup-toggle . agent-fleet-interactive-cleanup-buffer)
+    (agent-fleet-cleanup-continue . agent-fleet-interactive-cleanup-buffer)
+    (agent-fleet-cleanup-next . agent-fleet-interactive-cleanup-buffer)
+    (agent-fleet-cleanup-previous . agent-fleet-interactive-cleanup-buffer)
+    (agent-fleet-cleanup-refresh . agent-fleet-interactive-cleanup-buffer)
+    (agent-fleet-cleanup-back . agent-fleet-interactive-cleanup-buffer)
+    (agent-fleet-attach-prompt . agent-fleet-interactive-attach-current-agent)
     (agent-fleet-attach-prompt-in-child-frame . agent-fleet-interactive-attach-compose)
     (agent-fleet-attach--compose-submit . agent-fleet-interactive-attach-compose)
     (agent-fleet-attach--compose-abort . agent-fleet-interactive-attach-compose)
@@ -114,6 +119,7 @@
 
 (defconst agent-fleet-interactive-test--mode-commands
   '((agent-fleet-mode . agent-fleet-interactive-dashboard-entry-and-mode)
+    (agent-fleet-cleanup-mode . agent-fleet-interactive-cleanup-buffer)
     (agent-fleet-attach-mode . agent-fleet-interactive-attach-current-agent)
     (agent-fleet-attach-menu . agent-fleet-interactive-attach-current-agent)
     (agent-fleet-editor-bridge-mode . agent-fleet-interactive-editor-bridge)
@@ -685,18 +691,43 @@ message for quick auditing."
                       :type 'agent-fleet-not-connected)))))
 
 (ert-deftest agent-fleet-interactive-cleanup ()
-  "Both commands select resources rather than dispatch to another command."
+  "The unified command opens selection even with a prefix argument."
   (let (calls)
     (cl-letf (((symbol-function 'agent-fleet-cleanup--read-filter)
                (lambda () (list :project "/tmp/project")))
               ((symbol-function 'agent-fleet-cleanup--run)
                (lambda (&rest args) (push args calls))))
       (let ((current-prefix-arg '(4)))
-        (call-interactively #'agent-fleet-cleanup)
-        (call-interactively #'agent-fleet-cleanup-worktrees))
-      (should (equal '((t "/tmp/project" nil nil t nil)
-                       (nil "/tmp/project" nil nil t nil))
+        (call-interactively #'agent-fleet-cleanup))
+      (should (equal '(("/tmp/project" nil nil t nil))
                      calls)))))
+(ert-deftest agent-fleet-interactive-cleanup-buffer ()
+  "Context keys navigate selection, preview and refresh without cleanup."
+  (with-temp-buffer
+    (call-interactively #'agent-fleet-cleanup-mode)
+    (setq agent-fleet-cleanup--view-report
+          '(:candidates ((:id "one" :kind runtime :label "one")
+                         (:id "two" :kind runtime :label "two"))))
+    (agent-fleet-cleanup--render)
+    (call-interactively #'agent-fleet-cleanup-next)
+    (should (equal "one" (get-text-property (point) 'agent-fleet-cleanup-resource)))
+    (call-interactively #'agent-fleet-cleanup-next)
+    (should (equal "two" (get-text-property (point) 'agent-fleet-cleanup-resource)))
+    (call-interactively #'agent-fleet-cleanup-previous)
+    (should (equal "one" (get-text-property (point) 'agent-fleet-cleanup-resource)))
+    (call-interactively #'agent-fleet-cleanup-toggle)
+    (should (equal '("one") agent-fleet-cleanup--view-selected))
+    (cl-letf (((symbol-function 'agent-fleet-cleanup--plan) (lambda (&rest _) nil)))
+      (call-interactively #'agent-fleet-cleanup-continue))
+    (should (eq 'preview agent-fleet-cleanup--view-phase))
+    (call-interactively #'agent-fleet-cleanup-back)
+    (should (eq 'select agent-fleet-cleanup--view-phase))
+    (cl-letf (((symbol-function 'agent-fleet-cleanup--check-connection) #'ignore)
+              ((symbol-function 'agent-fleet-cleanup--context) #'ignore)
+              ((symbol-function 'agent-fleet-cleanup--report) (lambda (&rest _) nil)))
+      (call-interactively #'agent-fleet-cleanup-refresh))
+    (should-not agent-fleet-cleanup--view-selected)))
+
 (ert-deftest agent-fleet-interactive-doctors ()
   "Both doctor entry points gather checks and render their documented buffers."
   (let (renders)
