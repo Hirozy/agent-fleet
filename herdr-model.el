@@ -109,14 +109,15 @@ agents started outside this client."
   agent kind source value)
 
 (cl-defstruct herdr-worktree
-  "A Herdr git worktree (a separate checkout of a repo).
+  "A Herdr Git checkout, primary or linked.
 Keyed by `path' (the canonical id; `WorktreeInfo.path').  OPEN-WORKSPACE-ID
 links a worktree to the workspace currently hosting it (nil when the
 worktree exists but no workspace is open for it).  The snapshot carries no
 worktree collection, so this struct is populated only from `worktree.list'
-and `worktree.created'/`opened' events."
+and `worktree.created'/`opened' events.  LINKAGE-KNOWN-P distinguishes an
+explicit linkage boolean from missing or malformed metadata."
   path branch is-bare is-detached is-prunable
-  is-linked-worktree label open-workspace-id)
+  is-linked-worktree label open-workspace-id linkage-known-p)
 
 
 ;;; --- Cache singleton ----------------------------------------------
@@ -345,9 +346,29 @@ PATH is the canonical key.  BRANCH is nil for a detached worktree."
    :is-bare (herdr-model--bool (plist-get wt :is_bare))
    :is-detached (herdr-model--bool (plist-get wt :is_detached))
    :is-prunable (herdr-model--bool (plist-get wt :is_prunable))
-   :is-linked-worktree (herdr-model--bool (plist-get wt :is_linked_worktree))
+   :is-linked-worktree (eq (plist-get wt :is_linked_worktree) t)
+   :linkage-known-p (not (null (memq (plist-get wt :is_linked_worktree) '(t :false))))
    :label (plist-get wt :label)
    :open-workspace-id (plist-get wt :open_workspace_id)))
+
+(defun herdr-model-worktree-primary-p (worktree)
+  "Whether WORKTREE explicitly identifies a primary rather than linked checkout.
+Missing or malformed linkage is not proof of primary ownership.  Old cached
+structs from before this field was introduced remain conservatively unknown."
+  (and worktree
+       (condition-case nil (herdr-worktree-linkage-known-p worktree)
+         (args-out-of-range nil))
+       (not (herdr-worktree-is-linked-worktree worktree))))
+
+(defun herdr-model-workspace-worktree-linkage (workspace)
+  "Return WORKSPACE's linkage: nil, `primary', `linked', or `unknown'.
+Nil means no worktree metadata; unknown metadata must not authorize deletion."
+  (when-let* ((info (and workspace (herdr-workspace-worktree workspace))))
+    (if (not (proper-list-p info)) 'unknown
+      (pcase (plist-get info :is_linked_worktree)
+        ('t 'linked)
+        (:false 'primary)
+        (_ 'unknown)))))
 
 (defun herdr-model--parse-tab (tb)
   "Parse a tab plist TB (a TabInfo) into a struct."

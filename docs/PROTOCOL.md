@@ -692,7 +692,11 @@ Notes:
   `worktree.remove`; there is no runtime-close fallback for worktree resources.
   Workspace worktree metadata is preserved in the model; fresh
   `worktree.list`, snapshot linkage, and positive cache evidence all veto
-  runtime closure of worktree-associated resources. Missing/malformed lists
+  separate runtime closure for linked or unclassified worktree ownership.
+  An explicit `is_linked_worktree: false` identifies a primary checkout:
+  it is excluded from directory deletion, but does not block eligible runtime
+  cleanup. Missing/null linkage is not equivalent to explicit false.
+  Missing/malformed lists
   fail closed. `workspace.close` returns `Ok`, not `workspace_closed`;
   the latter is the pushed event. Verified against the
   [0.9.0 Workspace handler](https://github.com/herdrdev/herdr/blob/v0.9.0/src/app/api/workspaces.rs).

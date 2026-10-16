@@ -419,15 +419,58 @@
 
 
 
-(ert-deftest agent-fleet-cleanup-task-filter-only-shown-when-records-exist ()
-  (let ((agent-fleet--tasks nil) choices)
-    (cl-letf (((symbol-function 'completing-read)
-               (lambda (_prompt collection &rest _) (setq choices collection) "All")))
-      (agent-fleet-cleanup--read-filter)
-      (should (equal '("All" "Project") choices))
-      (setq agent-fleet--tasks (list (make-agent-fleet-task :id "one")))
-      (agent-fleet-cleanup--read-filter)
-      (should (member "Task (Emacs parallel group)" choices)))))
+(ert-deftest agent-fleet-cleanup-primary-checkout-allows-runtime-only ()
+  (dolist (source '(list snapshot cache))
+    (agent-fleet-cleanup-test--with-server
+     (let ((info '(:path "/tmp/repo" :open_workspace_id "w1"
+                   :is_linked_worktree :false)))
+       (pcase source
+         ('list (setq worktrees (list info)))
+         ('snapshot (setf (plist-get (car (plist-get snapshot :workspaces)) :worktree) info))
+         ('cache
+          (setq herdr-model--cache (herdr-model-parse-cleanup-snapshot snapshot))
+          (herdr-model-upsert-worktree info)))
+       (setf (plist-get (car (plist-get snapshot :agents)) :agent_status) "blocked")
+       (let ((report (agent-fleet-cleanup)))
+         (should (equal '("p2" "p3" "p4")
+                        (mapcar (lambda (c) (plist-get c :id)) (plist-get report :candidates))))
+         (should (assoc "p1" (plist-get report :protected)))
+         (should-not (assoc "/tmp/repo" (plist-get report :protected))))
+       (agent-fleet-cleanup :targets '("p2" "p3" "p4") :no-confirm t)
+       (should (equal '(("pane.close" (pane_id . "p2"))
+                        ("tab.close" (tab_id . "b"))
+                        ("workspace.close" (workspace_id . "w2")))
+                      (agent-fleet-cleanup-test--writes requests)))))))
+
+(ert-deftest agent-fleet-cleanup-primary-does-not-override-linked-evidence ()
+  (agent-fleet-cleanup-test--with-server
+   (setq worktrees '((:path "/tmp/repo" :open_workspace_id "w1" :is_linked_worktree :false))
+         herdr-model--cache (herdr-model-parse-cleanup-snapshot snapshot))
+   (herdr-model-upsert-worktree '(:path "/tmp/linked" :open_workspace_id "w1"
+                                 :is_linked_worktree t))
+   (should-error (agent-fleet-cleanup :targets '("p1") :no-confirm t) :type 'user-error)
+   (should-not (agent-fleet-cleanup-test--writes requests))))
+
+(ert-deftest agent-fleet-cleanup-primary-becoming-linked-vetoes-execution ()
+  (agent-fleet-cleanup-test--with-server
+   (setq worktrees '((:path "/tmp/repo" :open_workspace_id "w1" :is_linked_worktree :false))
+         before-snapshot (lambda ()
+                           (when (= snapshot-count 2)
+                             (setq worktrees '((:path "/tmp/linked" :open_workspace_id "w1"
+                                                :is_linked_worktree t))))))
+   (should (plist-get (agent-fleet-cleanup :targets '("p1") :no-confirm t) :failed))
+   (should-not (agent-fleet-cleanup-test--writes requests))))
+
+(ert-deftest agent-fleet-cleanup-linkage-distinguishes-false-from-unknown ()
+  (dolist (value '(t :false nil :null "false"))
+    (let* ((info (list :is_linked_worktree value))
+           (wt (herdr-model--parse-worktree info))
+           (ws (make-herdr-workspace :worktree info)))
+      (should (eq (not (null (herdr-model-worktree-primary-p wt))) (eq value :false)))
+      (should (eq (herdr-worktree-is-linked-worktree wt) (eq value t)))
+      (should (eq (herdr-model-workspace-worktree-linkage ws)
+                  (cond ((eq value t) 'linked) ((eq value :false) 'primary) (t 'unknown))))))
+  (should-not (herdr-model-worktree-primary-p (herdr-model--parse-worktree '(:path "/tmp")))))
 
 (ert-deftest agent-fleet-cleanup-moved-task-dirty-worktree-remains-retryable ()
   (agent-fleet-cleanup-test--with-server
@@ -491,6 +534,22 @@
                     "Select: " '(("Cancel" . cancel) ("[ ] Runtime" toggle . "p1"))))))
   (cl-letf (((symbol-function 'completing-read) (lambda (&rest _) "")))
     (should (eq 'cancel (agent-fleet-cleanup--menu-read "Select: " '(("Cancel" . cancel)))))))
+
+(ert-deftest agent-fleet-cleanup-interactive-all-resources-with-task-protection ()
+  (agent-fleet-cleanup-test--with-server
+   (setq agent-fleet--tasks
+         (list (make-agent-fleet-task :id "unfinished" :agents '("p1" "missing"))))
+   (agent-fleet-cleanup-test--with-menu
+       (list (lambda (_prompt entries)
+               (should-not (rassoc '(toggle . "p1") entries))
+               (should-not (rassoc '(toggle . "p2") entries))
+               (should (rassoc '(toggle . "p4") entries))
+               '(toggle . "p4"))
+             'preview 'execute 'done)
+     (call-interactively #'agent-fleet-cleanup)
+     (should (= 1 (length confirmations)))
+     (should (equal '(("workspace.close" (workspace_id . "w2")))
+                    (agent-fleet-cleanup-test--writes requests))))))
 
 (ert-deftest agent-fleet-cleanup-menu-cancel-and-empty-selection ()
   (agent-fleet-cleanup-test--with-server
