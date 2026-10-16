@@ -731,15 +731,22 @@ Use `M-x agent-fleet-cleanup` for one resource-oriented workflow:
 
 1. Choose **All** or **Project**. **Task (Emacs parallel group)** appears only
    when Fleet has task records; it is a filter, not a Herdr resource.
-2. Mark resources with **SPC** in `*Agent Fleet Cleanup*`; use **n/p** to move.
-   Nothing is selected by default. Protected entries cannot be selected.
-3. Press **RET** to preview the selected resources and exact operations.
-   **b** or **Escape** returns to selection without executing anything.
-4. Press **RET** again and answer the explicit yes/no confirmation.
-5. Review successes and failures. **RET/g** reloads resources with no marks;
-   **q** closes the buffer. From selection, Escape also leaves without cleanup.
+2. In the resource completion menu, choose a resource with **RET** to toggle
+   its `[ ]` / `[x]` mark. Nothing is selected by default. Protected entries
+   only explain why they cannot be selected. Choose **Cancel** to leave.
+3. Choose **Preview selection** to inspect the exact operations in another
+   completion menu. **Back to selection** preserves marks for editing.
+   Choosing an operation displays its details without executing it.
+4. Choose **Confirm cleanup**, then answer the explicit yes/no confirmation.
+   Declining returns to resource selection; **Cancel** exits without cleanup.
+5. The result menu lists successes, protected resources, and failures.
+   Choose **Done** to leave or **Back to resources (refresh)** to fetch fresh
+   resources with no marks. **C-g** exits a menu; completed actions stay recorded.
 
-The buffer shows **Runtime** resources (agent terminals or shells) and
+All steps use the same minibuffer completion UI as the scope selection,
+respecting the user's completion setup. No dedicated cleanup buffer, major
+mode, or local navigation keymap is opened, and the current buffer is not
+replaced. The menu shows **Runtime** resources (agent terminals or shells) and
 **Worktree** resources (branch, full path, and associated terminals) together.
 A linked worktree appears once as a whole; its terminals cannot also be
 selected for separate closure. Workspace ownership stays an implementation
@@ -756,7 +763,7 @@ wanted changes and unmerged/unpushed commits. A clean working tree does not
 prove commits are safe to discard. Cleanup never sends force: dirty worktrees
 are refused by Herdr. Worktrees without an open, verifiable owner are
 protected, not guessed from directory names. A prefix argument or Lisp
-`:no-confirm` never bypasses confirmation in the interactive buffer.
+`:no-confirm` never bypasses confirmation in the interactive menus.
 
 Task is Fleet-side grouping metadata created by `agent-fleet-parallel`, not
 an object in the Herdr TUI. There is no "delete Task" action. All remaining
@@ -784,7 +791,7 @@ For Lisp callers, `(agent-fleet-cleanup)` returns a read-only report with
 are candidate IDs: pane IDs for runtime resources, hosting Workspace IDs for
 worktrees. Ambiguous IDs are rejected. `:project` and `:task` filter the
 report. `:no-confirm t` skips only the final prompt for explicit Lisp targets,
-not revalidation. `:select t` opens the interactive buffer instead.
+not revalidation. `:select t` runs the interactive menus and returns the report.
 Execution reports include `:closed` and `:failed`; declining the Lisp
 confirmation adds `:cancelled t`.
 
