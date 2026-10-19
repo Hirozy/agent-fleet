@@ -503,9 +503,9 @@ Notes:
   (a command or the dashboard `w` key), never on a timer.
 - **Repository scope, not global enumeration.** `worktree.list` uses the
   explicit `workspace_id` or `cwd`; with neither, it uses Herdr's active
-  Workspace. A non-Git source returns `not_git_worktree`. Cleanup first reads
-  the snapshot, then queries each Workspace explicitly and deduplicates the
-  results. Only this specific non-Git error is tolerated; other errors fail
+  Workspace. A non-Git source returns `not_git_worktree`. Cleanup does not use
+  this RPC to authorize or perform worktree removal. Only this specific
+  non-Git error is tolerated by callers that list worktrees; other errors fail
   closed. Repository list results are upserted without clearing unrelated
   cached worktrees. Removal events evict deleted entries.
 
@@ -523,18 +523,24 @@ are then called with that root as `default-directory`; cherry-pick, merge,
 and worktree deletion are Magit's own keys inside the status buffer (§71:
 "use Magit public API").  Magit is an optional dependency (§55): the entry
 points `user-error` when it is absent; `herdr-doctor` reports availability.
-The unified cleanup command (`agent-fleet-cleanup`) reuses the
-Phase 5 `worktree.remove` RPC (§8.3). Task-owned worktrees use the same
-selection and execution pipeline, guarded by all remaining task members'
-authoritative completion. Unfinished agents and pending launches are protected.
-Agent-free terminals are explicitly labeled, selected, and confirmed, never
-assumed empty. Each removal rechecks a strict fresh `session.snapshot`,
-exact terminal identities, path/linkage and the original connection, with
-positive live-cache evidence vetoing stale responses. Cleanup never sends
-`force: true`. A successful response must
-acknowledge `worktree_removed` for the requested Workspace before client-side
-success or eager cache removal. There is no atomic conditional-remove RPC.
-Worktree list replacement defers pushed events until after cache installation.
+The cleanup command (`agent-fleet-cleanup`) does not call `worktree.remove`.
+Worktrees are always skipped because the available RPC metadata cannot prove
+that their commits and changes have been preserved. The RPC remains available
+for the separate worktree API. Cleanup scans all resources on the current
+connection and uses one yes-or-no confirmation for exact eligible targets;
+the confirmation warns that shell and other processes may be terminated. It
+reports results and details in `*Messages*`, without selection or results
+menus, and does not prompt when there are no candidates.
+
+Any Workspace containing an agent is protected in full, including agents with
+`done` status, sibling panes, and its worktree. Snapshot and live-cache agent
+evidence both count. Task associations conservatively protect resources,
+including when a member is missing; status `done` does not authorize cleanup.
+A primary Git checkout directory is never deleted. Fresh identities, the
+connection, and whole-Workspace agent evidence are rechecked before each
+operation. Unknown or unsafe evidence is protected, and each report accounts
+for protected, skipped, and failed resources. Cleanup never force-deletes or
+falls back to `worktree.remove`.
 
 ### 8.5 Phase 7 parallel orchestration (no new wire protocol)
 
@@ -559,14 +565,13 @@ prompt each, and track their aggregate status — all client-side:
   workers, not RPC functions — `agent.read` is terminal state, never a
   structured final answer.  `agent-fleet-task-wait` pumps
   `accept-process-output` (event-driven, like `agent-fleet-wait`) and
-  returns STATUS only. Task is a filter for the unified cleanup command, not
-  another deletion workflow. Worktree deletion requires every remaining member
-  to be present and done, regardless of historical completion timestamps.
-  Acknowledged terminal closures remove runtime obligations; acknowledged
-  worktree removals separately remove original worktree ownership. A moved
-  member's other resource is retained for retry. The task record is removed
-  only when both obligations are empty. Worktree terminals are not separately
-  selectable runtime resources in the unified completion menu.
+  returns STATUS only. Task is a Lisp-only filter for cleanup, not another
+  deletion workflow. Task associations protect resources, including when a
+  member is missing; historical completion timestamps and `done` status do not
+  authorize cleanup. Worktrees are skipped, and every Workspace containing an
+  agent is protected wholesale. Cleanup targets only independently eligible
+  runtime resources, with fresh identity and ownership checks before each
+  operation.
 - The **task is fleet-side metadata** (§41), not Herdr-cached: a registry
   of `agent-fleet-task` structs mapping pane-ids → task-ids, so the
   dashboard `T` filter and the Task column resolve without scanning.
@@ -686,18 +691,20 @@ Notes:
 - In 0.9.0, closing a primary Workspace with open worktree Workspaces requires
   explicit `close_group: true`; otherwise the entire group is preserved.
   Fleet rollback and cleanup do not supply group intent.
-- `agent-fleet-cleanup` closes an ordinary Workspace only when every terminal
-  in it was selected and revalidated. Otherwise it uses `tab.close` or
-  `pane.close` for the selected subset. Selected worktrees instead use
-  `worktree.remove`; there is no runtime-close fallback for worktree resources.
-  Workspace worktree metadata is preserved in the model; fresh
-  `worktree.list`, snapshot linkage, and positive cache evidence all veto
-  separate runtime closure for linked or unclassified worktree ownership.
-  An explicit `is_linked_worktree: false` identifies a primary checkout:
-  it is excluded from directory deletion, but does not block eligible runtime
-  cleanup. Missing/null linkage is not equivalent to explicit false.
-  Missing/malformed lists
-  fail closed. `workspace.close` returns `Ok`, not `workspace_closed`;
+- Interactive `agent-fleet-cleanup` scans whole eligible Workspaces; Lisp
+  callers may target a subset only within an entirely agent-free Workspace.
+  Cleanup never calls `worktree.remove`. Worktrees are always skipped because existing
+  metadata cannot prove commits and changes are preserved. Any snapshot or
+  live-cache evidence of an agent protects its
+  whole Workspace, including siblings and the associated worktree; status does
+  not change this rule. Task associations, including missing members, also
+  protect conservatively. A primary Git checkout directory is never deleted.
+  Before each eligible runtime operation, cleanup rechecks fresh identities,
+  the connection, and whole-Workspace agent evidence; unknown evidence is
+  protected. The interactive command uses one yes-or-no confirmation listing
+  exact targets and warning that shell or other processes may be terminated.
+  Results, including protected, skipped, and failed resources, are reported in
+  `*Messages*`. `workspace.close` returns `Ok`, not `workspace_closed`;
   the latter is the pushed event. Verified against the
   [0.9.0 Workspace handler](https://github.com/herdrdev/herdr/blob/v0.9.0/src/app/api/workspaces.rs).
 
@@ -719,10 +726,11 @@ Notes:
   terminal runtimes. Closing the last tab also closes its Workspace, unless
   an implicit worktree-group close requires confirmation. Verified in
   [Herdr 0.9.0 tab handlers](https://github.com/herdrdev/herdr/blob/v0.9.0/src/app/api/tabs.rs).
-- Tab closure is an internal step of runtime cleanup, not a separate command.
-  A fully selected ordinary Workspace is closed directly rather than leaving
-  its last tab behind. Fresh snapshots, exact selected membership and positive
-  live-cache evidence guard every close; no atomic conditional-close RPC exists.
+- Tab closure may be used internally when reclaiming an eligible agent-free
+  runtime container; it is not a separate cleanup selection. Cleanup protects
+  every Workspace with any agent and rechecks fresh identities and whole-
+  Workspace agent evidence before each operation. Herdr provides no atomic
+  conditional-close RPC.
 
 ### 10.3 Pane management (beyond §8.1)
 

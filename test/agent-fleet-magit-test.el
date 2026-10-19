@@ -218,12 +218,10 @@ even when Magit is available."
       (when (file-exists-p dir) (delete-directory dir t)))))
 
 
-;;; --- Worktree cleanup (delete finished worktrees) ----------------
+;;; --- Cleanup preserves agent worktrees in every status ------------
 
-(ert-deftest agent-fleet-cleanup-removes-done-agent-worktrees ()
-  "`worktree-cleanup' removes the worktrees of `done' agents (issuing
-`worktree.remove' for the done agent's workspace) and leaves non-done
-agents alone.  NO-CONFIRM skips the y-or-n prompt."
+(ert-deftest agent-fleet-cleanup-preserves-done-agent-worktrees ()
+  "Neither done nor active agents authorize cleanup, even with NO-CONFIRM."
   (with-agent-fleet-mock path server
     (let ((agent-fleet--tasks nil)
           (done-agent (agent-fleet-start 'claude :name "done-a"
@@ -239,18 +237,20 @@ agents alone.  NO-CONFIRM skips the y-or-n prompt."
              (live-ws (herdr-agent-workspace-id live-agent))
              (done-path (herdr-worktree-path
                          (agent-fleet--worktree-for-agent done-agent))))
-        (agent-fleet-cleanup :targets (list done-ws) :no-confirm t)
-        ;; worktree.remove targeted the done agent's workspace
-        (should (equal done-ws
-                       (plist-get (agent-fleet-test--last-request
-                                   server "worktree.remove")
-                                  :workspace_id)))
-        ;; done worktree gone from the cache; live worktree survives
-        (should-not (herdr-model-find-worktree done-path))
+        (should-error (agent-fleet-cleanup :targets (list done-ws) :no-confirm t)
+                      :type 'user-error)
+        (cl-letf (((symbol-function 'yes-or-no-p)
+                   (lambda (&rest _) (ert-fail "Protected resources must not prompt"))))
+          (agent-fleet-cleanup :select t))
+        (dolist (method '("worktree.remove" "workspace.close" "tab.close" "pane.close"))
+          (should-not (agent-fleet-test--saw-request-p server method)))
+        (should (herdr-model-find-agent (herdr-agent-id done-agent)))
+        (should (herdr-model-find-agent (herdr-agent-id live-agent)))
+        (should (herdr-model-find-worktree done-path))
         (should (herdr-model-find-worktree-for-workspace live-ws))))))
 
-(ert-deftest agent-fleet-cleanup-nothing-done ()
-  "With no `done' agents, cleanup messages and removes nothing."
+(ert-deftest agent-fleet-cleanup-preserves-active-agent-worktree ()
+  "Cleanup reports active agent worktrees as protected without removing them."
   (with-agent-fleet-mock path server
     (let ((agent (agent-fleet-start 'claude :name "live-a"
                                     :worktree t :cwd "/tmp/repo")))

@@ -5,8 +5,8 @@
 ;; SPDX-License-Identifier: GPL-3.0-or-later
 
 ;;; Commentary:
-;; Runtime reclamation and worktree deletion share selection and safety checks,
-;; not destructive semantics.  Task/Project are filters, never cleanup engines.
+;; Reclaim only resources proven unrelated to agents.  Agent presence, not
+;; completion status, is the protection boundary.  Worktrees require manual review.
 
 ;;; Code:
 
@@ -17,13 +17,8 @@
 
 (declare-function agent-fleet-task-list "agent-fleet-parallel")
 (declare-function agent-fleet-task-find "agent-fleet-parallel")
-(declare-function agent-fleet-task-id "agent-fleet-parallel")
-(declare-function agent-fleet-task-title "agent-fleet-parallel")
 (declare-function agent-fleet-task-agents "agent-fleet-parallel")
 (declare-function agent-fleet-task-workspaces "agent-fleet-parallel")
-(declare-function agent-fleet-task-cleanup-members "agent-fleet-parallel")
-(declare-function agent-fleet-task-cleanup-record "agent-fleet-parallel")
-(declare-function agent-fleet-worktree-remove "agent-fleet-worktree")
 
 (defun agent-fleet-cleanup--check-connection (connection)
   "Require the original live CONNECTION throughout an operation."
@@ -67,62 +62,83 @@ A known primary checkout never blocks runtime cleanup merely for being Git."
        (lambda (wt) (and (equal ws-id (herdr-worktree-open-workspace-id wt))
                          (not (herdr-model-worktree-primary-p wt))))
        (plist-get context :worktrees))
-      (when-let* ((wt (herdr-model-find-worktree-for-workspace ws-id)))
-        (not (herdr-model-worktree-primary-p wt)))
+      (cl-find-if
+       (lambda (wt) (and (equal ws-id (herdr-worktree-open-workspace-id wt))
+                         (not (herdr-model-worktree-primary-p wt))))
+       (herdr-model-worktrees))
       (memq (herdr-model-workspace-worktree-linkage
              (herdr-model-find-workspace (plist-get context :session) ws-id))
             '(linked unknown))
       (memq (herdr-model-workspace-worktree-linkage
              (herdr-model-find-workspace ws-id)) '(linked unknown))))
 
-(defun agent-fleet-cleanup--done-p (agent)
-  "Whether AGENT is present, done, and not awaiting launch."
-  (and agent (equal (herdr-agent-agent-status agent) "done")
-       (not (herdr-agent-launch-pending agent))))
+(defun agent-fleet-cleanup--workspace-panes (ws session)
+  "Return panes belonging to WS in SESSION."
+  (cl-remove-if-not (lambda (p) (equal ws (herdr-pane-workspace-id p)))
+                    (herdr-model-panes session)))
 
-(defun agent-fleet-cleanup--members-done-p (ids session)
-  "Require IDS to be present and done in SESSION, honoring live vetoes."
-  (cl-every
-   (lambda (id)
-     (and (not (and (herdr-model-cache)
-                    (gethash id (herdr-session-gone-panes (herdr-model-cache)))))
-          (agent-fleet-cleanup--done-p (herdr-model-find-agent session id))
-          (let ((live (herdr-model-find-agent id)))
-            (or (null live) (agent-fleet-cleanup--done-p live)))))
-   ids))
+(defun agent-fleet-cleanup--known-id-p (id)
+  "Whether ID establishes a usable ownership identity."
+  (and (stringp id) (not (string-empty-p id))))
 
-(defun agent-fleet-cleanup--task-members (workspace-id session)
-  "Return all remaining members of tasks owning WORKSPACE-ID."
-  (when (fboundp 'agent-fleet-task-cleanup-members)
-    (agent-fleet-task-cleanup-members workspace-id session)))
+(defun agent-fleet-cleanup--task-owned-p (ws session)
+  "Whether any task still associates WS with agent work in SESSION."
+  (when (fboundp 'agent-fleet-task-list)
+    (cl-some
+     (lambda (task)
+       (or (rassoc ws (agent-fleet-task-workspaces task))
+           (cl-some
+            (lambda (id)
+              (let* ((pane (herdr-model-find-pane session id))
+                     (agent (herdr-model-find-agent session id))
+                     (owner (or (and agent (herdr-agent-workspace-id agent))
+                                (and pane (herdr-pane-workspace-id pane)))))
+                (or (equal ws owner)
+                    (and (not (agent-fleet-cleanup--known-id-p owner))
+                         (not (assoc id (agent-fleet-task-workspaces task)))))))
+            (agent-fleet-task-agents task))))
+     (agent-fleet-task-list))))
 
-(defun agent-fleet-cleanup--pane-reason (pane session)
-  "Return a reason to preserve PANE in SESSION, or nil.
-An agent-free terminal is selectable, not presumed empty: its label and
-confirmation explicitly warn that shells and other processes will close."
-  (let* ((id (herdr-pane-id pane))
-         (agent (herdr-model-find-agent session id))
-         (live (herdr-model-find-agent id))
-         (live-pane (herdr-model-find-pane id))
-         (members (agent-fleet-cleanup--task-members
-                   (herdr-pane-workspace-id pane) session)))
+(defun agent-fleet-cleanup--workspace-reason (ws context)
+  "Return why all resources in WS must be preserved in CONTEXT.
+An agent is protected in every status, including done.  Positive live
+evidence vetoes an older snapshot, including evidence on sibling panes."
+  (let* ((session (plist-get context :session))
+         (live (herdr-model-cache))
+         (panes (agent-fleet-cleanup--workspace-panes ws session))
+         (live-panes
+          (and live
+               (cl-remove-if-not
+                (lambda (p)
+                  (or (not (agent-fleet-cleanup--known-id-p (herdr-pane-workspace-id p)))
+                      (equal ws (herdr-pane-workspace-id p))
+                      (cl-find (herdr-pane-id p) panes :key #'herdr-pane-id :test #'equal)))
+                (herdr-model-panes live)))))
     (cond
-     ((and (herdr-model-cache)
-           (gethash id (herdr-session-gone-panes (herdr-model-cache))))
-      "Pane disappeared; refresh")
-     ((and agent (not (agent-fleet-cleanup--done-p agent)))
-      "Agent is unfinished or launching")
-     ((and (herdr-pane-agent pane)
-           (or (null agent) (not (equal "done" (herdr-pane-agent-status pane)))))
-      "Incomplete or unfinished pane agent state")
-     ((and live (or (null agent) (not (agent-fleet-cleanup--done-p live))))
-      "Newer agent activity in the live cache")
-     ((and live-pane (herdr-pane-agent live-pane)
-           (or (null agent)
-               (not (equal "done" (herdr-pane-agent-status live-pane)))))
-      "Newer pane activity in the live cache")
-     ((and members (not (agent-fleet-cleanup--members-done-p members session)))
-      "Task has unfinished or missing members"))))
+     ((or (cl-some (lambda (agent)
+                    (or (not (agent-fleet-cleanup--known-id-p (herdr-agent-workspace-id agent)))
+                        (equal ws (herdr-agent-workspace-id agent))
+                        (cl-find (herdr-agent-id agent) panes :key #'herdr-pane-id :test #'equal)))
+                   (append (herdr-model-agents session)
+                           (and live (herdr-model-agents live))))
+          (cl-some (lambda (p) (or (herdr-pane-agent p)
+                                   (herdr-pane-agent-session p)))
+                   (append panes live-panes)))
+      "Agent-associated workspace; all agent states are protected")
+     ((or (agent-fleet-cleanup--task-owned-p ws session)
+          (and live (agent-fleet-cleanup--task-owned-p ws live)))
+      "Task association remains; missing agents are not completion evidence")
+     ((agent-fleet-cleanup--worktree-p ws context)
+      "Linked or unclassified worktree; preserve code and review manually")
+     ((or (null panes)
+          (cl-some (lambda (p)
+                     (or (not (stringp (herdr-pane-terminal-id p)))
+                         (string-empty-p (herdr-pane-terminal-id p))
+                         (and live
+                              (gethash (herdr-pane-id p)
+                                       (herdr-session-gone-panes live)))))
+                   panes))
+      "Missing or uncertain terminal identity; refresh before cleanup"))))
 
 (defun agent-fleet-cleanup--signature (pane session)
   "Return the identity and ownership approved for PANE in SESSION."
@@ -155,63 +171,51 @@ confirmation explicitly warn that shells and other processes will close."
                   (cl-intersection ids (agent-fleet-task-agents task) :test #'equal))))
     ids))
 
-(defun agent-fleet-cleanup--pane-label (pane session)
-  "Describe PANE from SESSION without implying an agent-free shell is empty."
-  (let ((agent (herdr-model-find-agent session (herdr-pane-id pane))))
-    (format "%s | %s [%s]"
-            (if agent (format "%s (done)" (herdr-agent-display-name agent))
-              "NO AGENT: shell/other processes will close")
-            (or (herdr-pane-cwd pane) "cwd unknown") (herdr-pane-id pane))))
+(defun agent-fleet-cleanup--pane-label (pane _session)
+  "Describe the agent-free PANE without implying its processes are disposable."
+  (format "shell/other processes | %s [%s]"
+          (or (herdr-pane-cwd pane) "cwd unknown") (herdr-pane-id pane)))
 
-(defun agent-fleet-cleanup--candidates (context worktrees project task)
-  "Return (:candidates ... :protected ...) for CONTEXT and filters.
-WORKTREES selects code-directory deletion rather than runtime reclamation."
+(defun agent-fleet-cleanup--agent-ids (session)
+  "Return identities with agent evidence in SESSION."
+  (when session
+    (append (mapcar #'herdr-agent-id (herdr-model-agents session))
+            (mapcar #'herdr-pane-id
+                    (cl-remove-if-not
+                     (lambda (p) (or (herdr-pane-agent p) (herdr-pane-agent-session p)))
+                     (herdr-model-panes session))))))
+
+(defun agent-fleet-cleanup--report (context project task)
+  "Report safe runtime candidates and protected resources from CONTEXT.
+PROJECT and TASK are Lisp-only filters.  No directory deletion is authorized:
+worktree metadata does not prove changes and commits have been preserved."
   (let* ((session (plist-get context :session))
          (scope (agent-fleet-cleanup--scope-ids session project task))
          candidates protected)
-    (if worktrees
-        (dolist (wt (cl-remove-if #'herdr-model-worktree-primary-p
-                                  (plist-get context :worktrees)))
-          (let* ((ws-id (herdr-worktree-open-workspace-id wt))
-                 (panes (and ws-id (cl-remove-if-not
-                                    (lambda (p) (equal ws-id (herdr-pane-workspace-id p)))
-                                    (herdr-model-panes session))))
-                 (reason (cond
-                          ((null panes) "No open terminal ownership; manual review required")
-                          ((not (herdr-worktree-is-linked-worktree wt))
-                           "Not a linked worktree")
-                          (t (cl-some (lambda (p) (agent-fleet-cleanup--pane-reason p session))
-                                      panes)))))
-            (when (or (eq scope t)
-                      (cl-some (lambda (p) (member (herdr-pane-id p) scope)) panes)
-                      (and task ws-id
-                           (let ((task-object (if (stringp task)
-                                                  (agent-fleet-task-find task) task)))
-                             (rassoc ws-id (agent-fleet-task-workspaces task-object)))))
-              (if reason
-                  (push (cons (herdr-worktree-path wt) reason) protected)
-                (push (list :id ws-id :workspace ws-id :path (herdr-worktree-path wt)
-                            :panes (mapcar (lambda (p) (agent-fleet-cleanup--signature p session)) panes)
-                            :kind 'worktree
-                            :label (format "DELETE %s | branch: %s — %s"
-                                           (herdr-worktree-path wt) (or (herdr-worktree-branch wt) "detached")
-                                           (mapconcat (lambda (p) (agent-fleet-cleanup--pane-label p session)) panes "; ")))
-                      candidates)))))
-      (dolist (pane (herdr-model-panes session))
-        (when (or (eq scope t) (member (herdr-pane-id pane) scope))
-          (let ((reason (or (and (agent-fleet-cleanup--worktree-p
-                                  (herdr-pane-workspace-id pane) context)
-                                 "Worktree-associated; cannot close separately")
-                            (agent-fleet-cleanup--pane-reason pane session))))
-            (if reason (push (cons (herdr-pane-id pane) reason) protected)
-              (push (list :id (herdr-pane-id pane)
-                          :kind 'runtime
-                          :workspace (herdr-pane-workspace-id pane)
-                          :panes (list (agent-fleet-cleanup--signature pane session))
-                          :label (agent-fleet-cleanup--pane-label pane session))
-                    candidates))))))
-    (list :candidates (nreverse candidates) :protected (nreverse protected))))
-
+    (dolist (workspace (herdr-model-workspaces session))
+      (let* ((ws (herdr-workspace-id workspace))
+             (panes (agent-fleet-cleanup--workspace-panes ws session))
+             (reason (agent-fleet-cleanup--workspace-reason ws context)))
+        (when (or (eq scope t)
+                  (cl-some (lambda (p) (member (herdr-pane-id p) scope)) panes))
+          (if reason
+              (push (cons ws reason) protected)
+            (dolist (pane panes)
+              (when (or (eq scope t) (member (herdr-pane-id pane) scope))
+                (push (list :id (herdr-pane-id pane) :kind 'runtime :workspace ws
+                            :panes (list (agent-fleet-cleanup--signature pane session))
+                            :label (agent-fleet-cleanup--pane-label pane session))
+                      candidates)))))))
+    (dolist (wt (plist-get context :worktrees))
+      (unless (herdr-model-worktree-primary-p wt)
+        (push (cons (herdr-worktree-path wt)
+                    "Directory and commit preservation not proven; manual review required")
+              protected)))
+    (list :candidates (nreverse candidates) :protected (nreverse protected)
+          :preserved-agents
+          (length (delete-dups
+                   (append (agent-fleet-cleanup--agent-ids session)
+                           (agent-fleet-cleanup--agent-ids (herdr-model-cache))))))))
 
 (defun agent-fleet-cleanup--runtime-plan (candidates session)
   "Collapse selected CANDIDATES into disjoint close operations in SESSION."
@@ -237,11 +241,14 @@ WORKTREES selects code-directory deletion rather than runtime reclamation."
             (setq covered (append (mapcar #'herdr-pane-id panes) covered))
             (push (list :method method :id target :workspace ws
                         :panes (mapcar (lambda (p) (agent-fleet-cleanup--signature p session)) panes)
-                        :label (format "Close %s%s"
-                                       (mapconcat (lambda (p) (agent-fleet-cleanup--pane-label p session))
-                                                  panes "; ")
-                                       (if (or whole-ws whole-tab)
-                                           "; reclaim selected container" "")))
+                        :workspace-panes (mapcar (lambda (p) (agent-fleet-cleanup--signature p session)) ws-panes)
+                        :label (format "%s %s: %s"
+                                       (cond (whole-ws "Workspace") (whole-tab "Tab") (t "Terminal"))
+                                       target
+                                       (mapconcat (lambda (p)
+                                                    (format "%s [%s]" (or (herdr-pane-cwd p) "cwd unknown")
+                                                            (herdr-pane-id p)))
+                                                  panes "; ")))
                   result)))))
     (nreverse result)))
 
@@ -250,301 +257,121 @@ WORKTREES selects code-directory deletion rather than runtime reclamation."
   (equal (sort (copy-sequence left) (lambda (a b) (string< (car a) (car b))))
          (sort (copy-sequence right) (lambda (a b) (string< (car a) (car b))))))
 
-(defun agent-fleet-cleanup--recheck (operation context worktrees)
-  "Require OPERATION to remain exactly within its approved scope in CONTEXT."
+(defun agent-fleet-cleanup--recheck (operation context)
+  "Require OPERATION and its whole workspace to remain safe in CONTEXT."
   (let* ((session (plist-get context :session))
          (ws (plist-get operation :workspace))
-         (method (plist-get operation :method))
-         (panes (cl-remove-if-not
-                 (lambda (p)
-                   (cond ((or worktrees (equal method "workspace.close"))
-                          (equal ws (herdr-pane-workspace-id p)))
-                         ((equal method "tab.close")
-                          (equal (plist-get operation :id) (herdr-pane-tab-id p)))
-                         (t (equal (plist-get operation :id) (herdr-pane-id p)))))
-                 (herdr-model-panes session))))
+         (panes (agent-fleet-cleanup--workspace-panes ws session))
+         (approved (plist-get operation :workspace-panes)))
+    (when-let* ((reason (agent-fleet-cleanup--workspace-reason ws context)))
+      (user-error "%s: %s" ws reason))
     (unless (and panes
                  (agent-fleet-cleanup--same-panes-p
-                  (plist-get operation :panes)
-                  (mapcar (lambda (p) (agent-fleet-cleanup--signature p session)) panes)))
-      (user-error "Resource membership or identity changed; refresh and select again"))
-    (if worktrees
-        (unless (cl-find-if
-                 (lambda (wt) (and (equal ws (herdr-worktree-open-workspace-id wt))
-                                   (equal (plist-get operation :path) (herdr-worktree-path wt))
-                                   (herdr-worktree-is-linked-worktree wt)))
-                 (plist-get context :worktrees))
-          (user-error "Worktree ownership changed"))
-      (when (agent-fleet-cleanup--worktree-p ws context)
-        (user-error "Resource now has worktree linkage")))
-    (dolist (pane panes)
-      (when-let* ((reason (agent-fleet-cleanup--pane-reason pane session)))
-        (user-error "%s: %s" (herdr-pane-id pane) reason)))
-    ;; A pushed creation or move can be newer than the snapshot.
-    (dolist (pane (herdr-model-panes))
-      (when (and (cond ((or worktrees (equal method "workspace.close"))
-                        (equal ws (herdr-pane-workspace-id pane)))
-                       ((equal method "tab.close")
-                        (equal (plist-get operation :id) (herdr-pane-tab-id pane)))
-                       (t (equal (plist-get operation :id) (herdr-pane-id pane))))
-                 (not (member (agent-fleet-cleanup--signature pane (herdr-model-cache))
-                              (plist-get operation :panes))))
-        (user-error "Newer terminal identity or membership in live cache")))))
+                  approved (mapcar (lambda (p) (agent-fleet-cleanup--signature p session)) panes)))
+      (user-error "Workspace membership or identity changed; run cleanup again"))
+    (when (herdr-model-cache)
+      (dolist (pane (agent-fleet-cleanup--workspace-panes ws (herdr-model-cache)))
+        (unless (member (agent-fleet-cleanup--signature pane (herdr-model-cache)) approved)
+          (user-error "Newer terminal identity or membership in live cache"))))))
 
-(defun agent-fleet-cleanup--report (context project task)
-  "Combine typed resources from CONTEXT, filtered by PROJECT and TASK."
-  (let* ((runtime (agent-fleet-cleanup--candidates context nil project task))
-         (trees (agent-fleet-cleanup--candidates context t project task))
-         (session (plist-get context :session))
-         (tree-owners (mapcar #'herdr-worktree-open-workspace-id
-                             (cl-remove-if-not #'herdr-worktree-is-linked-worktree
-                                               (plist-get context :worktrees))))
-         (candidates (append (plist-get runtime :candidates)
-                             (plist-get trees :candidates))))
-    (unless (= (length candidates)
-               (length (delete-dups (mapcar (lambda (c) (plist-get c :id)) candidates))))
-      (signal 'herdr-protocol-error '(:reason ambiguous-cleanup-resource-ids)))
-    ;; A linked worktree is one resource, including all its terminals.
-    (list :candidates candidates
-          :protected
-          (append
-           (cl-remove-if
-            (lambda (entry)
-              (when-let* ((pane (herdr-model-find-pane session (car entry))))
-                (member (herdr-pane-workspace-id pane) tree-owners)))
-            (plist-get runtime :protected))
-           (plist-get trees :protected)))))
-
-(defun agent-fleet-cleanup--plan (selected context)
-  "Build disjoint operations for SELECTED resources from CONTEXT."
-  (append
-   (agent-fleet-cleanup--runtime-plan
-    (cl-remove-if (lambda (c) (eq (plist-get c :kind) 'worktree)) selected)
-    (plist-get context :session))
-   (cl-remove-if-not (lambda (c) (eq (plist-get c :kind) 'worktree)) selected)))
-
-(defun agent-fleet-cleanup--preview-text (selected operations)
-  "Describe SELECTED resources and exact OPERATIONS before confirmation."
+(defun agent-fleet-cleanup--summary (report operations)
+  "Describe exact OPERATIONS and preserved resources in REPORT."
   (concat
-   (if (cl-some (lambda (c) (eq (plist-get c :kind) 'worktree)) selected)
-       "WARNING: Selected worktree directories and their terminals will be deleted.\nPreserve wanted changes and unmerged/unpushed commits first. No force is used.\n"
-     "Close selected terminals and their processes. No code directories will be deleted.\n")
-   "\nSelected resources:\n"
-   (mapconcat (lambda (c) (concat "  " (plist-get c :label))) selected "\n")
-   "\n\nActions:\n"
-   (mapconcat (lambda (op) (concat "  " (plist-get op :label))) operations "\n")
-   "\n\nUnselected terminals are preserved. Task records update only after acknowledged cleanup.\n"))
+   (format "Cleanup: %d target(s); preserve %d agent(s); %d protected.\n"
+           (length operations) (plist-get report :preserved-agents)
+           (length (plist-get report :protected)))
+   "Shells and other processes will terminate. No code directories deleted.\n"
+   (mapconcat (lambda (op) (plist-get op :label)) operations "\n")))
 
 (defun agent-fleet-cleanup--execute (context report operations)
-  "Execute approved OPERATIONS from CONTEXT, extending REPORT with results.
-Revalidate the original identities, not a newly broadened selection."
-  (let ((connection (plist-get context :connection)) closed failed)
+  "Execute only approved OPERATIONS, rechecking each against fresh state."
+  (let ((connection (plist-get context :connection)) closed failed skipped)
     (dolist (operation operations)
       (condition-case err
-          (let* ((fresh (agent-fleet-cleanup--context connection))
-                 (worktree (eq (plist-get operation :kind) 'worktree)))
-            (agent-fleet-cleanup--recheck operation fresh worktree)
+          (let ((fresh (agent-fleet-cleanup--context connection)))
+            (agent-fleet-cleanup--recheck operation fresh)
             (agent-fleet-cleanup--check-connection connection)
-            (if worktree
-                (progn
-                  (require 'agent-fleet-worktree)
-                  (agent-fleet-worktree-remove (plist-get operation :id)))
-              (let* ((method (plist-get operation :method))
-                     (key (pcase method ("workspace.close" 'workspace_id)
-                                 ("tab.close" 'tab_id) (_ 'pane_id))))
-                (herdr-protocol-validate-ok
-                 (herdr-request method (list (cons key (plist-get operation :id))))
-                 method)))
-            ;; These are independently acknowledged resource obligations.
-            (push (plist-get operation :id) closed)
-            (when (fboundp 'agent-fleet-task-cleanup-record)
-              (agent-fleet-task-cleanup-record
-               (and worktree (plist-get operation :id))
-               (mapcar #'car (plist-get operation :panes)))))
+            (let* ((method (plist-get operation :method))
+                   (key (pcase method
+                          ("workspace.close" 'workspace_id)
+                          ("tab.close" 'tab_id)
+                          ("pane.close" 'pane_id)
+                          (_ (error "Unsupported cleanup operation")))))
+              (herdr-protocol-validate-ok
+               (herdr-request method (list (cons key (plist-get operation :id))))
+               method))
+            (push (plist-get operation :id) closed))
+        (user-error (push (cons (plist-get operation :id) err) skipped))
         (error (push (cons (plist-get operation :id) err) failed))))
-    (append report (list :closed (nreverse closed) :failed (nreverse failed)))))
+    (append report (list :closed (nreverse closed) :failed (nreverse failed)
+                         :skipped (nreverse skipped)))))
+
+(defun agent-fleet-cleanup--result-message (report)
+  "Report cleanup results through messages only, without opening a view."
+  (dolist (entry (plist-get report :protected))
+    (message "Cleanup preserved %s: %s" (car entry) (cdr entry)))
+  (dolist (id (plist-get report :closed)) (message "Cleanup closed: %s" id))
+  (dolist (key '(:skipped :failed))
+    (dolist (entry (plist-get report key))
+      (message "Cleanup %s %s: %s" key (car entry) (error-message-string (cdr entry)))))
+  (message "Cleanup: %d closed; %d agents preserved at scan; %d protected; %d skipped; %d failed"
+           (length (plist-get report :closed)) (plist-get report :preserved-agents)
+           (length (plist-get report :protected)) (length (plist-get report :skipped))
+           (length (plist-get report :failed))))
 
 (defun agent-fleet-cleanup--run (project task targets select no-confirm)
-  "Inspect or clean resources for PROJECT, TASK and TARGETS.
-SELECT uses interactive menus.  NO-CONFIRM is only for explicit Lisp targets."
+  "Inspect or clean agent-unrelated resources, with at most one confirmation.
+PROJECT and TASK filter Lisp calls; TARGETS are explicit pane IDs.  SELECT
+scans all eligible resources and never bypasses confirmation via NO-CONFIRM."
   (agent-fleet--ensure-connected)
   (when project
     (setq project (or (agent-fleet-project-root-for-cwd project)
                       (user-error "Cleanup requires a resolvable Project"))))
   (let* ((context (agent-fleet-cleanup--context (herdr-connection)))
          (report (agent-fleet-cleanup--report context project task))
-         (candidates (plist-get report :candidates)))
-    (if select
-        (agent-fleet-cleanup--menu context report project task)
-      (let* ((selected
-              (mapcar
-               (lambda (id)
-                 (let ((matches (cl-remove-if-not
-                                 (lambda (c) (equal id (plist-get c :id))) candidates)))
-                   (unless (= (length matches) 1)
-                     (user-error "Ineligible or ambiguous cleanup target: %s" id))
-                   (car matches)))
-               (delete-dups (copy-sequence targets))))
-             (operations (agent-fleet-cleanup--plan selected context))
-             (use-short-answers nil))
-        (cond
-         ((null operations) report)
-         ((or no-confirm
-              (yes-or-no-p (concat (agent-fleet-cleanup--preview-text selected operations)
-                                   "\nProceed? ")))
-          (agent-fleet-cleanup--execute context report operations))
-         (t (append report (list :cancelled t))))))))
-
-;;; Minibuffer menu workflow
-
-(defun agent-fleet-cleanup--menu-read (prompt entries)
-  "Read one of ENTRIES through the user's completion UI using PROMPT.
-ENTRIES map display labels to action values.  Empty input cancels."
-  (let* ((table (lambda (string predicate action)
-                  (if (eq action 'metadata)
-                      '(metadata (display-sort-function . identity)
-                                 (cycle-sort-function . identity))
-                    (complete-with-action action entries string predicate))))
-         (choice (completing-read prompt table nil t)))
-    (or (cdr (assoc choice entries)) 'cancel)))
-
-(defun agent-fleet-cleanup--selection-menu (report selected)
-  "Toggle resources in REPORT, starting with SELECTED IDs.
-Return selected candidate objects for preview, or nil on cancellation."
-  (catch 'finished
-    (while t
-      (let* ((candidates (plist-get report :candidates))
-             (entries
-              (append
-               '(("Cancel" . cancel))
-               (when selected '(("Preview selection" . preview)))
-               (mapcar
-                (lambda (c)
-                  (cons (format "[%s] [%s] %s"
-                                (if (member (plist-get c :id) selected) "x" " ")
-                                (if (eq (plist-get c :kind) 'worktree) "Worktree" "Runtime")
-                                (plist-get c :label))
-                        (cons 'toggle (plist-get c :id))))
-                candidates)
-               (mapcar (lambda (p)
-                         (cons (format "[Protected] %s: %s" (car p) (cdr p))
-                               (cons 'protected (cdr p))))
-                       (plist-get report :protected))))
-             (action (agent-fleet-cleanup--menu-read
-                      (format "Cleanup resources (%d selected; RET toggles): " (length selected))
-                      entries)))
-        (pcase action
-          ('cancel (throw 'finished nil))
-          ('preview
-           (when selected
-             (throw 'finished
-                    (cl-remove-if-not (lambda (c) (member (plist-get c :id) selected))
-                                      candidates))))
-          (`(toggle . ,id)
-           (unless (cl-find id candidates :key (lambda (c) (plist-get c :id)) :test #'equal)
-             (user-error "Unknown cleanup resource"))
-           (setq selected (if (member id selected) (delete id selected)
-                            (append selected (list id)))))
-          (`(protected . ,reason) (message "Protected: %s" reason)))))))
-
-(defun agent-fleet-cleanup--preview-menu (selected operations)
-  "Show approved OPERATIONS for SELECTED resources in a completion menu.
-Return execute, back, or cancel.  Inspecting an operation never executes it."
-  (catch 'finished
-    (while t
-      (let ((action
-             (agent-fleet-cleanup--menu-read
-              (if (cl-some (lambda (c) (eq (plist-get c :kind) 'worktree)) selected)
-                  "Preview: DELETE code directories; preserve changes/commits first: "
-                "Preview: close terminals/processes; NO code directories deleted: ")
-              (append '(("Back to selection" . back)
-                        ("Confirm cleanup" . execute)
-                        ("Cancel" . cancel))
-                      (cl-loop for op in operations for n from 1
-                               collect (cons (format "%d. %s" n (plist-get op :label))
-                                             (cons 'detail (plist-get op :label))))))))
-        (pcase action
-          ((or 'back 'execute 'cancel) (throw 'finished action))
-          (`(detail . ,label) (message "%s" label)))))))
-
-(defun agent-fleet-cleanup--result-menu (report operations)
-  "Show REPORT and approved OPERATIONS without opening a result buffer."
-  (let ((label (lambda (id)
-                 (or (plist-get (cl-find id operations
-                                        :key (lambda (op) (plist-get op :id))
-                                        :test #'equal) :label)
-                     id))))
-    (catch 'finished
-      (while t
-        (let ((action
-               (agent-fleet-cleanup--menu-read
-                (format "Cleanup: %d succeeded, %d protected, %d failed: "
-                        (length (plist-get report :closed))
-                        (length (plist-get report :protected))
-                        (length (plist-get report :failed)))
-                (append
-                 '(("Done" . done) ("Back to resources (refresh)" . reload))
-                 (mapcar (lambda (id)
-                           (let ((text (concat "OK: " (funcall label id))))
-                             (cons text (cons 'detail text))))
-                         (plist-get report :closed))
-                 (mapcar (lambda (entry)
-                           (let ((text (format "FAILED: %s: %s" (funcall label (car entry))
-                                               (error-message-string (cdr entry)))))
-                             (cons text (cons 'detail text))))
-                         (plist-get report :failed))
-                 (mapcar (lambda (entry)
-                           (let ((text (format "Protected: %s: %s" (car entry) (cdr entry))))
-                             (cons text (cons 'detail text))))
-                         (plist-get report :protected))))))
-          (pcase action
-            ((or 'done 'cancel) (throw 'finished 'done))
-            ('reload (throw 'finished 'reload))
-            (`(detail . ,text) (message "%s" text))))))))
-
-(defun agent-fleet-cleanup--menu (context report project task)
-  "Run selection, preview, confirmation and results as minibuffer menus.
-Keep approved CONTEXT identities through confirmation; PROJECT and TASK
-apply again only on explicit refresh.  Never display a dedicated buffer."
-  (let (selected result)
-    (catch 'finished
-      (while t
-        (setq selected (agent-fleet-cleanup--selection-menu
-                        report (mapcar (lambda (c) (plist-get c :id)) selected)))
-        (unless selected
-          (throw 'finished (or result (append report (list :cancelled t)))))
-        (let* ((operations (agent-fleet-cleanup--plan selected context))
-               (action (agent-fleet-cleanup--preview-menu selected operations))
-               (use-short-answers nil))
-          (pcase action
-            ('cancel (throw 'finished (or result (append report (list :cancelled t)))))
-            ('execute
-             (when (yes-or-no-p (concat (agent-fleet-cleanup--preview-text selected operations)
-                                        "\nProceed? "))
-               (setq result (agent-fleet-cleanup--execute context report operations))
-               (unless (eq (agent-fleet-cleanup--result-menu result operations) 'reload)
-                 (throw 'finished result))
-               (agent-fleet-cleanup--check-connection (plist-get context :connection))
-               (setq context (agent-fleet-cleanup--context (herdr-connection))
-                     report (if (and task
-                                     (not (agent-fleet-task-find
-                                           (if (stringp task) task (agent-fleet-task-id task)))))
-                                (list :candidates nil :protected nil)
-                              (agent-fleet-cleanup--report context project task))
-                     selected nil)))))))))
+         (candidates (plist-get report :candidates))
+         (selected (if select candidates
+                     (mapcar (lambda (id)
+                               (or (cl-find id candidates :key (lambda (c) (plist-get c :id))
+                                            :test #'equal)
+                                   (user-error "Protected or unknown cleanup target: %s" id)))
+                             (delete-dups (copy-sequence targets)))))
+         (operations (agent-fleet-cleanup--runtime-plan selected (plist-get context :session)))
+         (use-short-answers nil))
+    (cond
+     ((null operations)
+      (when select
+        (dolist (entry (plist-get report :protected))
+          (message "Cleanup preserved %s: %s" (car entry) (cdr entry)))
+        (message "No resources can be safely cleaned; %d agents preserved"
+                 (plist-get report :preserved-agents)))
+      report)
+     ((or (and no-confirm (not select))
+          (let ((summary (agent-fleet-cleanup--summary report operations)))
+            ;; Retain the full exact-target summary even if the minibuffer is small.
+            (dolist (entry (plist-get report :protected))
+              (message "Cleanup preserved %s: %s" (car entry) (cdr entry)))
+            (message "%s" summary)
+            (yes-or-no-p (concat summary "\nProceed with cleanup? "))))
+      (let ((result (agent-fleet-cleanup--execute context report operations)))
+        (when select (agent-fleet-cleanup--result-message result))
+        result))
+     (t
+      (when select (message "Cleanup cancelled; no resources changed"))
+      (append report (list :cancelled t))))))
 
 ;;;###autoload
 (cl-defun agent-fleet-cleanup (&key project task targets select no-confirm)
-  "Select runtime resources and worktrees in one cleanup workflow.
-Interactively inspect all resources, toggle resources in the completion menu,
-preview the actions, and confirm.  No dedicated cleanup buffer is opened.
-There is no range prompt.  Task protection and bookkeeping apply automatically.
-No resources are selected by default.  No force is sent for worktree removal.
-From Lisp, TARGETS contains candidate IDs: pane IDs for runtime resources,
-hosting Workspace IDs for worktrees.  Omit TARGETS for a read-only report.
-SELECT uses menus and always requires explicit confirmation;
-NO-CONFIRM applies only to explicit Lisp targets.  Return the report with
-:candidates, :protected, :closed and :failed."
+  "Clean only resources unrelated to any agent, regardless of agent status.
+Interactively scan all resources, confirm one exact-target summary, and
+report via messages.  No menus or result buffers are opened.  All resources
+in agent-associated workspaces are protected, including siblings of done
+agents.  Worktrees are skipped: code and commit preservation is not proven.
+From Lisp, omit TARGETS for a read-only report; PROJECT and TASK are optional
+filters and TARGETS contains eligible runtime pane IDs.  SELECT scans all
+eligible resources and always confirms.  NO-CONFIRM applies only to explicit
+Lisp targets.  Return :candidates, :protected, :preserved-agents and, after
+execution, :closed, :skipped and :failed.  Cancellation adds :cancelled."
   (interactive (list :select t))
   (agent-fleet-cleanup--run project task targets select no-confirm))
 

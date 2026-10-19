@@ -113,7 +113,9 @@ of the dependency graph and must not become core startup dependencies.
   plain cwd basename as if it were a Project.
 - Worktree operations use Herdr worktree RPCs and metadata. Do not infer a
   worktree relationship solely from buffer names or terminal output.
-- Cleanup must protect unfinished work and preserve enough identity to retry a
+- Cleanup must preserve every agent-associated Workspace and its resources,
+  regardless of agent status; `done` never authorizes closing an agent.
+  Unknown ownership must fail closed. Preserve enough identity to retry a
   partial failure. Never equate a missing agent with successful completion.
 - One member finishing must not complete or terminate a parallel task. A task
   is done only when all required members are authoritatively done.

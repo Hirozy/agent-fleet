@@ -684,7 +684,7 @@ message for quick auditing."
                       :type 'agent-fleet-not-connected)))))
 
 (ert-deftest agent-fleet-interactive-cleanup ()
-  "The unified command opens selection even with a prefix argument."
+  "The command scans all resources without a menu, even with a prefix argument."
   (let (calls)
     (cl-letf (((symbol-function 'completing-read)
                (lambda (&rest _) (ert-fail "Unexpected range prompt")))
