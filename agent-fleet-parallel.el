@@ -130,25 +130,23 @@ misrepresenting a metadata change as an agent status transition.")
   "Return TASK's aggregate state: `done', `failed', `blocked', or `running'.
 `done' requires every agent to report Herdr's authoritative done state.  A
 missing agent is `failed', not successful: it may have crashed, been killed,
-or disappeared while the client was disconnected.  Once FINISHED-AT records a
-real all-done transition, later pane cleanup does not retroactively fail the
-completed task.  One agent finishing never completes the whole task."
-  (if (agent-fleet-task-finished-at task)
-      'done
-    (let* ((agents (agent-fleet-task-agents task))
-           (total (length agents))
-           (done 0) (blocked nil) (missing nil))
-      (dolist (pid agents)
-        (let ((s (agent-fleet-status pid)))
-          (cond
-           ((eq s 'done) (cl-incf done))
-           ((null s) (setq missing t))
-           ((eq s 'blocked) (setq blocked t)))))
-      (cond
-       ((and (> total 0) (>= done total)) 'done)
-       (missing 'failed)
-       (blocked 'blocked)
-       (t 'running)))))
+or disappeared while the client was disconnected.  FINISHED-AT records a
+historical all-done transition; it never overrides current member state.
+One agent finishing never completes the whole task."
+  (let* ((agents (agent-fleet-task-agents task))
+         (total (length agents))
+         (done 0) (blocked nil) (missing nil))
+    (dolist (pid agents)
+      (let ((s (agent-fleet-status pid)))
+        (cond
+         ((eq s 'done) (cl-incf done))
+         ((null s) (setq missing t))
+         ((eq s 'blocked) (setq blocked t)))))
+    (cond
+     ((and (> total 0) (>= done total)) 'done)
+     (missing 'failed)
+     (blocked 'blocked)
+     (t 'running))))
 
 (defun agent-fleet-task-agents-state (task)
   "Return an alist (pane-id . status-symbol) for TASK's agents, for display.
@@ -240,10 +238,8 @@ failure is caught and reported; the task records the agents that did launch."
         (setq agent-fleet--tasks (append agent-fleet--tasks (list task)))
         (dolist (pid (agent-fleet-task-agents task))
           (puthash pid task-id agent-fleet--agent-tasks))
-        ;; Status events can arrive while the serial start/prompt acknowledgments
-        ;; are still being collected, before the pane->task map exists.  Record
-        ;; an already-complete task now so later pane cleanup cannot turn it into
-        ;; a spurious `failed' task merely because that final hook was missed.
+        ;; Status events can arrive before the pane->task map exists.  Record
+        ;; an already-complete task's historical completion timestamp now.
         (when (eq 'done (agent-fleet-task-state task))
           (setf (agent-fleet-task-finished-at task) (float-time)))
         (run-hook-with-args 'agent-fleet-task-changed-hook task)

@@ -1735,7 +1735,7 @@ package would feed to `consult--read' with a `consult--lookup-cdr' lookup.
 
 (ert-deftest agent-fleet-interactive-dashboard-refresh-and-filters ()
   "Dashboard g fetches server state; project/task filters set and prefix-clear."
-  (let* ((herdr-model--cache (agent-fleet-interactive-test--session))
+  (let* ((herdr-model--cache (agent-fleet-interactive-test--session "done"))
          (task (make-agent-fleet-task :id "task-1" :title "review"
                                       :agents '("w1:p1") :finished-at 1.0))
          (agent-fleet--tasks (list task))
@@ -1760,7 +1760,7 @@ package would feed to `consult--read' with a `consult--lookup-cdr' lookup.
       (goto-char (point-min))
       ;; Filter commands do local refreshes after setting or clearing state.
       (cl-letf (((symbol-function 'agent-fleet--find-agent)
-                 (lambda (_) (make-herdr-agent :id "w1:p1" :name "arch")))
+                 (lambda (_) (herdr-model-find-agent "w1:p1")))
                 ((symbol-function 'agent-fleet-project-for-agent)
                  (lambda (_) "/repo"))
                 ((symbol-function 'agent-fleet-dashboard--refresh)

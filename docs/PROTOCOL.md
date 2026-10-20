@@ -388,6 +388,16 @@ Notes on params:
   list of extra CLI arguments. `target` (for the other `agent.*` methods) is
   a name *or* pane id, resolved by the server.
 
+Fleet defers pushed events during the `agent.start` response/cache update
+and during `agent.get` response/cache updates. Queued
+events then replay in order, including on error. Early detection cannot repeat
+the started notification, and older RPC data cannot resurrect a closed pane.
+Startup is committed before replay and consumer hooks run, so an error does not
+authorize provisioning rollback after an acknowledged start. The started hook
+runs after the start transaction releases event deferral. Fleet rechecks the
+target both after replay and after the hook, and signals a provisioning error
+instead of attaching or returning an unavailable pane identity.
+
 Provisioning / teardown (used by `agent-fleet-start` / `-kill`):
 
 | Method | Request params | Result (`{type, ...}`) |
@@ -540,7 +550,10 @@ failed and uncertain operations and retain each reviewed target's terminal
 IDs and paths. These presentation changes add no RPCs.
 An interrupted run retains confirmed results and stops issuing new close
 requests. A close interrupted before acknowledgement is reported as uncertain;
-unattempted targets remain listed. A fresh scan is required before another run.
+timeouts, connection loss, and invalid acknowledgements after dispatch have
+the same treatment. The structured diagnostic is retained in
+`:uncertain-errors`, and unattempted targets remain listed. An explicit server
+rejection is a failed operation. A fresh scan is required before another run.
 
 Any Workspace containing an agent is protected in full, including agents with
 `done` status, sibling panes, and its worktree. Snapshot and live-cache agent
@@ -551,6 +564,9 @@ connection, and whole-Workspace agent evidence are rechecked before each
 operation. Unknown or unsafe evidence is protected, and each report accounts
 for protected, skipped, and failed resources. Cleanup never force-deletes or
 falls back to `worktree.remove`.
+For several approved operations within one Workspace, each later check accounts
+only for exact pane identities whose closure was acknowledged earlier in that
+run. Unrelated topology or ownership changes still veto cleanup.
 
 ### 8.5 Phase 7 parallel orchestration (no new wire protocol)
 
@@ -571,6 +587,9 @@ prompt each, and track their aggregate status — all client-side:
   race** (§38): `done` only when *all* agents are done; a single
   `blocked` agent makes the task `blocked`; no agent is killed on first
   `done`.
+- Historical completion timestamps do not override aggregate state. A resumed
+  member makes the task running or blocked again, and a missing member is
+  failed even after an earlier all-done transition. Task waits use current state.
 - **No result extraction (§40).**  Agents are persistent interactive
   workers, not RPC functions — `agent.read` is terminal state, never a
   structured final answer.  `agent-fleet-task-wait` pumps

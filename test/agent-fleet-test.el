@@ -18,6 +18,7 @@
 (require 'herdr-model)
 (require 'herdr-events)
 (require 'agent-fleet)
+(require 'agent-fleet-parallel)
 (require 'herdr-mock-server)
 
 
@@ -377,6 +378,141 @@ without it the hook would fire twice."
         (agent-fleet-test--pump)
         (should (equal 1 (length fired)))
         (should (equal "arch" (plist-get (car fired) :name)))))))
+
+(ert-deftest agent-fleet-start-hook-failure-preserves-provisioned-resources ()
+  "Consumer errors and quits never roll back an acknowledged startup."
+  (dolist (placement '(workspace pane worktree explicit))
+    (dolist (failure '(error quit))
+      (let ((herdr-model--cache (herdr-model--empty-session))
+            (agent-fleet-agent-started-hook
+             (list (lambda (&rest _) (signal failure '("Hook failed")))))
+            requests)
+        (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+                  ((symbol-function 'agent-fleet--workspace-for-cwd)
+                   (lambda (_) (when (eq placement 'pane) "w1")))
+                  ((symbol-function 'agent-fleet--create-workspace-provisioning)
+                   (lambda (&rest _) '(:workspace-id "w1" :pane-id "w1:p1")))
+                  ((symbol-function 'agent-fleet--provision-pane)
+                   (lambda (&rest _) "w1:p1"))
+                  ((symbol-function 'agent-fleet--provision-worktree)
+                   (lambda (&rest _)
+                     (let ((wt '(:path "/tmp/review-worktree" :open_workspace_id "w1"
+                                 :is_linked_worktree t)))
+                       (herdr-model-upsert-worktree wt)
+                       (list :workspace-id "w1" :pane-id "w1:p1" :worktree wt))))
+                  ((symbol-function 'herdr-request)
+                   (lambda (method &rest _)
+                     (push method requests)
+                     '(:type "agent_started" :agent
+                       (:pane_id "w1:p1" :workspace_id "w1" :agent "codex"
+                        :agent_status "working")))))
+          (let ((caught
+                 (condition-case err
+                     (agent-fleet-start 'codex :cwd "/tmp" :name "hook-test"
+                                        :worktree (eq placement 'worktree)
+                                        :pane (when (eq placement 'explicit) "w1:p1"))
+                   ((error quit) err))))
+            (should (eq failure (car caught))))
+          (should (equal '("agent.start") requests))
+          (should (herdr-model-find-agent "w1:p1"))
+          (when (eq placement 'worktree)
+            (should (herdr-model-find-worktree "/tmp/review-worktree"))))))))
+
+(ert-deftest agent-fleet-start-early-detection-notifies-once ()
+  "Detection and status events arriving before the response replay in order."
+  (let ((herdr-model--cache (herdr-model--empty-session))
+        (herdr-event-pane-hook '(agent-fleet--on-pane-event))
+        (herdr-event-agent-status-hook nil)
+        (herdr-event-hook nil)
+        (herdr--synchronizing t)
+        (agent-fleet-agent-started-hook nil)
+        notifications)
+    (add-hook 'agent-fleet-agent-started-hook
+              (lambda (descriptor) (push descriptor notifications)))
+    (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+              ((symbol-function 'herdr-request)
+               (lambda (&rest _)
+                 (herdr--on-event "pane_agent_detected"
+                                  '(:pane_id "w1:p1" :workspace_id "w1"
+                                    :agent "codex" :final_status "idle"))
+                 (herdr--on-event "pane_agent_status_changed"
+                                  '(:pane_id "w1:p1" :agent_status "working"))
+                 '(:type "agent_started" :agent
+                   (:pane_id "w1:p1" :workspace_id "w1" :name "early"
+                    :agent "codex" :agent_status "idle")))))
+      (agent-fleet-start 'codex :pane "w1:p1" :name "early"))
+    (should (= 1 (length notifications)))
+    (should (equal "early" (plist-get (car notifications) :name)))
+    (should (eq 'working (agent-fleet-status "w1:p1")))))
+
+(ert-deftest agent-fleet-start-hook-can-wait-for-live-task ()
+  "Started consumers can pump status events without starving the model."
+  (let* ((herdr-model--cache (herdr-model--empty-session))
+         (herdr--synchronizing t)
+         (herdr-event-hook nil)
+         (herdr-event-pane-hook nil)
+         (herdr-event-agent-status-hook nil)
+         (task (make-agent-fleet-task :id "test" :agents '("w1:p1")))
+         observed
+         (agent-fleet-agent-started-hook
+          (list (lambda (_)
+                  (agent-fleet-task-wait task 'done :timeout-ms 100)
+                  (setq observed (agent-fleet-task-state task))))))
+    (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+              ((symbol-function 'herdr-request)
+               (lambda (&rest _)
+                 '(:type "agent_started" :agent
+                   (:pane_id "w1:p1" :workspace_id "w1" :name "early"
+                    :agent "codex" :agent_status "working"))))
+              ((symbol-function 'accept-process-output)
+               (lambda (&rest _)
+                 (herdr--on-event "pane_agent_status_changed"
+                                  '(:pane_id "w1:p1" :agent_status "done")))))
+      (agent-fleet-start 'codex :pane "w1:p1" :name "early"))
+    (should (eq 'done observed))))
+
+(ert-deftest agent-fleet-start-rechecks-target-after-replay-and-hooks ()
+  "A closed or moved target must not be attached, returned, or rolled back."
+  (dolist (timing '(replay-close replay-move hook-close))
+    (let* ((herdr-model--cache (herdr-model--empty-session))
+           (herdr--synchronizing t)
+           (herdr-event-hook nil)
+           (herdr-event-pane-hook nil)
+           (herdr-event-agent-status-hook nil)
+           attached notified methods
+           (agent-fleet-agent-started-hook
+            (list (lambda (_)
+                    (setq notified t)
+                    (when (eq timing 'hook-close)
+                      (herdr--on-event "pane_closed" '(:pane_id "w1:p1")))))))
+      (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+                ((symbol-function 'herdr-request)
+                 (lambda (method &rest _)
+                   (push method methods)
+                   (pcase timing
+                     ('replay-close
+                      (herdr--on-event "pane_closed" '(:pane_id "w1:p1")))
+                     ('replay-move
+                      (herdr--on-event
+                       "pane_moved"
+                       '(:previous_pane_id "w1:p1"
+                         :pane (:pane_id "w2:p2" :workspace_id "w2"
+                                :tab_id "w2:t1" :terminal_id "t1"
+                                :agent "codex" :agent_status "working")))))
+                   '(:type "agent_started" :agent
+                     (:pane_id "w1:p1" :workspace_id "w1" :name "early"
+                      :agent "codex" :agent_status "idle"))))
+                ((symbol-function 'agent-fleet-attach)
+                 (lambda (_) (setq attached t))))
+        (should-error
+         (agent-fleet-start 'codex :pane "w1:p1" :name "early" :attach t)
+         :type 'agent-fleet-provisioning-failed))
+      (should-not attached)
+      (should-not (herdr-model-find-agent "w1:p1"))
+      (should (eq notified (eq timing 'hook-close)))
+      (should (equal methods '("agent.start")))
+      (when (eq timing 'replay-move)
+        (should (herdr-model-find-agent "w2:p2"))))))
 
 (ert-deftest agent-fleet-start-with-explicit-pane ()
   "start with :pane reuses that pane (no provisioning)."
@@ -914,6 +1050,56 @@ status authoritative."
       (let ((got (agent-fleet-get agent)))
         (should (herdr-agent-p got))
         (should (equal "arch" (herdr-agent-name got)))))))
+
+(ert-deftest agent-fleet-get-replays-newer-status-and-close-events ()
+  "A stale AgentInfo must neither undo a status event nor resurrect a pane."
+  (dolist (close '(nil t))
+    (let* ((herdr-model--cache (herdr-model--empty-session))
+           (herdr--synchronizing t)
+           (herdr-event-hook nil)
+           (herdr-event-pane-hook nil)
+           (herdr-event-agent-status-hook nil)
+           (info '(:pane_id "w1:p1" :workspace_id "w1" :agent "codex"
+                   :agent_status "idle"))
+           result observed)
+      (herdr-model-upsert-agent-info info)
+      (add-hook 'herdr-event-agent-status-hook
+                (lambda (_)
+                  (push (agent-fleet-status "w1:p1") observed)))
+      (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+                ((symbol-function 'herdr-request)
+                 (lambda (&rest _)
+                   (herdr--on-event "pane_agent_status_changed"
+                                    '(:pane_id "w1:p1" :agent_status "working"))
+                   (herdr--on-event "pane_agent_status_changed"
+                                    '(:pane_id "w1:p1" :agent_status "blocked"))
+                   (when close
+                     (herdr--on-event "pane_closed" '(:pane_id "w1:p1")))
+                   (list :type "agent_info" :agent info))))
+        (setq result (agent-fleet-get "w1:p1")))
+      (should (equal '(working blocked) (nreverse observed)))
+      (if close
+          (progn
+            (should-not result)
+            (should-not (herdr-model-find-agent "w1:p1"))
+            (should (gethash "w1:p1" (herdr-session-gone-panes herdr-model--cache))))
+        (should (eq result (herdr-model-find-agent "w1:p1")))
+        (should (eq 'blocked (agent-fleet-status "w1:p1")))))))
+
+(ert-deftest agent-fleet-get-error-still-replays-events ()
+  "A failed get preserves structured diagnostics and queued lifecycle events."
+  (let ((herdr-model--cache (herdr-model--empty-session))
+        (herdr--synchronizing t)
+        (herdr-event-hook nil)
+        (herdr-event-pane-hook nil))
+    (herdr-model-upsert-agent-info '(:pane_id "w1:p1" :agent "codex"))
+    (cl-letf (((symbol-function 'agent-fleet--ensure-connected) #'ignore)
+              ((symbol-function 'herdr-request)
+               (lambda (&rest _)
+                 (herdr--on-event "pane_closed" '(:pane_id "w1:p1"))
+                 (signal 'herdr-request-error '(:code "not_found")))))
+      (should-error (agent-fleet-get "w1:p1") :type 'herdr-request-error))
+    (should-not (herdr-model-find-agent "w1:p1"))))
 
 (ert-deftest agent-fleet-show-output-view ()
   "`agent-fleet-show-output' opens a read-only buffer with the

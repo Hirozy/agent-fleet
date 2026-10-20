@@ -271,6 +271,34 @@ full state machine over three agents."
         (should (eq task (agent-fleet-task-wait task nil :timeout-ms 100)))
         (should-not (agent-fleet-task-finished-at task))))))
 
+(ert-deftest agent-fleet-task-historical-completion-does-not-override-live-state ()
+  "Resumed, blocked, and missing members override an old completion timestamp."
+  (let* ((herdr-model--cache (herdr-model--empty-session))
+         (task (make-agent-fleet-task :id "task-resume" :agents '("p1")
+                                      :finished-at 1.0)))
+    (dolist (case '(("working" . running) ("blocked" . blocked) (nil . failed) ("done" . done)))
+      (herdr-model-remove-agent "p1")
+      (when (car case)
+        (herdr-model-upsert-agent-info
+         (list :pane_id "p1" :agent "codex" :agent_status (car case))))
+      (should (eq (cdr case) (agent-fleet-task-state task)))
+      (should (= 1.0 (agent-fleet-task-finished-at task))))))
+
+(ert-deftest agent-fleet-task-wait-does-not-return-on-historical-completion ()
+  "A resumed member must finish again before an all-done wait returns."
+  (let* ((herdr-model--cache (herdr-model--empty-session))
+         (task (make-agent-fleet-task :id "task-resume" :agents '("p1")
+                                      :finished-at 1.0))
+         (pumps 0))
+    (herdr-model-upsert-agent-info '(:pane_id "p1" :agent "codex" :agent_status "working"))
+    (cl-letf (((symbol-function 'accept-process-output)
+               (lambda (&rest _)
+                 (cl-incf pumps)
+                 (setf (herdr-agent-agent-status (herdr-model-find-agent "p1")) "done"))))
+      (should (eq task (agent-fleet-task-wait task '(done) :timeout-ms 1000))))
+    (should (= 1 pumps))
+    (should (= 1.0 (agent-fleet-task-finished-at task)))))
+
 (ert-deftest agent-fleet-task-pane-move-migrates-member-identity ()
   "A moved task agent keeps its task membership and cleanup workspace."
   (let* ((session (herdr-model--empty-session))

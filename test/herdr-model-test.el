@@ -66,6 +66,14 @@ post-pass freezes LABEL as `custom-name' (a pre-connect rename)."
               :agent "claude" :agent_status "idle"))
     :layouts ()))
 
+(ert-deftest herdr-model-rpc-info-never-resurrects-gone-pane ()
+  "An old response cannot reinsert an identity already authoritatively closed."
+  (let* ((session (herdr-model-parse-snapshot (herdr-model-test--snapshot)))
+         (info (car (plist-get (herdr-model-test--snapshot) :agents))))
+    (herdr-model-apply-event session "pane_closed" '(:pane_id "w1:p1"))
+    (should-not (herdr-model-upsert-agent-info info session))
+    (should-not (herdr-model-find-agent session "w1:p1"))))
+
 (ert-deftest herdr-model-parse-snapshot-basic ()
   "Parsing a snapshot populates workspaces/tabs/panes/agents."
   (let ((session (herdr-model-parse-snapshot (herdr-model-test--snapshot))))

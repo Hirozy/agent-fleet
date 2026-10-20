@@ -291,6 +291,16 @@ Lifecycle hooks (`agent-fleet-agent-started-hook`,
 run with the post-event cache already updated, so custom automation can read
 fresh state without polling.
 
+For a Fleet start, queued events replay before the started hook runs; early
+detection does not duplicate the notification. The hook runs outside the start
+request's event-deferral transaction, allowing consumers to wait for live state.
+A hook error propagates without closing the successfully started agent. If the
+target disappears or moves to a different pane ID during startup or its hook,
+start signals `agent-fleet-provisioning-failed` without attaching the stale
+target or rolling back the acknowledged start.
+`agent-fleet-get` applies queued events after caching its response,
+so a newer status or close event takes precedence over an older response.
+
 ## Projects and worktrees
 
 Start an agent for the current `project.el` project:
@@ -379,6 +389,10 @@ inspect individual results. Cleanup protects every Workspace containing an
 agent, including done agents, and currently skips worktrees because the
 available metadata cannot establish that their commits and changes are
 preserved. Task associations also protect resources when members are missing.
+
+A completed task returns to `running` or `blocked` if a member resumes work;
+a missing member makes it `failed`. Its first completion timestamp remains
+historical metadata and does not make subsequent waits return immediately.
 
 ## Review changes with Magit
 
@@ -748,7 +762,11 @@ color; long paths wrap instead of being truncated. No extra package is required.
 
 If execution is interrupted, the buffer retains confirmed results and lists
 unattempted targets. A close request interrupted before acknowledgement is
-marked as uncertain, since the server may already have applied it. Run
+marked as uncertain, since the server may already have applied it. This also
+applies to timeouts, connection loss, and invalid acknowledgements after a
+close request is dispatched. Execution stops at that point, retains the
+diagnostic, and lists the remaining targets as not attempted. An explicit
+server rejection is recorded as failed. Run
 `M-x agent-fleet-cleanup` again to scan fresh state; the old review cannot be
 executed again. Quitting the review restores the original buffer without
 killing it or its attached terminal client.
@@ -774,6 +792,9 @@ applies the same safety rules. `:project` and `:task` are Lisp-only filters.
 execution results include protected, skipped, and failed resources. Before
 each operation, cleanup rechecks fresh identities, the connection, and whole-
 Workspace agent evidence; unknown evidence fails closed.
+For multiple targets in one Workspace, later checks account for closures
+acknowledged earlier in the same run. Other identity or membership changes
+still prevent cleanup.
 
 Herdr's close RPCs do not offer an atomic "close only if still agent-free"
 condition. Final client-side revalidation narrows but cannot eliminate the

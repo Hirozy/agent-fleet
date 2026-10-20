@@ -570,7 +570,90 @@
    (setq ack nil)
    (let ((report (agent-fleet-cleanup :targets '("p4") :no-confirm t)))
      (should-not (plist-get report :closed))
-     (should (plist-get report :failed)))))
+     (should-not (plist-get report :failed))
+     (should (equal '("w2") (plist-get report :uncertain)))
+     (should (plist-get report :uncertain-errors)))))
+
+(ert-deftest agent-fleet-cleanup-unacknowledged-close-stops-with-uncertain-result ()
+  "Transport/protocol failures cannot prove whether a close was applied."
+  (dolist (condition '(herdr-timeout-error herdr-connection-error herdr-protocol-error))
+    (dolist (applied '(nil t))
+      (agent-fleet-cleanup-test--with-server
+       (agent-fleet-cleanup-test--shells snapshot)
+       (let ((request (symbol-function 'herdr-request)))
+         (cl-letf (((symbol-function 'herdr-request)
+                    (lambda (method &optional params &rest keys)
+                      (if (equal method "workspace.close")
+                          (progn
+                            (if applied
+                                (apply request method params keys)
+                              (push (cons method params) requests))
+                            (signal condition '(:method "workspace.close")))
+                        (apply request method params keys)))))
+           (let ((report (agent-fleet-cleanup :targets '("p1" "p2" "p3" "p4")
+                                              :no-confirm t)))
+             (should (plist-get report :interrupted))
+             (should-not (plist-get report :closed))
+             (should-not (plist-get report :failed))
+             (should (equal '("w1") (plist-get report :uncertain)))
+             (should (equal '("w2") (plist-get report :pending)))
+             (should (eq condition (cadr (assoc "w1" (plist-get report :uncertain-errors)))))
+             (should (= 1 (length (agent-fleet-cleanup-test--writes requests)))))))))))
+
+(ert-deftest agent-fleet-cleanup-preflight-error-is-not-an-uncertain-close ()
+  (agent-fleet-cleanup-test--with-server
+   (agent-fleet-cleanup-test--shells snapshot)
+   (setq before-snapshot
+         (lambda ()
+           (when (= snapshot-count 2)
+             (signal 'herdr-timeout-error '(:method "session.snapshot")))))
+   (let ((report (agent-fleet-cleanup :targets '("p1" "p2" "p3" "p4") :no-confirm t)))
+     (should (equal '("w2") (plist-get report :closed)))
+     (should (assoc "w1" (plist-get report :failed)))
+     (should-not (plist-get report :uncertain)))))
+
+(ert-deftest agent-fleet-cleanup-subset-accounts-for-acknowledged-closes ()
+  "Earlier approved closes do not invalidate later operations in that workspace."
+  (dolist (targets '(("p1" "p3") ("p3" "p1")))
+    (dolist (cached '(nil t))
+      (agent-fleet-cleanup-test--with-server
+       (agent-fleet-cleanup-test--shells snapshot)
+       (when cached
+         (setq herdr-model--cache (herdr-model-parse-cleanup-snapshot snapshot)))
+       (let ((report (agent-fleet-cleanup :targets targets :no-confirm t)))
+         (should (equal '("b" "p1") (sort (copy-sequence (plist-get report :closed)) #'string<)))
+         (should-not (plist-get report :skipped))
+         (should-not (plist-get report :failed))
+         (should-not (plist-get report :uncertain))
+         (should (cl-find "p2" (plist-get snapshot :panes)
+                          :key (lambda (p) (plist-get p :pane_id)) :test #'equal)))))))
+
+(ert-deftest agent-fleet-cleanup-subset-still-rejects-unapproved-changes ()
+  (dolist (change '(identity agent missing))
+    (agent-fleet-cleanup-test--with-server
+     (agent-fleet-cleanup-test--shells snapshot)
+     (setq before-snapshot
+           (lambda ()
+             (when (= snapshot-count 3)
+               (let ((sibling (cl-find "p2" (plist-get snapshot :panes)
+                                       :key (lambda (p) (plist-get p :pane_id)) :test #'equal)))
+                 (pcase change
+                   ('identity (setf (plist-get sibling :terminal_id) "replacement-terminal"))
+                   ('agent (setf (plist-get sibling :agent) "codex"))
+                   ('missing (agent-fleet-cleanup-test--apply-close snapshot "pane.close" "p2")))))))
+     (let ((report (agent-fleet-cleanup :targets '("p1" "p3") :no-confirm t)))
+       (should (equal '("p1") (plist-get report :closed)))
+       (should (assoc "b" (plist-get report :skipped)))
+       (should (= 1 (length (agent-fleet-cleanup-test--writes requests))))))))
+
+(ert-deftest agent-fleet-cleanup-subset-does-not-count-rejected-close-as-applied ()
+  (agent-fleet-cleanup-test--with-server
+   (agent-fleet-cleanup-test--shells snapshot)
+   (setq failures '("p1"))
+   (let ((report (agent-fleet-cleanup :targets '("p1" "p3") :no-confirm t)))
+     (should (assoc "p1" (plist-get report :failed)))
+     (should (equal '("b") (plist-get report :closed)))
+     (should-not (plist-get report :skipped)))))
 
 (ert-deftest agent-fleet-cleanup-incomplete-topology-fails-closed ()
   (dolist (change '(missing duplicate count))

@@ -1135,9 +1135,11 @@ Uses INFO's `pane_id' as the cache key.  No-op (returns nil) if INFO
 has no `pane_id' or there is no live cache.  This lets the agent
 control layer keep the cache consistent immediately after an
 `agent.start' / `agent.get' / `agent.list' RPC, without waiting for the
-pushed event.  Returns the parsed struct, or nil."
+pushed event.  A pane remembered gone is never resurrected by an old RPC
+response.  Returns the parsed struct, or nil."
   (when-let* ((pid (plist-get info :pane_id))
-              (s (or session (herdr-model-cache))))
+              (s (or session (herdr-model-cache)))
+              ((not (gethash pid (herdr-session-gone-panes s)))))
     (let ((agent (herdr-model--parse-agent info)))
       (puthash pid agent (herdr-session-agents s))
       agent)))

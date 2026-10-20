@@ -670,8 +670,8 @@ The directory fallback is only a name label, not a Project identity."
 
 ;;;###autoload
 (cl-defun agent-fleet-start (kind &key name cwd workspace pane args
-                                     (timeout-ms agent-fleet-start-timeout-ms)
-                                     focus worktree branch base attach)
+                                  (timeout-ms agent-fleet-start-timeout-ms)
+                                  focus worktree branch base attach)
   "Start a CLI agent of KIND (a symbol like `claude') in a Herdr pane.
 Provisions an empty interactive shell pane (splitting the focused pane,
 or creating a tab if there is none), then calls `agent.start'.  The
@@ -787,37 +787,54 @@ Returns the `herdr-agent' struct for the started agent.  Signals an
     (herdr--log 'info "starting agent %s (%s) in %s" agent-name kind-str pane-id)
     (let ((completed nil))
       (unwind-protect
-          (let* ((result (herdr-request
-                          "agent.start" params
-                          :timeout (agent-fleet--transport-timeout timeout-ms)))
-                 ;; `agent.start' returns an AgentInfo (live:
-                 ;; `agent_started' -> :agent).  Unwrap it; if no info came
-                 ;; back (e.g. a bare ack), fetch authoritative info.
-                 (info (or (agent-fleet--unwrap-agent result)
-                           (ignore-errors
-                             (agent-fleet--unwrap-agent
-                              (herdr-request
-                               "agent.get" `(("target" . ,pane-id))))))))
-            (when info (herdr-model-upsert-agent-info info))
-            (let ((agent (herdr-model-find-agent pane-id)))
-              (unless agent
-                (signal 'agent-fleet-provisioning-failed
-                        (list :pane-id pane-id :result result)))
-              ;; Fire the started hook from the authoritative result.  The
-              ;; later screen-detection event sees the cached agent and is
-              ;; marked replay, so the hook is delivered exactly once.
-              (run-hook-with-args 'agent-fleet-agent-started-hook
-                                  (agent-fleet--enrich-descriptor nil pane-id))
-              (setq completed t)
-              ;; Interactive starts attach the agent's terminal in Emacs so
-              ;; the user lands in it.  Wrapper commands forward their own
-              ;; interactivity through :attach; programming callers (parallel
-              ;; orchestration, external scripts) pass neither and are left
-              ;; alone.  Without a terminal backend `agent-fleet-attach'
-              ;; signals a user-error pointing at the herdr CLI command.
-              (when (or attach interactive-p)
-                (agent-fleet-attach agent))
-              agent))
+          (let ((agent
+                 (herdr-call-with-deferred-events
+                  (lambda ()
+                    (let* ((result (herdr-request
+                                    "agent.start" params
+                                    :timeout (agent-fleet--transport-timeout timeout-ms)))
+                           ;; `agent.start' returns an AgentInfo (live:
+                           ;; `agent_started' -> :agent).  Unwrap it; if no info came
+                           ;; back (e.g. a bare ack), fetch authoritative info.
+                           (info (or (agent-fleet--unwrap-agent result)
+                                     (ignore-errors
+                                       (agent-fleet--unwrap-agent
+                                        (herdr-request
+                                         "agent.get" `(("target" . ,pane-id))))))))
+                      (when info (herdr-model-upsert-agent-info info))
+                      (let ((agent (herdr-model-find-agent pane-id)))
+                        (unless agent
+                          (signal 'agent-fleet-provisioning-failed
+                                  (list :pane-id pane-id :result result)))
+                        ;; Commit before replay and consumer hooks: neither may
+                        ;; roll back a successfully running agent.  Detection
+                        ;; replay sees the cached agent and suppresses duplicates.
+                        (setq completed t)
+                        agent))))))
+            ;; Replay may have removed the target.  Never attach or return the
+            ;; pre-replay object, and never roll back an acknowledged start.
+            (setq agent (herdr-model-find-agent pane-id))
+            (unless agent
+              (signal 'agent-fleet-provisioning-failed
+                      (list :pane-id pane-id :reason 'target-no-longer-available)))
+            ;; Consumer hooks may pump events or wait for live task state.
+            ;; Run them outside this request's event-deferral transaction.
+            (run-hook-with-args 'agent-fleet-agent-started-hook
+                                (agent-fleet--enrich-descriptor nil pane-id))
+            ;; A consumer hook can itself close the pane or replace the cache.
+            (setq agent (herdr-model-find-agent pane-id))
+            (unless agent
+              (signal 'agent-fleet-provisioning-failed
+                      (list :pane-id pane-id :reason 'target-no-longer-available)))
+            ;; Interactive starts attach the agent's terminal in Emacs so
+            ;; the user lands in it.  Wrapper commands forward their own
+            ;; interactivity through :attach; programming callers (parallel
+            ;; orchestration, external scripts) pass neither and are left
+            ;; alone.  Without a terminal backend `agent-fleet-attach'
+            ;; signals a user-error pointing at the herdr CLI command.
+            (when (or attach interactive-p)
+              (agent-fleet-attach agent))
+            agent)
         (unless completed
           ;; Provisioning belongs to this call, so a failed agent.start must
           ;; not leave an empty pane or isolated worktree behind.  Explicit
@@ -969,10 +986,7 @@ Returns the renamed agent's AgentInfo plist (unwrapped)."
                               `(("target" . ,target) ("name" . ,name)))))
       ;; Refresh the cached struct from the authoritative info (the rename
       ;; event may lag); unwrap the `agent_info' envelope.
-      (ignore-errors
-        (herdr-model-upsert-agent-info
-         (agent-fleet--unwrap-agent
-          (herdr-request "agent.get" `(("target" . ,target))))))
+      (ignore-errors (agent-fleet-get target))
       (agent-fleet--unwrap-agent res))))
 
 ;;;###autoload
@@ -1187,11 +1201,17 @@ Returns the `herdr-agent' struct, or nil if the server returned no info.
 Unwraps the `agent_info' envelope before caching."
   (agent-fleet--ensure-connected)
   (let* ((target (agent-fleet--resolve-target agent))
-         (info (agent-fleet--unwrap-agent
-                (herdr-request "agent.get" `(("target" . ,target))))))
-    (when info
-      (herdr-model-upsert-agent-info info))
-    (and info (herdr-model-find-agent (plist-get info :pane_id)))))
+         (pane-id
+          (herdr-call-with-deferred-events
+           (lambda ()
+             (let ((info (agent-fleet--unwrap-agent
+                          (herdr-request "agent.get" `(("target" . ,target))))))
+               (when info
+                 (herdr-model-upsert-agent-info info)
+                 (plist-get info :pane_id)))))))
+    ;; Deferred closes and status changes have now been applied.  Return the
+    ;; live projection, not the pre-event struct produced by the response.
+    (and pane-id (herdr-model-find-agent pane-id))))
 
 
 ;;; --- Candidate builders (completion + consult) --------------------

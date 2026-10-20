@@ -257,17 +257,19 @@ worktree metadata does not prove changes and commits have been preserved."
   (equal (sort (copy-sequence left) (lambda (a b) (string< (car a) (car b))))
          (sort (copy-sequence right) (lambda (a b) (string< (car a) (car b))))))
 
-(defun agent-fleet-cleanup--recheck (operation context)
-  "Require OPERATION and its whole workspace to remain safe in CONTEXT."
+(defun agent-fleet-cleanup--recheck (operation context acknowledged-panes)
+  "Require OPERATION's workspace to remain safe in CONTEXT.
+ACKNOWLEDGED-PANES contains exact signatures closed earlier in this run."
   (let* ((session (plist-get context :session))
          (ws (plist-get operation :workspace))
          (panes (agent-fleet-cleanup--workspace-panes ws session))
-         (approved (plist-get operation :workspace-panes)))
+         (approved (plist-get operation :workspace-panes))
+         (expected (cl-set-difference approved acknowledged-panes :test #'equal)))
     (when-let* ((reason (agent-fleet-cleanup--workspace-reason ws context)))
       (user-error "%s: %s" ws reason))
     (unless (and panes
                  (agent-fleet-cleanup--same-panes-p
-                  approved (mapcar (lambda (p) (agent-fleet-cleanup--signature p session)) panes)))
+                  expected (mapcar (lambda (p) (agent-fleet-cleanup--signature p session)) panes)))
       (user-error "Workspace membership or identity changed; run cleanup again"))
     (when (herdr-model-cache)
       (dolist (pane (agent-fleet-cleanup--workspace-panes ws (herdr-model-cache)))
@@ -285,16 +287,17 @@ worktree metadata does not prove changes and commits have been preserved."
 
 (defun agent-fleet-cleanup--execute (context report operations)
   "Execute approved OPERATIONS, preserving partial results on interruption.
-An interrupted close request has an uncertain outcome, never assumed success."
+An unacknowledged close request has an uncertain outcome, never assumed success."
   (let ((connection (plist-get context :connection))
         (remaining (copy-sequence operations))
-        operation dispatched closed failed skipped interrupted uncertain)
+        operation dispatched closed failed skipped interrupted uncertain
+        acknowledged-panes uncertain-errors)
     (condition-case nil
-	(while remaining
+	(while (and remaining (not interrupted))
 	  (setq operation (pop remaining) dispatched nil)
 	  (condition-case err
               (let ((fresh (agent-fleet-cleanup--context connection)))
-		(agent-fleet-cleanup--recheck operation fresh)
+		(agent-fleet-cleanup--recheck operation fresh acknowledged-panes)
 		(agent-fleet-cleanup--check-connection connection)
 		(let* ((method (plist-get operation :method))
                        (key (pcase method
@@ -306,9 +309,20 @@ An interrupted close request has an uncertain outcome, never assumed success."
 		  (herdr-protocol-validate-ok
 		   (herdr-request method (list (cons key (plist-get operation :id))))
 		   method))
-		(push (plist-get operation :id) closed))
-            (user-error (push (cons (plist-get operation :id) err) skipped))
-            (error (push (cons (plist-get operation :id) err) failed)))
+		(push (plist-get operation :id) closed)
+                (setq acknowledged-panes
+                      (append (plist-get operation :panes) acknowledged-panes)))
+            (herdr-request-error
+             (push (cons (plist-get operation :id) err) failed))
+            (error
+             (cond
+              (dispatched
+               (push (plist-get operation :id) uncertain)
+               (push (cons (plist-get operation :id) err) uncertain-errors)
+               (setq interrupted t))
+              ((memq 'user-error (get (car err) 'error-conditions))
+               (push (cons (plist-get operation :id) err) skipped))
+              (t (push (cons (plist-get operation :id) err) failed)))))
 	  (setq operation nil))
       (quit
        (setq quit-flag nil interrupted t)
@@ -320,6 +334,7 @@ An interrupted close request has an uncertain outcome, never assumed success."
     (append report (list :closed (nreverse closed) :failed (nreverse failed)
                          :skipped (nreverse skipped)
                          :interrupted interrupted :uncertain uncertain
+                         :uncertain-errors (nreverse uncertain-errors)
                          :pending (mapcar (lambda (op) (plist-get op :id)) remaining)))))
 
 (defun agent-fleet-cleanup--result-message (report)
@@ -327,6 +342,8 @@ An interrupted close request has an uncertain outcome, never assumed success."
   (dolist (entry (plist-get report :protected))
     (message "Cleanup preserved %s: %s" (car entry) (cdr entry)))
   (dolist (id (plist-get report :closed)) (message "Cleanup closed: %s" id))
+  (dolist (entry (plist-get report :uncertain-errors))
+    (message "Cleanup uncertain %s: %s" (car entry) (error-message-string (cdr entry))))
   (dolist (key '(:skipped :failed))
     (dolist (entry (plist-get report key))
       (message "Cleanup %s %s: %s" key (car entry) (error-message-string (cdr entry)))))
@@ -508,7 +525,10 @@ An interrupted close request has an uncertain outcome, never assumed success."
                           (agent-fleet-cleanup--detail (error-message-string (cdr entry))))
                          ((eq key :uncertain)
                           (agent-fleet-cleanup--detail
-                           "Close request interrupted; verify server state before retrying.")))
+                           (concat
+                            (when-let* ((err (cdr (assoc id (plist-get report :uncertain-errors)))))
+                              (concat (error-message-string err) ". "))
+                            "Close request was not acknowledged; verify server state before retrying."))))
                         "\n")))
             entries "")))))
     '((:failed "Failed" error) (:uncertain "Uncertain" warning)
@@ -651,7 +671,8 @@ filters and TARGETS contains eligible runtime pane IDs.  SELECT opens a review
 and returns :review-opened without executing.  NO-CONFIRM applies only to
 explicit Lisp targets.  Return :candidates, :protected, :preserved-agents
 and, after execution, :closed, :skipped and :failed.  Interruption also reports
-:interrupted, :uncertain and :pending.  Cancellation adds :cancelled."
+:interrupted, :uncertain, :uncertain-errors and :pending.
+Cancellation adds :cancelled."
   (interactive (list :select t))
   (agent-fleet-cleanup--run project task targets select no-confirm))
 
