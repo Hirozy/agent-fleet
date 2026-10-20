@@ -534,6 +534,10 @@ and warns that shell and other processes may be terminated. `C-c C-c`
 executes the reviewed cleanup once; before execution, `q` or `C-g` cancels.
 After execution, the same buffer displays the outcome, including protected,
 skipped, and failed resources. No buffer opens when there are no candidates.
+Headings and status labels inherit Emacs theme faces, keyboard hints stay in
+the header, and paths and reasons wrap without truncation. Results prioritize
+failed and uncertain operations and retain each reviewed target's terminal
+IDs and paths. These presentation changes add no RPCs.
 An interrupted run retains confirmed results and stops issuing new close
 requests. A close interrupted before acknowledgement is reported as uncertain;
 unattempted targets remain listed. A fresh scan is required before another run.

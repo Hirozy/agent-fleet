@@ -739,6 +739,13 @@ execution, press `q` or `C-g` to cancel. After execution, the same buffer
 shows the outcome, including protected, skipped, and failed resources. With
 no candidates, no review buffer opens.
 
+Both views use theme-aware headings and status highlighting, with keyboard
+hints pinned in the header. Review groups `[CLOSE]` targets and `[KEEP]`
+resources, showing full paths, terminal IDs, and protection reasons on separate
+lines. Results put failures and uncertain outcomes first, followed by pending,
+skipped, closed, and protected resources. Text labels remain readable without
+color; long paths wrap instead of being truncated. No extra package is required.
+
 If execution is interrupted, the buffer retains confirmed results and lists
 unattempted targets. A close request interrupted before acknowledgement is
 marked as uncertain, since the server may already have applied it. Run

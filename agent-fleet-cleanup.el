@@ -349,6 +349,21 @@ An interrupted close request has an uncertain outcome, never assumed success."
 (defvar agent-fleet-cleanup-review-buffer-name "*agent-fleet-cleanup*"
   "Name of the interactive cleanup review buffer.")
 
+(defface agent-fleet-cleanup-title-face
+  '((t :inherit font-lock-function-name-face :weight bold :height 1.2))
+  "Face for cleanup view titles."
+  :group 'agent-fleet)
+
+(defface agent-fleet-cleanup-section-face
+  '((t :inherit bold))
+  "Face for cleanup section headings."
+  :group 'agent-fleet)
+
+(defface agent-fleet-cleanup-key-face
+  '((t :inherit font-lock-keyword-face :weight bold))
+  "Face for cleanup keyboard hints."
+  :group 'agent-fleet)
+
 (defvar agent-fleet-cleanup-review-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
@@ -360,24 +375,151 @@ An interrupted close request has an uncertain outcome, never assumed success."
 
 (define-derived-mode agent-fleet-cleanup-review-mode special-mode "Fleet-Cleanup"
   "Read-only review of the exact resources selected for cleanup.
-\<agent-fleet-cleanup-review-mode-map>
-\[agent-fleet-cleanup-review-execute] executes once;
-\[agent-fleet-cleanup-review-quit] cancels.")
+\\<agent-fleet-cleanup-review-mode-map>
+\\[agent-fleet-cleanup-review-execute] executes once;
+\\[agent-fleet-cleanup-review-quit] cancels."
+  (setq-local truncate-lines nil
+              word-wrap t
+              display-line-numbers nil))
+
+(defun agent-fleet-cleanup--key-hint (key action)
+  "Format KEY and ACTION using theme-aware keyboard emphasis."
+  (concat (propertize key 'face 'agent-fleet-cleanup-key-face) " " action))
+
+(defun agent-fleet-cleanup--header (state)
+  "Return a persistent action hint for cleanup STATE."
+  (concat "  "
+          (pcase state
+            ('review
+             (concat (agent-fleet-cleanup--key-hint "C-c C-c" "Execute") "    "
+                     (agent-fleet-cleanup--key-hint "q / C-g" "Cancel")))
+            ('executing
+             (concat (propertize "Executing" 'face 'warning) "    "
+                     (agent-fleet-cleanup--key-hint "C-g" "Interrupt")))
+            (_ (agent-fleet-cleanup--key-hint "q / C-g" "Close")))))
+
+(defun agent-fleet-cleanup--section (title count body)
+  "Format a section with TITLE, COUNT and styled BODY."
+  (concat (propertize (format "%s: %d" title count)
+                      'face 'agent-fleet-cleanup-section-face)
+          "\n\n" body "\n"))
+
+(defun agent-fleet-cleanup--detail (text)
+  "Format TEXT as wrapped detail, retaining complete paths and diagnostics."
+  (propertize (concat "      " text "\n")
+              'wrap-prefix "      "))
+
+(defun agent-fleet-cleanup--operation-details (operation)
+  "Describe the exact terminal identities and paths in OPERATION."
+  (mapconcat
+   (lambda (pane)
+     (agent-fleet-cleanup--detail
+      (concat (or (nth 4 pane) "cwd unknown") "\n      "
+              (propertize (format "Terminal %s" (car pane)) 'face 'shadow))))
+   (plist-get operation :panes) ""))
+
+(defun agent-fleet-cleanup--protected-text (entries)
+  "Render protected ENTRIES with identity and reason on separate lines."
+  (mapconcat
+   (lambda (entry)
+     (concat "  " (propertize "[KEEP]" 'face 'success) " "
+             (propertize (car entry) 'face 'font-lock-constant-face) "\n"
+             (agent-fleet-cleanup--detail (cdr entry)) "\n"))
+   entries ""))
 
 (defun agent-fleet-cleanup--review-text (report operations)
   "Return review text listing all exact OPERATIONS and protected REPORT rows."
   (concat
-   (format "Agent Fleet cleanup review\n\n%d target(s) will be closed; %d agent(s) are preserved.\n"
-           (length operations) (plist-get report :preserved-agents))
-   "Shells and other processes in these terminals may be terminated.\n"
-   "No code directories will be deleted.\n\nTargets:\n"
-   (mapconcat (lambda (op) (concat "  • " (plist-get op :label))) operations "\n")
-   "\n\nProtected / skipped:\n"
-   (if (plist-get report :protected)
-       (mapconcat (lambda (entry) (format "  • %s — %s" (car entry) (cdr entry)))
-                  (plist-get report :protected) "\n")
-     "  None")
-   "\n\nC-c C-c: execute    q / C-g: cancel\n"))
+   (propertize "Agent Fleet cleanup review" 'face 'agent-fleet-cleanup-title-face)
+   "\n\n"
+   (propertize (format "%d target(s) will be closed" (length operations)) 'face 'warning)
+   "; "
+   (propertize (format "%d agent(s) are preserved" (plist-get report :preserved-agents))
+               'face 'success)
+   ".\n\n"
+   (propertize "[!] Shells and other processes in these terminals may be terminated."
+               'face 'warning)
+   "\n" (propertize "No code directories will be deleted." 'face 'shadow) "\n\n"
+   (agent-fleet-cleanup--section
+    "Targets" (length operations)
+    (mapconcat
+     (lambda (op)
+       (concat "  " (propertize "[CLOSE]" 'face 'warning) " "
+               (propertize
+                (format "%s %s"
+                        (pcase (plist-get op :method)
+                          ("workspace.close" "Workspace") ("tab.close" "Tab")
+                          (_ "Terminal"))
+                        (plist-get op :id))
+                'face 'font-lock-constant-face)
+               "\n" (agent-fleet-cleanup--operation-details op) "\n"))
+     operations ""))
+   (agent-fleet-cleanup--section
+    "Protected / skipped" (length (plist-get report :protected))
+    (if (plist-get report :protected)
+        (agent-fleet-cleanup--protected-text (plist-get report :protected))
+      (propertize "  None\n" 'face 'shadow)))
+   (agent-fleet-cleanup--header 'review) "\n"))
+
+(defun agent-fleet-cleanup--result-text (report operations)
+  "Render REPORT with attention items first and context from OPERATIONS."
+  (concat
+   (propertize "Agent Fleet cleanup results" 'face 'agent-fleet-cleanup-title-face)
+   "\n\n"
+   (cond
+    ((plist-get report :interrupted)
+     (concat (propertize "Cleanup interrupted" 'face 'warning)
+             ". Run M-x agent-fleet-cleanup to scan again.\n"))
+    ((or (plist-get report :failed) (plist-get report :uncertain))
+     (propertize "Completed with issues — review the items below.\n" 'face 'error))
+    ((plist-get report :skipped)
+     (propertize "Completed with skipped targets — review the reasons below.\n" 'face 'warning))
+    (t (propertize "Cleanup completed.\n" 'face 'success)))
+   (when-let* ((err (plist-get report :execution-error)))
+     (propertize (format "Execution stopped: %s\n" (error-message-string err)) 'face 'error))
+   "\n"
+   (propertize (format "%d closed" (length (plist-get report :closed))) 'face 'success)
+   (format "; %d agent(s) preserved at scan; %d protected; "
+           (plist-get report :preserved-agents) (length (plist-get report :protected)))
+   (propertize (format "%d skipped" (length (plist-get report :skipped)))
+               'face (if (plist-get report :skipped) 'warning 'shadow))
+   "; " (propertize (format "%d failed" (length (plist-get report :failed)))
+                     'face (if (plist-get report :failed) 'error 'shadow))
+   "; " (propertize (format "%d uncertain" (length (plist-get report :uncertain)))
+                     'face (if (plist-get report :uncertain) 'warning 'shadow))
+   (format "; %d not attempted.\n\n" (length (plist-get report :pending)))
+   (mapconcat
+    (lambda (spec)
+      (let* ((key (nth 0 spec)) (label (nth 1 spec)) (face (nth 2 spec))
+             (entries (plist-get report key)))
+        (when entries
+          (agent-fleet-cleanup--section
+           label (length entries)
+           (mapconcat
+            (lambda (entry)
+              (let* ((id (if (consp entry) (car entry) entry))
+                     (op (cl-find id operations :key (lambda (op) (plist-get op :id))
+                                  :test #'equal)))
+                (concat "  " (propertize (concat label ":") 'face face) " "
+                        (propertize id 'face 'font-lock-constant-face) "\n"
+                        (agent-fleet-cleanup--operation-details op)
+                        (cond
+                         ((consp entry)
+                          (agent-fleet-cleanup--detail (error-message-string (cdr entry))))
+                         ((eq key :uncertain)
+                          (agent-fleet-cleanup--detail
+                           "Close request interrupted; verify server state before retrying.")))
+                        "\n")))
+            entries "")))))
+    '((:failed "Failed" error) (:uncertain "Uncertain" warning)
+      (:pending "Not attempted" shadow) (:skipped "Skipped" warning)
+      (:closed "Closed" success)) "")
+   (agent-fleet-cleanup--section
+    "Protected" (length (plist-get report :protected))
+    (if (plist-get report :protected)
+        (agent-fleet-cleanup--protected-text (plist-get report :protected))
+      (propertize "  None\n" 'face 'shadow)))
+   (agent-fleet-cleanup--header 'complete) "\n"))
 
 (defun agent-fleet-cleanup--show-review (context report operations)
   "Show a single-window review for CONTEXT, REPORT and OPERATIONS."
@@ -397,10 +539,12 @@ An interrupted close request has an uncertain outcome, never assumed success."
                   agent-fleet-cleanup--review-operations operations
                   agent-fleet-cleanup--origin-window origin-window
                   agent-fleet-cleanup--origin-buffer origin-buffer
-                  agent-fleet-cleanup--review-state 'review)
+                  agent-fleet-cleanup--review-state 'review
+                  header-line-format (agent-fleet-cleanup--header 'review))
       (let ((inhibit-read-only t))
         (erase-buffer)
         (insert (agent-fleet-cleanup--review-text report operations))
+        (set-buffer-modified-p nil)
         (goto-char (point-min))))
     ;; Replace only the selected window's buffer; preserve its geometry.
     (switch-to-buffer buffer)))
@@ -410,8 +554,11 @@ An interrupted close request has an uncertain outcome, never assumed success."
   (interactive)
   (unless (eq agent-fleet-cleanup--review-state 'review)
     (user-error "This cleanup review has already been handled"))
-  (setq agent-fleet-cleanup--review-state 'executing)
-  (let ((result (condition-case err
+  (setq agent-fleet-cleanup--review-state 'executing
+        header-line-format (agent-fleet-cleanup--header 'executing))
+  (force-mode-line-update)
+  (let ((operations agent-fleet-cleanup--review-operations)
+        (result (condition-case err
                     (agent-fleet-cleanup--execute
                      agent-fleet-cleanup--review-context
                      agent-fleet-cleanup--review-report
@@ -425,33 +572,12 @@ An interrupted close request has an uncertain outcome, never assumed success."
           agent-fleet-cleanup--review-report result
           agent-fleet-cleanup--review-operations nil
           agent-fleet-cleanup--review-state
-          (if (plist-get result :interrupted) 'interrupted 'complete))
+          (if (plist-get result :interrupted) 'interrupted 'complete)
+          header-line-format (agent-fleet-cleanup--header 'complete))
     (let ((inhibit-read-only t))
       (erase-buffer)
-      (insert "Agent Fleet cleanup results\n\n")
-      (when (plist-get result :interrupted)
-        (insert "Cleanup interrupted. Run M-x agent-fleet-cleanup to scan again.\n\n"))
-      (when-let* ((err (plist-get result :execution-error)))
-        (insert (format "Execution stopped: %s\n" (error-message-string err))))
-      (insert (format "%d closed; %d agent(s) preserved at scan; %d protected; %d skipped; %d failed.\n\n"
-                      (length (plist-get result :closed))
-                      (plist-get result :preserved-agents)
-                      (length (plist-get result :protected))
-                      (length (plist-get result :skipped))
-                      (length (plist-get result :failed))))
-      (dolist (entry (plist-get result :closed)) (insert (format "Closed: %s\n" entry)))
-      (dolist (id (plist-get result :uncertain))
-        (insert (format "Uncertain: %s — close request interrupted; verify server state\n" id)))
-      (dolist (id (plist-get result :pending))
-        (insert (format "Not attempted: %s\n" id)))
-      (dolist (key '(:protected :skipped :failed))
-        (dolist (entry (plist-get result key))
-          (insert (format "%s: %s — %s\n"
-                          (capitalize (substring (symbol-name key) 1))
-                          (car entry)
-                          (if (eq key :protected) (cdr entry)
-                            (error-message-string (cdr entry)))))))
-      (insert "\nq: close this buffer\n")
+      (insert (agent-fleet-cleanup--result-text result operations))
+      (set-buffer-modified-p nil)
       (goto-char (point-min)))))
 
 (defun agent-fleet-cleanup-review-quit ()

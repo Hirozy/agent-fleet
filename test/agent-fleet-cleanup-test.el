@@ -171,6 +171,72 @@
    (should-error (agent-fleet-cleanup-review-execute) :type 'user-error)
    (kill-buffer (current-buffer))))
 
+(defun agent-fleet-cleanup-test--face-at (text label)
+  "Return the face on LABEL in rendered TEXT, asserting the label exists."
+  (let ((position (string-match (regexp-quote label) text)))
+    (should position)
+    (get-text-property position 'face text)))
+
+(ert-deftest agent-fleet-cleanup-review-styling-retains-full-targets ()
+  (agent-fleet-cleanup-test--with-server
+   (let ((long-path (concat "/tmp/" (make-string 120 ?x) "/project with spaces")))
+     (setf (plist-get (car (last (plist-get snapshot :panes))) :cwd) long-path)
+     (save-window-excursion
+       (let ((geometry (window-edges)) (windows (window-list)))
+         (call-interactively #'agent-fleet-cleanup)
+         (unwind-protect
+             (let ((text (buffer-string)))
+               (should (equal geometry (window-edges)))
+               (should (equal windows (window-list)))
+               (should (agent-fleet-cleanup-test--face-at text "Agent Fleet cleanup review"))
+               (should (agent-fleet-cleanup-test--face-at text "Targets:"))
+               (should (eq 'warning (agent-fleet-cleanup-test--face-at text "[CLOSE]")))
+               (should (eq 'success (agent-fleet-cleanup-test--face-at text "[KEEP]")))
+               (should (agent-fleet-cleanup-test--face-at header-line-format "C-c C-c"))
+               (should (string-match-p (regexp-quote long-path) text))
+               (should (string-match-p "Terminal p4" text))
+               (should-not truncate-lines)
+               (should word-wrap)
+               (should buffer-read-only)
+               (should-not (buffer-modified-p))
+               (should-not (agent-fleet-cleanup-test--writes requests)))
+           (kill-buffer (current-buffer))))))))
+
+(ert-deftest agent-fleet-cleanup-results-prioritize-problems-and-retain-context ()
+  (let* ((report '(:preserved-agents 2 :closed ("closed")
+                   :failed (("failed" error "Permission denied"))
+                   :skipped (("skipped" user-error "Ownership changed"))
+                   :uncertain ("unknown") :pending ("pending")
+                   :protected (("protected" . "Agent-associated workspace"))))
+         (operations '((:id "closed" :panes (("p1" "t1" "closed" "tab" "/tmp/result path")))))
+         (text (agent-fleet-cleanup--result-text report operations)))
+    (should (eq 'error (agent-fleet-cleanup-test--face-at text "Failed: failed")))
+    (should (eq 'warning (agent-fleet-cleanup-test--face-at text "Uncertain: unknown")))
+    (should (eq 'success (agent-fleet-cleanup-test--face-at text "Closed: closed")))
+    (should (< (string-match "Failed:" text) (string-match "Closed:" text)))
+    (should (< (string-match "Uncertain:" text) (string-match "Closed:" text)))
+    (dolist (detail '("Permission denied" "Ownership changed" "Not attempted: pending"
+                      "Agent-associated workspace" "/tmp/result path" "Terminal p1"))
+      (should (string-match-p (regexp-quote detail) text)))
+    (should-not (string-match-p "C-c C-c" text))))
+
+(ert-deftest agent-fleet-cleanup-results-update-header-and-theme-faces ()
+  (agent-fleet-cleanup-test--with-server
+   (save-window-excursion
+     (call-interactively #'agent-fleet-cleanup)
+     (unwind-protect
+         (progn
+           (agent-fleet-cleanup-review-execute)
+           (let ((text (buffer-string)))
+             (should (eq 'success (agent-fleet-cleanup-test--face-at text "Cleanup completed")))
+             (should (eq 'shadow (agent-fleet-cleanup-test--face-at text "0 failed")))
+             (should (string-match-p "Terminal p4" text))
+             (should-not (string-match-p "C-c C-c" header-line-format))
+             (should (string-match-p "Close" header-line-format))
+             (should buffer-read-only)
+             (should-not (buffer-modified-p))))
+       (kill-buffer (current-buffer))))))
+
 (ert-deftest agent-fleet-cleanup-review-q-and-c-g-cancel-without-effects ()
   (dolist (key '("q" "C-g"))
     (agent-fleet-cleanup-test--with-server
