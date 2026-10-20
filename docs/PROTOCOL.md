@@ -527,10 +527,16 @@ The cleanup command (`agent-fleet-cleanup`) does not call `worktree.remove`.
 Worktrees are always skipped because the available RPC metadata cannot prove
 that their commits and changes have been preserved. The RPC remains available
 for the separate worktree API. Cleanup scans all resources on the current
-connection and uses one yes-or-no confirmation for exact eligible targets;
-the confirmation warns that shell and other processes may be terminated. It
-reports results and details in `*Messages*`, without selection or results
-menus, and does not prompt when there are no candidates.
+connection and presents a review buffer for exact eligible targets. The
+interactive UX occupies the current window without adding a split and
+preserves existing window geometry. It lists exact operations and protected resources,
+and warns that shell and other processes may be terminated. `C-c C-c`
+executes the reviewed cleanup once; before execution, `q` or `C-g` cancels.
+After execution, the same buffer displays the outcome, including protected,
+skipped, and failed resources. No buffer opens when there are no candidates.
+An interrupted run retains confirmed results and stops issuing new close
+requests. A close interrupted before acknowledgement is reported as uncertain;
+unattempted targets remain listed. A fresh scan is required before another run.
 
 Any Workspace containing an agent is protected in full, including agents with
 `done` status, sibling panes, and its worktree. Snapshot and live-cache agent
@@ -701,10 +707,14 @@ Notes:
   protect conservatively. A primary Git checkout directory is never deleted.
   Before each eligible runtime operation, cleanup rechecks fresh identities,
   the connection, and whole-Workspace agent evidence; unknown evidence is
-  protected. The interactive command uses one yes-or-no confirmation listing
-  exact targets and warning that shell or other processes may be terminated.
-  Results, including protected, skipped, and failed resources, are reported in
-  `*Messages*`. `workspace.close` returns `Ok`, not `workspace_closed`;
+  protected. The interactive command reviews exact operations and protected
+  resources in the current window without adding a split, preserving existing
+  window geometry;
+  `C-c C-c` executes once and, before execution, `q` or `C-g` cancels. The
+  same buffer shows the outcome after execution. Herdr has no atomic
+  conditional-close RPC, so final client-side revalidation cannot eliminate
+  the race with an agent starting or moving before the server executes close.
+  `workspace.close` returns `Ok`, not `workspace_closed`;
   the latter is the pushed event. Verified against the
   [0.9.0 Workspace handler](https://github.com/herdrdev/herdr/blob/v0.9.0/src/app/api/workspaces.rs).
 

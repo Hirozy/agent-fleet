@@ -88,6 +88,8 @@
     (agent-fleet-attach-worktree . agent-fleet-interactive-attach-current-agent)
     (agent-fleet-attach-magit . agent-fleet-interactive-attach-current-agent)
     (agent-fleet-attach-diff . agent-fleet-interactive-attach-current-agent)
+    (agent-fleet-cleanup-review-execute . agent-fleet-interactive-cleanup)
+    (agent-fleet-cleanup-review-quit . agent-fleet-interactive-cleanup)
     (agent-fleet-attach--ctrl-g . agent-fleet-interactive-attach-ctrl-g)
     (agent-fleet-editor-arm-current-attach . agent-fleet-interactive-editor-bridge)
     (agent-fleet-editor-submit . agent-fleet-interactive-editor-buffer)
@@ -113,6 +115,7 @@
 
 (defconst agent-fleet-interactive-test--mode-commands
   '((agent-fleet-mode . agent-fleet-interactive-dashboard-entry-and-mode)
+    (agent-fleet-cleanup-review-mode . agent-fleet-interactive-cleanup)
     (agent-fleet-attach-mode . agent-fleet-interactive-attach-current-agent)
     (agent-fleet-attach-menu . agent-fleet-interactive-attach-current-agent)
     (agent-fleet-editor-bridge-mode . agent-fleet-interactive-editor-bridge)
@@ -693,7 +696,13 @@ message for quick auditing."
       (let ((current-prefix-arg '(4)))
         (call-interactively #'agent-fleet-cleanup))
       (should (equal '((nil nil nil t nil))
-                     calls)))))
+                     calls))
+      (with-temp-buffer
+        (call-interactively #'agent-fleet-cleanup-review-mode)
+        (should-error (call-interactively #'agent-fleet-cleanup-review-execute)
+                      :type 'user-error)
+        (cl-letf (((symbol-function 'quit-window) #'ignore))
+          (call-interactively #'agent-fleet-cleanup-review-quit))))))
 
 (ert-deftest agent-fleet-interactive-doctors ()
   "Both doctor entry points gather checks and render their documented buffers."

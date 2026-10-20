@@ -284,27 +284,43 @@ worktree metadata does not prove changes and commits have been preserved."
    (mapconcat (lambda (op) (plist-get op :label)) operations "\n")))
 
 (defun agent-fleet-cleanup--execute (context report operations)
-  "Execute only approved OPERATIONS, rechecking each against fresh state."
-  (let ((connection (plist-get context :connection)) closed failed skipped)
-    (dolist (operation operations)
-      (condition-case err
-          (let ((fresh (agent-fleet-cleanup--context connection)))
-            (agent-fleet-cleanup--recheck operation fresh)
-            (agent-fleet-cleanup--check-connection connection)
-            (let* ((method (plist-get operation :method))
-                   (key (pcase method
-                          ("workspace.close" 'workspace_id)
-                          ("tab.close" 'tab_id)
-                          ("pane.close" 'pane_id)
-                          (_ (error "Unsupported cleanup operation")))))
-              (herdr-protocol-validate-ok
-               (herdr-request method (list (cons key (plist-get operation :id))))
-               method))
-            (push (plist-get operation :id) closed))
-        (user-error (push (cons (plist-get operation :id) err) skipped))
-        (error (push (cons (plist-get operation :id) err) failed))))
+  "Execute approved OPERATIONS, preserving partial results on interruption.
+An interrupted close request has an uncertain outcome, never assumed success."
+  (let ((connection (plist-get context :connection))
+        (remaining (copy-sequence operations))
+        operation dispatched closed failed skipped interrupted uncertain)
+    (condition-case nil
+	(while remaining
+	  (setq operation (pop remaining) dispatched nil)
+	  (condition-case err
+              (let ((fresh (agent-fleet-cleanup--context connection)))
+		(agent-fleet-cleanup--recheck operation fresh)
+		(agent-fleet-cleanup--check-connection connection)
+		(let* ((method (plist-get operation :method))
+                       (key (pcase method
+                              ("workspace.close" 'workspace_id)
+                              ("tab.close" 'tab_id)
+                              ("pane.close" 'pane_id)
+                              (_ (error "Unsupported cleanup operation")))))
+		  (setq dispatched t)
+		  (herdr-protocol-validate-ok
+		   (herdr-request method (list (cons key (plist-get operation :id))))
+		   method))
+		(push (plist-get operation :id) closed))
+            (user-error (push (cons (plist-get operation :id) err) skipped))
+            (error (push (cons (plist-get operation :id) err) failed)))
+	  (setq operation nil))
+      (quit
+       (setq quit-flag nil interrupted t)
+       (when operation
+         (let ((id (plist-get operation :id)))
+           (unless (or (member id closed) (assoc id failed) (assoc id skipped))
+             (if dispatched (push id uncertain)
+               (push operation remaining)))))))
     (append report (list :closed (nreverse closed) :failed (nreverse failed)
-                         :skipped (nreverse skipped)))))
+                         :skipped (nreverse skipped)
+                         :interrupted interrupted :uncertain uncertain
+                         :pending (mapcar (lambda (op) (plist-get op :id)) remaining)))))
 
 (defun agent-fleet-cleanup--result-message (report)
   "Report cleanup results through messages only, without opening a view."
@@ -317,12 +333,146 @@ worktree metadata does not prove changes and commits have been preserved."
   (message "Cleanup: %d closed; %d agents preserved at scan; %d protected; %d skipped; %d failed"
            (length (plist-get report :closed)) (plist-get report :preserved-agents)
            (length (plist-get report :protected)) (length (plist-get report :skipped))
-           (length (plist-get report :failed))))
+           (length (plist-get report :failed)))
+  (when (plist-get report :interrupted)
+    (message "Cleanup interrupted: %d uncertain; %d not attempted; scan again"
+             (length (plist-get report :uncertain))
+             (length (plist-get report :pending)))))
+
+(defvar-local agent-fleet-cleanup--review-context nil)
+(defvar-local agent-fleet-cleanup--review-report nil)
+(defvar-local agent-fleet-cleanup--review-operations nil)
+(defvar-local agent-fleet-cleanup--review-state nil)
+(defvar-local agent-fleet-cleanup--origin-window nil)
+(defvar-local agent-fleet-cleanup--origin-buffer nil)
+
+(defvar agent-fleet-cleanup-review-buffer-name "*agent-fleet-cleanup*"
+  "Name of the interactive cleanup review buffer.")
+
+(defvar agent-fleet-cleanup-review-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map special-mode-map)
+    (define-key map (kbd "C-c C-c") #'agent-fleet-cleanup-review-execute)
+    (define-key map (kbd "q") #'agent-fleet-cleanup-review-quit)
+    (define-key map (kbd "C-g") #'agent-fleet-cleanup-review-quit)
+    map)
+  "Keymap for the cleanup review buffer.")
+
+(define-derived-mode agent-fleet-cleanup-review-mode special-mode "Fleet-Cleanup"
+  "Read-only review of the exact resources selected for cleanup.
+\<agent-fleet-cleanup-review-mode-map>
+\[agent-fleet-cleanup-review-execute] executes once;
+\[agent-fleet-cleanup-review-quit] cancels.")
+
+(defun agent-fleet-cleanup--review-text (report operations)
+  "Return review text listing all exact OPERATIONS and protected REPORT rows."
+  (concat
+   (format "Agent Fleet cleanup review\n\n%d target(s) will be closed; %d agent(s) are preserved.\n"
+           (length operations) (plist-get report :preserved-agents))
+   "Shells and other processes in these terminals may be terminated.\n"
+   "No code directories will be deleted.\n\nTargets:\n"
+   (mapconcat (lambda (op) (concat "  • " (plist-get op :label))) operations "\n")
+   "\n\nProtected / skipped:\n"
+   (if (plist-get report :protected)
+       (mapconcat (lambda (entry) (format "  • %s — %s" (car entry) (cdr entry)))
+                  (plist-get report :protected) "\n")
+     "  None")
+   "\n\nC-c C-c: execute    q / C-g: cancel\n"))
+
+(defun agent-fleet-cleanup--show-review (context report operations)
+  "Show a single-window review for CONTEXT, REPORT and OPERATIONS."
+  (let ((origin-window (selected-window))
+        (origin-buffer (current-buffer))
+        (buffer (get-buffer-create agent-fleet-cleanup-review-buffer-name)))
+    (when (with-current-buffer buffer
+            (memq agent-fleet-cleanup--review-state '(review executing)))
+      (user-error "A cleanup review is already open; finish or cancel it first"))
+    (when (eq origin-buffer buffer)
+      (setq origin-window (buffer-local-value 'agent-fleet-cleanup--origin-window buffer)
+            origin-buffer (buffer-local-value 'agent-fleet-cleanup--origin-buffer buffer)))
+    (with-current-buffer buffer
+      (agent-fleet-cleanup-review-mode)
+      (setq-local agent-fleet-cleanup--review-context context
+                  agent-fleet-cleanup--review-report report
+                  agent-fleet-cleanup--review-operations operations
+                  agent-fleet-cleanup--origin-window origin-window
+                  agent-fleet-cleanup--origin-buffer origin-buffer
+                  agent-fleet-cleanup--review-state 'review)
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (agent-fleet-cleanup--review-text report operations))
+        (goto-char (point-min))))
+    ;; Replace only the selected window's buffer; preserve its geometry.
+    (switch-to-buffer buffer)))
+
+(defun agent-fleet-cleanup-review-execute ()
+  "Execute the reviewed cleanup once and show results in the review buffer."
+  (interactive)
+  (unless (eq agent-fleet-cleanup--review-state 'review)
+    (user-error "This cleanup review has already been handled"))
+  (setq agent-fleet-cleanup--review-state 'executing)
+  (let ((result (condition-case err
+                    (agent-fleet-cleanup--execute
+                     agent-fleet-cleanup--review-context
+                     agent-fleet-cleanup--review-report
+                     agent-fleet-cleanup--review-operations)
+                  ((quit error)
+                   (setq quit-flag nil)
+                   (append agent-fleet-cleanup--review-report
+                           (list :interrupted t :execution-error err))))))
+    (agent-fleet-cleanup--result-message result)
+    (setq agent-fleet-cleanup--review-context nil
+          agent-fleet-cleanup--review-report result
+          agent-fleet-cleanup--review-operations nil
+          agent-fleet-cleanup--review-state
+          (if (plist-get result :interrupted) 'interrupted 'complete))
+    (let ((inhibit-read-only t))
+      (erase-buffer)
+      (insert "Agent Fleet cleanup results\n\n")
+      (when (plist-get result :interrupted)
+        (insert "Cleanup interrupted. Run M-x agent-fleet-cleanup to scan again.\n\n"))
+      (when-let* ((err (plist-get result :execution-error)))
+        (insert (format "Execution stopped: %s\n" (error-message-string err))))
+      (insert (format "%d closed; %d agent(s) preserved at scan; %d protected; %d skipped; %d failed.\n\n"
+                      (length (plist-get result :closed))
+                      (plist-get result :preserved-agents)
+                      (length (plist-get result :protected))
+                      (length (plist-get result :skipped))
+                      (length (plist-get result :failed))))
+      (dolist (entry (plist-get result :closed)) (insert (format "Closed: %s\n" entry)))
+      (dolist (id (plist-get result :uncertain))
+        (insert (format "Uncertain: %s — close request interrupted; verify server state\n" id)))
+      (dolist (id (plist-get result :pending))
+        (insert (format "Not attempted: %s\n" id)))
+      (dolist (key '(:protected :skipped :failed))
+        (dolist (entry (plist-get result key))
+          (insert (format "%s: %s — %s\n"
+                          (capitalize (substring (symbol-name key) 1))
+                          (car entry)
+                          (if (eq key :protected) (cdr entry)
+                            (error-message-string (cdr entry)))))))
+      (insert "\nq: close this buffer\n")
+      (goto-char (point-min)))))
+
+(defun agent-fleet-cleanup-review-quit ()
+  "Close a pending cleanup review without executing it."
+  (interactive)
+  (let ((review-buffer (current-buffer))
+        (origin-window agent-fleet-cleanup--origin-window)
+        (origin-buffer agent-fleet-cleanup--origin-buffer))
+    (when (eq agent-fleet-cleanup--review-state 'review)
+      (setq agent-fleet-cleanup--review-state 'cancelled))
+    (if (and (window-live-p origin-window) (buffer-live-p origin-buffer))
+        (progn
+          (set-window-buffer origin-window origin-buffer)
+          (select-window origin-window)
+          (kill-buffer review-buffer))
+      (quit-window t))))
 
 (defun agent-fleet-cleanup--run (project task targets select no-confirm)
-  "Inspect or clean agent-unrelated resources, with at most one confirmation.
-PROJECT and TASK filter Lisp calls; TARGETS are explicit pane IDs.  SELECT
-scans all eligible resources and never bypasses confirmation via NO-CONFIRM."
+  "Inspect or clean agent-unrelated resources.
+Interactive SELECT opens one review buffer and waits for its explicit action.
+PROJECT and TASK filter Lisp calls; TARGETS are explicit pane IDs."
   (agent-fleet--ensure-connected)
   (when project
     (setq project (or (agent-fleet-project-root-for-cwd project)
@@ -346,6 +496,9 @@ scans all eligible resources and never bypasses confirmation via NO-CONFIRM."
         (message "No resources can be safely cleaned; %d agents preserved"
                  (plist-get report :preserved-agents)))
       report)
+     (select
+      (agent-fleet-cleanup--show-review context report operations)
+      (append report (list :review-opened t)))
      ((or (and no-confirm (not select))
           (let ((summary (agent-fleet-cleanup--summary report operations)))
             ;; Retain the full exact-target summary even if the minibuffer is small.
@@ -363,15 +516,16 @@ scans all eligible resources and never bypasses confirmation via NO-CONFIRM."
 ;;;###autoload
 (cl-defun agent-fleet-cleanup (&key project task targets select no-confirm)
   "Clean only resources unrelated to any agent, regardless of agent status.
-Interactively scan all resources, confirm one exact-target summary, and
-report via messages.  No menus or result buffers are opened.  All resources
+Interactively scan all resources and open one exact-target review buffer.
+Press C-c C-c there to execute, or q/C-g to cancel.  All resources
 in agent-associated workspaces are protected, including siblings of done
 agents.  Worktrees are skipped: code and commit preservation is not proven.
 From Lisp, omit TARGETS for a read-only report; PROJECT and TASK are optional
-filters and TARGETS contains eligible runtime pane IDs.  SELECT scans all
-eligible resources and always confirms.  NO-CONFIRM applies only to explicit
-Lisp targets.  Return :candidates, :protected, :preserved-agents and, after
-execution, :closed, :skipped and :failed.  Cancellation adds :cancelled."
+filters and TARGETS contains eligible runtime pane IDs.  SELECT opens a review
+and returns :review-opened without executing.  NO-CONFIRM applies only to
+explicit Lisp targets.  Return :candidates, :protected, :preserved-agents
+and, after execution, :closed, :skipped and :failed.  Interruption also reports
+:interrupted, :uncertain and :pending.  Cancellation adds :cancelled."
   (interactive (list :select t))
   (agent-fleet-cleanup--run project task targets select no-confirm))
 

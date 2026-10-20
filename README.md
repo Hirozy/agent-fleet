@@ -731,11 +731,20 @@ must be started manually. `agent-fleet-agent-editor-command` must invoke
 ## Cleanup
 
 `M-x agent-fleet-cleanup` scans all resources on the current Herdr connection.
-If eligible targets exist, it presents one yes-or-no confirmation naming the
-exact targets and warning that shells or other processes may be terminated.
-It then reports results and details in `*Messages*`, including protected,
-skipped, and failed resources. With no candidates it does not prompt. There
-are no completion menus, range or selection prompts, or results buffers.
+If eligible targets exist, it opens a review buffer in the current window,
+preserving the existing window geometry. The buffer lists the exact proposed
+operations and protected resources, and warns that shells or other processes
+may be terminated. Press `C-c C-c` to execute the listed cleanup once; before
+execution, press `q` or `C-g` to cancel. After execution, the same buffer
+shows the outcome, including protected, skipped, and failed resources. With
+no candidates, no review buffer opens.
+
+If execution is interrupted, the buffer retains confirmed results and lists
+unattempted targets. A close request interrupted before acknowledgement is
+marked as uncertain, since the server may already have applied it. Run
+`M-x agent-fleet-cleanup` again to scan fresh state; the old review cannot be
+executed again. Quitting the review restores the original buffer without
+killing it or its attached terminal client.
 
 Cleanup protects an entire Workspace whenever any agent is associated with
 it, regardless of agent status. This includes sibling panes, the Workspace's
@@ -749,9 +758,10 @@ Unknown or unsafe ownership is protected. Cleanup does not poll in the
 background.
 
 For Lisp callers, `(agent-fleet-cleanup)` with no arguments returns a
-read-only report. `:select t` performs the all-resource scan, returns its
-report, and uses the same single confirmation; `:no-confirm t` does not bypass
-that confirmation. `:targets` accepts explicit eligible runtime pane IDs and
+read-only report. `:select t` opens the same review buffer and immediately
+returns the scan report with `:review-opened t`; execution waits for `C-c C-c`.
+`:no-confirm t` does not bypass that review. `:targets` accepts explicit
+eligible runtime pane IDs and
 applies the same safety rules. `:project` and `:task` are Lisp-only filters.
 `:no-confirm t` is supported only with explicit Lisp targets. Reports and
 execution results include protected, skipped, and failed resources. Before
@@ -762,7 +772,7 @@ Herdr's close RPCs do not offer an atomic "close only if still agent-free"
 condition. Final client-side revalidation narrows but cannot eliminate the
 race with an agent starting or moving before the server executes the close.
 Do not start or move agents during cleanup, including through external
-automation. If that cannot be ensured, cancel cleanup.
+automation. If that cannot be ensured, quit the review without executing.
 
 The former `agent-fleet-cleanup-worktrees`, `agent-fleet-cleanup-tabs`,
 `agent-fleet-task-cleanup`, `agent-fleet-cleanup-task`, and
