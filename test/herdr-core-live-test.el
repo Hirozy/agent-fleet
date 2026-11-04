@@ -116,6 +116,15 @@
         (should (equal (plist-get wait :status) "done"))
         (should (eq (plist-get wait :ended) t)))
       (hc-live-until (lambda () (equal "done" (agent-fleet-status (herdr-core-terminal address)))))
+      (let ((buffer (cl-letf (((symbol-function 'agent-fleet-present-buffer) #'identity))
+                      (agent-fleet-prompt address "second-fleet-message"))))
+        (unwind-protect
+            (with-current-buffer buffer
+              (agent-fleet-prompt-submit)
+              (hc-live-until (lambda () (eq agent-fleet-operation-state 'sent)))
+              (should (herdr-core--valid-send-result-p agent-fleet-operation-result))
+              (should (equal (buffer-string) "second-fleet-message")))
+          (kill-buffer buffer)))
       (should (equal (plist-get (herdr-core-terminal address) :state) "live"))
       (should-not (agent-fleet-cleanup--scan (agent-fleet-cleanup--records)))
       (herdr-core-request "terminal.kill" (list :terminal address)))))

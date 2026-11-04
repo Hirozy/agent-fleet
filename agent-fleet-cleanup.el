@@ -10,6 +10,8 @@
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map agent-fleet-review-mode-map)
     (define-key map (kbd "SPC") #'agent-fleet-cleanup-toggle)
+    (define-key map (kbd "n") #'agent-fleet-cleanup-next)
+    (define-key map (kbd "p") #'agent-fleet-cleanup-previous)
     (define-key map (kbd "C-c C-c") #'agent-fleet-cleanup-execute) map))
 (define-derived-mode agent-fleet-cleanup-mode agent-fleet-review-mode "Fleet Cleanup"
   "Review exact finished records before removing their retained history.")
@@ -52,12 +54,26 @@
 
 (defun agent-fleet-cleanup--render ()
   "Render this review and its retained per-record outcomes."
-  (let ((inhibit-read-only t) (point-before (point)))
+  (let ((inhibit-read-only t)
+        (current-item (get-text-property (point) 'fleet-cleanup-item)))
     (erase-buffer)
     (insert (propertize (if (eq agent-fleet-cleanup--state 'review)
                            "Review finished history\n" "Cleanup results\n") 'face 'bold))
     (insert "\nRemoves retained terminal records and their output history.\n"
             "Live programs and code directories are preserved.\n\n")
+    (insert
+     (if (eq agent-fleet-cleanup--state 'review)
+         (format "%d of %d records selected\n\n"
+                 (cl-count-if (lambda (item) (plist-get item :selected)) agent-fleet-cleanup--items)
+                 (length agent-fleet-cleanup--items))
+       (concat
+        (mapconcat (lambda (status)
+                     (format "%d %s"
+                             (cl-count status agent-fleet-cleanup--items
+                                       :key (lambda (item) (plist-get item :status)))
+                             (if (eq status 'pending) "not attempted" status)))
+                   '(removed skipped failed uncertain pending) "  ·  ")
+        "\n\n")))
     (dolist (item agent-fleet-cleanup--items)
       (let* ((record (plist-get item :record))
              (status (plist-get item :status))
@@ -75,9 +91,36 @@
         (add-text-properties begin (point) (list 'fleet-cleanup-item item))))
     (setq header-line-format
           (if (eq agent-fleet-cleanup--state 'review)
-              "SPC include/exclude   C-c C-c execute   q / C-g cancel"
-            "Completed once — run cleanup again for a fresh review.   q close"))
-    (goto-char (min point-before (point-max)))))
+              "n/p records   SPC include/exclude   C-c C-c execute   q / C-g cancel"
+            "n/p records   Completed once — run cleanup again for a fresh review.   q close"))
+    (goto-char (or (and current-item
+                        (text-property-any (point-min) (point-max) 'fleet-cleanup-item current-item))
+                   (text-property-not-all (point-min) (point-max) 'fleet-cleanup-item nil)
+                   (point-min)))
+    (set-buffer-modified-p nil)))
+
+(defun agent-fleet-cleanup--move (direction)
+  "Move by DIRECTION between records, skipping paths and diagnostics."
+  (let* ((item (get-text-property (point) 'fleet-cleanup-item))
+         (index (and item (cl-position item agent-fleet-cleanup--items :test #'eq)))
+         (next (if index (+ index direction)
+                 (if (> direction 0) 0 (1- (length agent-fleet-cleanup--items)))))
+         (target (nth (max 0 (min next (1- (length agent-fleet-cleanup--items))))
+                      agent-fleet-cleanup--items)))
+    (when target
+      (goto-char (text-property-any (point-min) (point-max) 'fleet-cleanup-item target)))))
+
+;;;###autoload
+(defun agent-fleet-cleanup-next ()
+  "Move to the next reviewed record."
+  (interactive)
+  (agent-fleet-cleanup--move 1))
+
+;;;###autoload
+(defun agent-fleet-cleanup-previous ()
+  "Move to the previous reviewed record."
+  (interactive)
+  (agent-fleet-cleanup--move -1))
 
 ;;;###autoload
 (defun agent-fleet-cleanup ()

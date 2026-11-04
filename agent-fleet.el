@@ -248,6 +248,29 @@ a successfully started terminal."
       (agent-fleet-display-close-auxiliary-frame (selected-frame))
     (quit-window)))
 
+(define-derived-mode agent-fleet-output-mode agent-fleet-review-mode "Fleet Output"
+  "Read a refreshable, identity-pinned output snapshot."
+  (setq-local revert-buffer-function #'agent-fleet--output-revert
+              header-line-format "g refresh snapshot   q / C-g close"))
+
+(defun agent-fleet--output-render (record result)
+  "Replace this snapshot with RECORD's output RESULT, retaining point."
+  (let ((inhibit-read-only t) (point-before (point)))
+    (erase-buffer)
+    (insert (propertize (concat (agent-fleet-name record) "\n") 'face 'bold))
+    (insert (format "Snapshot: %s%s\n\n" (plist-get result :how)
+                    (if (eq (plist-get result :complete) t) "" " (incomplete)")))
+    (insert (or (plist-get result :text) ""))
+    (goto-char (min point-before (point-max)))
+    (set-buffer-modified-p nil)))
+
+(defun agent-fleet--output-revert (&optional _ignore-auto _noconfirm)
+  "Refresh this view's pinned target; preserve the snapshot on failure."
+  (let* ((record (agent-fleet-resolve agent-fleet-target t))
+         (result (herdr-core-request "terminal.read"
+                                    (list :terminal (plist-get record :address) :lines 200))))
+    (agent-fleet--output-render record result)))
+
 ;;;###autoload
 (defun agent-fleet-show-output (target)
   "Read a finite output snapshot for TARGET."
@@ -255,16 +278,18 @@ a successfully started terminal."
   (let* ((record (agent-fleet-resolve target t))
          (result (herdr-core-request "terminal.read"
                                     (list :terminal (plist-get record :address) :lines 200)))
-         (buffer (get-buffer-create (format "*Fleet Output: %s*" (plist-get record :address)))))
+         (reference (agent-fleet-reference record))
+         (buffer (or (cl-find-if
+                      (lambda (b)
+                        (with-current-buffer b
+                          (and (derived-mode-p 'agent-fleet-output-mode)
+                               (equal agent-fleet-target reference))))
+                      (buffer-list))
+                     (generate-new-buffer (format "*Fleet Output: %s*" (plist-get record :address))))))
     (with-current-buffer buffer
-      (agent-fleet-review-mode)
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert (propertize (concat (agent-fleet-name record) "\n") 'face 'bold))
-        (insert (format "Snapshot: %s%s\n\n" (plist-get result :how)
-                        (if (eq (plist-get result :complete) t) "" " (incomplete)")))
-        (insert (or (plist-get result :text) "")))
-      (setq-local agent-fleet-target (agent-fleet-reference record)))
+      (unless (derived-mode-p 'agent-fleet-output-mode) (agent-fleet-output-mode))
+      (agent-fleet--output-render record result)
+      (setq-local agent-fleet-target reference))
     (agent-fleet-present-buffer buffer)))
 
 (defvar agent-fleet-prompt-mode-map
@@ -272,9 +297,55 @@ a successfully started terminal."
     (set-keymap-parent map text-mode-map)
     (define-key map (kbd "C-c C-c") #'agent-fleet-prompt-submit)
     (define-key map (kbd "C-c C-k") #'agent-fleet-view-quit) map))
+(defvar-local agent-fleet-prompt--status-overlay nil)
+(defvar-local agent-fleet-prompt--recipient nil)
 (define-derived-mode agent-fleet-prompt-mode text-mode "Fleet Prompt"
   "Compose an explicit agent message."
-  (setq-local header-line-format "C-c C-c send   C-c C-k close"))
+  (setq-local truncate-lines nil
+              header-line-format "C-c C-c send   C-c C-k close"))
+
+(defun agent-fleet-prompt--render-status ()
+  "Display status separately from the exact text of this draft."
+  (let* ((state agent-fleet-operation-state)
+         (result agent-fleet-operation-result)
+         (title (pcase state ('sent "Submitted") ('sending "Sending")
+                       ('rejected "Rejected") ('uncertain "Outcome unknown") (_ "Draft")))
+         (face (pcase state ('sent 'success) ('rejected 'error)
+                      ('uncertain 'warning) (_ 'font-lock-keyword-face)))
+         (detail
+          (pcase state
+            ('sending "Waiting for Core. Closing this view does not cancel delivery.")
+            ('sent (format "Core acknowledged turn %s. Work completion is not confirmed."
+                           (plist-get result :turn)))
+            ('rejected (concat (herdr-core-error-message result)
+                               "\nDraft retained. Inspect the target before creating another prompt."))
+            ('uncertain (concat (herdr-core-error-message result)
+                                "\nDelivery may have happened. Inspect the agent before sending again.")))))
+    (setq header-line-format
+          (if (eq state 'draft) "C-c C-c send   C-c C-k close"
+            (concat title "   C-c C-k close")))
+    (unless (overlayp agent-fleet-prompt--status-overlay)
+      (setq agent-fleet-prompt--status-overlay (make-overlay (point-min) (point-min))))
+    (overlay-put agent-fleet-prompt--status-overlay 'before-string
+                 (concat (propertize (concat "To: " (or agent-fleet-prompt--recipient "agent") "\n\n")
+                                     'face 'bold)
+                         (propertize (concat title "\n") 'face face)
+                         (when detail (concat detail "\n\nPrompt text\n"))
+                         "\n"))))
+
+(defun agent-fleet-prompt--finish (buffer result err)
+  "Retain RESULT or ERR in prompt BUFFER without changing its text or focus."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (and (null err) (not (herdr-core--valid-send-result-p result)))
+        (setq err (list 'herdr-core-uncertain :reason 'invalid-send-response :response result)))
+      (setq agent-fleet-operation-result (or err result)
+            agent-fleet-operation-state
+            (cond ((null err) 'sent)
+                  ((eq (car err) 'herdr-core-request-error) 'rejected)
+                  (t 'uncertain))
+            buffer-read-only t)
+      (agent-fleet-prompt--render-status))))
 
 ;;;###autoload
 (defun agent-fleet-prompt (target &optional initial-text)
@@ -286,7 +357,10 @@ a successfully started terminal."
       (agent-fleet-prompt-mode)
       (setq-local agent-fleet-target (agent-fleet-reference record))
       (setq-local agent-fleet-operation-state 'draft)
-      (insert (or initial-text "")))
+      (setq-local agent-fleet-prompt--recipient
+                  (format "%s [%s]" (agent-fleet-name record) (plist-get record :address)))
+      (insert (or initial-text ""))
+      (agent-fleet-prompt--render-status))
     (agent-fleet-present-buffer buffer)))
 
 (defun agent-fleet-prompt-submit ()
@@ -298,22 +372,17 @@ a successfully started terminal."
          (text (buffer-substring-no-properties (point-min) (point-max)))
          (buffer (current-buffer)))
     (when (string-empty-p (string-trim text)) (user-error "Empty prompt"))
-    (setq agent-fleet-operation-state 'sending buffer-read-only t
-          header-line-format "Sending… (closing this buffer does not cancel delivery)")
-    (herdr-core-request-async
-     "terminal.send" (list :terminal (plist-get record :address) :text text :force :false)
-     (lambda (result err)
-       (when (buffer-live-p buffer)
-         (with-current-buffer buffer
-           (setq agent-fleet-operation-result (or err result)
-                 agent-fleet-operation-state
-                 (cond ((null err) 'sent)
-                       ((eq (car err) 'herdr-core-request-error) 'rejected)
-                       (t 'uncertain)))
-           (setq header-line-format
-                 (format "%s — %s" agent-fleet-operation-state
-                         (if err (error-message-string err)
-                           "submitted; this does not mean the turn is done")))))) 210)))
+    (setq agent-fleet-operation-state 'sending buffer-read-only t)
+    (agent-fleet-prompt--render-status)
+    (condition-case err
+        (herdr-core-request-async
+         "terminal.send" (list :terminal (plist-get record :address) :text text :force :false)
+         (lambda (result err) (agent-fleet-prompt--finish buffer result err)) 210)
+      ((error quit)
+       (when (and (buffer-live-p buffer)
+                  (eq (buffer-local-value 'agent-fleet-operation-state buffer) 'sending))
+         (agent-fleet-prompt--finish buffer nil err))
+       (signal (car err) (cdr err))))))
 
 ;;;###autoload
 (defun agent-fleet-wait (target)

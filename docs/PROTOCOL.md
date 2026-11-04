@@ -82,7 +82,9 @@ sent=false does not undo startup. A plain command's extra argv are arguments,
 not a task. Fleet refuses its initial-task option unless argv[0] is a template.
 
 terminal.send may wait for human input to pause. The UI distinguishes submitted
-from completed. terminal.wait reasons are preserved, including timeout,
+from completed. Its SendResult must contain a nonnegative integer `turn` before
+Fleet reports submission; a malformed acknowledgement is uncertain and retains
+the raw response without retrying. terminal.wait reasons are preserved, including timeout,
 not_started, status, exit and message. No status means no reliable agent-turn
 completion signal. Output is not parsed to infer success.
 

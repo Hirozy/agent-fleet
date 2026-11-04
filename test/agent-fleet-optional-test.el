@@ -29,7 +29,14 @@
                     (if (eq mode 'agent-fleet-cleanup-mode)
                         #'agent-fleet-cleanup-execute #'agent-fleet-batch-execute)))
         (when (eq mode 'agent-fleet-cleanup-mode)
-          (should (eq (key-binding (kbd "SPC")) #'agent-fleet-cleanup-toggle)))))))
+          (should (eq (key-binding (kbd "SPC")) #'agent-fleet-cleanup-toggle))
+          (should (eq (key-binding (kbd "n")) #'agent-fleet-cleanup-next))
+          (should (eq (key-binding (kbd "p")) #'agent-fleet-cleanup-previous)))))
+    (with-temp-buffer
+      (agent-fleet-output-mode)
+      (evil-local-mode 1)
+      (evil-change-state state)
+      (should (eq (key-binding (kbd "g")) #'revert-buffer)))))
 
 (ert-deftest fleet-evil-keeps-widget-field-submit-and-close-accessible ()
   (save-window-excursion

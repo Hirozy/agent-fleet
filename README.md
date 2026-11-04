@@ -147,10 +147,14 @@ file and selected line range, including selected text up to 4000 characters.
 It prefers a same-Project agent and never saves files automatically.
 Unsaved text can differ from the file on disk; review the draft before sending.
 
-Prompt buffers use `C-c C-c` to submit once and `C-c C-k` to close. The header
-distinguishes sending, sent, rejected and uncertain results. Sent means
-submitted, not completed. Drafts are retained. Neither a closed buffer nor a
-local timeout cancels delivery. Unknown outcomes are never automatically retried.
+Prompt buffers use `C-c C-c` to submit once and `C-c C-k` to close. The recipient
+and a styled result appear above the draft; status text is separate from the
+editable prompt and is never sent. Rejections show Core's readable reason,
+while the original structured response is retained. Submission requires a valid
+Core acknowledgement with a turn number; it does not confirm work completion.
+Drafts are retained on every outcome, including immediate transport errors.
+Neither a closed buffer nor a local timeout cancels delivery. Unknown outcomes
+are never automatically retried.
 
 ## Attachment and review
 
@@ -163,7 +167,9 @@ When invoked from attach, Fleet output, prompt and Magit views use an auxiliary
 child frame on supported graphical Emacs. On a text terminal they replace the
 current buffer without splitting. Genuine parent-frame resizing still reaches
 the PTY. Arbitrary third-party window commands are outside this geometry
-guarantee. Output is a finite snapshot. `C-c a v` / `agent-fleet-observe` instead
+guarantee. Output is a finite snapshot; `g` refreshes the same pinned agent
+without moving focus or resizing its terminal. Failed refreshes preserve the
+previous snapshot. `C-c a v` / `agent-fleet-observe` instead
 opens a realtime `hc attach --observe` viewer. Interactive and observe viewers
 are reused separately. Core ignores observer input and resize; explicit Fleet
 commands such as Prompt remain available. The external-editor key is disabled
@@ -267,6 +273,10 @@ agent-fleet-cleanup
   -> C-c C-c to execute once
   -> results in the same buffer
 ```
+
+The review starts on the first record. Use `n` / `p` to move between records;
+selection changes keep the current record in focus. The review shows the selected
+count, and the result shows counts for each outcome, including unattempted records.
 
 Dashboard filters do not restrict cleanup. Live agents, including those reporting
 done, are preserved. Records with remaining children are retained so relationships
