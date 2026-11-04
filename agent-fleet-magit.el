@@ -1,195 +1,39 @@
-;;; agent-fleet-magit.el --- Magit integration for agent-fleet -*- lexical-binding: t; -*-
-
-;; Copyright (C) 2026  agent-fleet contributors
-
-;; Author: agent-fleet
-;; Keywords: processes, tools, convenience, vc
-;; Version: 0.6.0
-;; Package-Requires: ((emacs "29.1"))
-
-;; This program is free software; you can redistribute it and/or modify
-;; it under the terms of the GNU General Public License as published by
-;; the Free Software Foundation, either version 3 of the License, or
-;; (at your option) any later version.
-
-;; This program is distributed in the hope that it will be useful,
-;; but WITHOUT ANY WARRANTY; without even the implied warranty of
-;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-;; GNU General Public License for more details.
-
-;; You should have received a copy of the GNU General Public License
-;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
+;;; agent-fleet-magit.el --- Optional Magit views -*- lexical-binding: t; -*-
 ;;; Commentary:
-
-;; The Magit layer.  Opens Magit's own status /
-;; diff buffers scoped to an agent's checkout — it does NOT reinvent a diff
-;; or cherry-pick UI, and uses Magit's public API throughout.  Cherry-pick,
-;; merge, and worktree deletion are reached
-;; via Magit's own keys inside the status buffer opened by `m'.
-;;
-;; Two entry points, wired to the dashboard `m' / `d' keys:
-;;   `agent-fleet-magit-status'  -> `magit-status' on the agent's repo root
-;;   `agent-fleet-magit-diff'    -> `magit-diff-working-tree' (uncommitted)
-;;
-;; Magit is an OPTIONAL dependency; the doctor already reports
-;; availability at `herdr.el'.  Entry points `user-error' clearly when Magit
-;; is absent; `declare-function' silences the byte-compiler without a top-level
-;; `require', so the package loads and compiles with no Magit installed.
-;;
-;; The package entry point loads this feature module through the dashboard
-;; after providing `agent-fleet', so its control/project/worktree requires do
-;; not create a load cycle.
-
+;; Open an agent's actual checkout, preserving attached terminal geometry.
 ;;; Code:
-
-(require 'cl-lib)
-(require 'subr-x)
 (require 'agent-fleet)
-(require 'agent-fleet-project)
-(require 'agent-fleet-worktree)
-
-;; Magit is optional: declare the public entry points so the
-;; byte-compiler does not warn, without forcing a top-level `require'.
 (declare-function magit-status "magit-status" (&optional directory))
 (declare-function magit-diff-working-tree "magit-diff" (&optional range args files))
-
-;; The presentation-outcome API lives in the display module, which loads
-;; before this feature; declared here so byte-compilation does not warn,
-;; and required at runtime by the view commands.
-(declare-function agent-fleet-display--make-outcome "agent-fleet-display" (opened &optional value buffer))
-(declare-function agent-fleet-display--outcome-value "agent-fleet-display" (outcome))
-
-
-;;; --- Availability guard --------------------------------------------
-
-(defun agent-fleet-magit--available-p ()
-  "Return non-nil if Magit is loaded or loadable.
-Magit is an optional dependency; this loads it on demand so the
-rest of the package compiles and loads without it.  Returning nil (Magit
-not installed) causes the entry points to `user-error' with install advice."
-  (or (featurep 'magit) (require 'magit nil t)))
-
-
-;;; --- Root resolution (testable core) --------------------------------
-
-(defun agent-fleet-magit--checkout-root-for-cwd (cwd)
-  "Return the concrete git checkout containing CWD, or nil.
-Unlike project identity resolution, this deliberately does not follow a
-linked worktree's git-common-dir back to the primary checkout: Magit must
-open on the files the agent is actually editing."
-  (when (and (stringp cwd)
-             (not (string-empty-p cwd))
-             (file-directory-p cwd))
-    (when-let* ((root (locate-dominating-file cwd ".git")))
-      (directory-file-name (file-truename root)))))
-
-(defun agent-fleet-magit--root-for-agent (agent)
-  "Return the git root to open Magit on for AGENT, or nil.
-AGENT is resolved via `agent-fleet--find-agent'.  For an agent whose cwd
-is inside a worktree, the root is that worktree's root; for a bare agent
-it is the main repo root.  Resolution is by canonical cwd
-(`agent-fleet-project-root-for-cwd'), reusing its nil/empty/
-non-existent-cwd guards.  When the agent has no usable cwd but a worktree
-is cached, the worktree path is the fallback.  Returns nil if no directory
-is reachable."
-  (when-let* ((a (agent-fleet--find-agent agent)))
-    (or (agent-fleet-magit--checkout-root-for-cwd (herdr-agent-cwd a))
-        (when-let* ((wt (agent-fleet--worktree-for-agent a))
-                    (path (herdr-worktree-path wt))
-                    ((file-directory-p path)))
-          path))))
-
-
-;;; --- Shared command helper ------------------------------------------
-
-(defun agent-fleet-magit--with-root (target label open-fn)
-  "Resolve TARGET to a git root and call OPEN-FN with it.
-Guards Magit availability: `user-error' when Magit is absent.
-Messages and returns nil when TARGET is unresolvable or has no reachable
-git root.  OPEN-FN is called as (funcall OPEN-FN ROOT) with
-`default-directory' let-bound to ROOT, so Magit commands that read it
-\(such as `magit-diff-working-tree') resolve to the agent's repo.  LABEL
-names the action in the no-root message."
-  (unless (agent-fleet-magit--available-p)
-    (user-error
-     "Magit is not installed (M-x package-install RET magit); \
-it is an optional dependency"))
-  (let* ((agent (agent-fleet--find-agent target))
-         (root (and agent (agent-fleet-magit--root-for-agent agent))))
-    (if (null root)
-        (progn
-          (message "%s: no accessible git root for %s"
-                   label
-                   (or (and agent (herdr-agent-display-name agent)) "agent"))
-          nil)
-      (let ((default-directory root))
-        (funcall open-fn root)))))
-
-(defun agent-fleet-magit--view-outcome (target label open-fn)
-  "Run OPEN-FN for TARGET and return an explicit presentation outcome.
-LABEL names the action in the no-root message.  OPEN-FN receives the resolved
-checkout root.  A normal return from OPEN-FN marks the view opened even when
-its domain VALUE is nil; an unresolved root produces `:opened' nil.  Preserve
-the exact domain value in `:value' so public commands keep their API while
-dashboard and child-frame lifecycles consume only `:opened'."
-  (require 'agent-fleet-display nil t)
-  (let (opened value)
-    (setq value
-          (agent-fleet-magit--with-root
-           target label
-           (lambda (root)
-             (prog1 (funcall open-fn root)
-               (setq opened t)))))
-    (agent-fleet-display--make-outcome opened value)))
-
-(defun agent-fleet-magit--status-outcome (target)
-  "Open Magit status for TARGET and return its presentation outcome."
-  (agent-fleet-magit--view-outcome target "Magit status" #'magit-status))
-
-(defun agent-fleet-magit--diff-outcome (target)
-  "Open the working-tree diff for TARGET and return its presentation outcome."
-  (agent-fleet-magit--view-outcome
-   target "Diff" (lambda (_root) (magit-diff-working-tree))))
-
-
-;;; --- Commands (dashboard `m' / `d') ---------------------------------
-
+(defun agent-fleet-magit--open (target diff)
+  "Open TARGET's Magit view; DIFF selects the working-tree diff."
+  (unless (require 'magit nil t) (user-error "Install Magit to review code"))
+  (let* ((record (agent-fleet-resolve target t))
+         (cwd (plist-get record :cwd)))
+    (when (string-match-p "/" (plist-get record :address))
+      (user-error "Remote checkout review is not supported yet"))
+    (unless (and cwd (file-directory-p cwd) (locate-dominating-file cwd ".git"))
+      (user-error "Agent has no accessible Git checkout"))
+    (let ((open (lambda ()
+                  (let ((default-directory (file-name-as-directory cwd))
+                        (display-buffer-overriding-action '(display-buffer-same-window)))
+                    (if diff (magit-diff-working-tree) (magit-status cwd))
+                    (unless (derived-mode-p 'magit-mode)
+                      (error "Magit did not open a review buffer"))
+                    (agent-fleet-display-make-outcome t (current-buffer) (current-buffer))))))
+      (if (and (bound-and-true-p agent-fleet-attach-mode)
+               (agent-fleet-display-child-frame-available-p))
+          (agent-fleet-display--aux-run open)
+        (funcall open)))))
 ;;;###autoload
 (defun agent-fleet-magit-status (target)
-  "Open Magit status on TARGET's checkout in an ordinary buffer.
-TARGET is an agent name, pane id, symbol, or `herdr-agent' struct.  For a
-worktree agent, status opens on the worktree root; for a bare agent, the
-main repo root.  Cherry-pick, merge, and worktree deletion are then
-Magit's own keys inside the status buffer (use Magit public API, do not
-reinvent).  `user-error's if Magit is not installed."
-  (interactive (list (agent-fleet-read-agent-name "Magit status for agent")))
-  (agent-fleet-display--outcome-value
-   (agent-fleet-magit--status-outcome target)))
-
+  "Open Magit status for TARGET's checkout."
+  (interactive (list (agent-fleet-current-target)))
+  (agent-fleet-magit--open target nil))
 ;;;###autoload
 (defun agent-fleet-magit-diff (target)
-  "Show TARGET's working-tree diff in an ordinary buffer.
-Opens `magit-diff-working-tree' scoped to TARGET's checkout -- the
-uncommitted changes the agent is making right now (HEAD vs working tree).
-The branch-vs-base review diff is reachable by opening Magit status (`m')
-and pressing `d' there.  `user-error's if Magit is not installed."
-  (interactive (list (agent-fleet-read-agent-name "Diff for agent")))
-  (agent-fleet-display--outcome-value
-   (agent-fleet-magit--diff-outcome target)))
-
-;; These symbols used to be obsolete aliases.  Clear stale metadata when
-;; this file is reloaded after upgrading from that version.
-(put 'agent-fleet-magit-status 'byte-obsolete-info nil)
-(put 'agent-fleet-magit-diff 'byte-obsolete-info nil)
-
-;;;###autoload
-(define-obsolete-function-alias 'agent-fleet-magit-status-in-buffer
-  'agent-fleet-magit-status "0.8.0")
-
-;;;###autoload
-(define-obsolete-function-alias 'agent-fleet-magit-diff-in-buffer
-  'agent-fleet-magit-diff "0.8.0")
-
+  "Open the uncommitted diff for TARGET's checkout."
+  (interactive (list (agent-fleet-current-target)))
+  (agent-fleet-magit--open target t))
 (provide 'agent-fleet-magit)
 ;;; agent-fleet-magit.el ends here

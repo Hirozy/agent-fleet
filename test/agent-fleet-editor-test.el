@@ -170,13 +170,13 @@
          (sent nil)
          (route nil))
     (unwind-protect
-        (cl-letf (((symbol-function 'agent-fleet-attach--current-pane-id)
+        (cl-letf (((symbol-function 'agent-fleet-attach--current-address)
                    (lambda () "w7:p9"))
-                  ((symbol-function 'herdr-request)
+                  ((symbol-function 'herdr-core-request)
                    (lambda (method params)
-                     (should (equal "agent.send_keys" method))
-                     (push (list (cdr (assoc "target" params))
-                                 (aref (cdr (assoc "keys" params)) 0))
+                     (should (equal "terminal.keys" method))
+                     (push (list (plist-get params :terminal)
+                                 (aref (plist-get params :keys) 0))
                            sent))))
           (with-temp-buffer
             (setq route (agent-fleet-editor-arm-current-attach))
@@ -198,9 +198,9 @@
          (agent-fleet-editor-bridge-mode t)
          (agent-fleet-editor-route-timeout 60))
     (unwind-protect
-        (cl-letf (((symbol-function 'agent-fleet-attach--current-pane-id)
+        (cl-letf (((symbol-function 'agent-fleet-attach--current-address)
                    (lambda () "w1:p1"))
-                  ((symbol-function 'herdr-request)
+                  ((symbol-function 'herdr-core-request)
                    (lambda (&rest _) (error "send failed"))))
           (with-temp-buffer
             (should-error (agent-fleet-editor-arm-current-attach))
@@ -241,7 +241,7 @@
          (agent-fleet-editor-bridge-mode t)
          (agent-fleet-editor--active-requests '((:finished nil))))
     (unwind-protect
-        (cl-letf (((symbol-function 'agent-fleet-attach--current-pane-id)
+        (cl-letf (((symbol-function 'agent-fleet-attach--current-address)
                    (lambda () "w1:p1")))
           (should-error (agent-fleet-editor-arm-current-attach)
                         :type 'user-error)

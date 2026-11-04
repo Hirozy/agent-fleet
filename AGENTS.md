@@ -1,94 +1,68 @@
 # Agent Fleet Agent Rules
 
-## Scope and references
+## Scope
 
-Agent Fleet brings Herdr-managed coding agents into Emacs. Herdr owns processes,
-PTYs, and lifecycle state; Emacs provides control, viewing, and review.
+Agent Fleet brings herdr-core coding agents into Emacs. Core owns programs,
+PTYs and status; Fleet owns Emacs interaction, attention and code review.
+Read README.md for behavior and docs/PROTOCOL.md for the verified contract.
+Follow the user's scope; ROADMAP.md is not implementation authorization.
 
-- Follow the user's request. Roadmap items and available RPCs do not authorize
-  additional features.
-- Read `README.md` for behavior, `docs/PROTOCOL.md` for the verified wire
-  contract, and `ROADMAP.md` when discussing priorities. Code and tests take
-  precedence when documentation lags.
-- Project is the user-facing codebase grouping. Sessions are connection
-  endpoints; Workspaces are internal provisioning and ownership identities.
-  Do not add generic Session, Workspace, or layout management without approval.
-- Support Emacs **29.1+**. Keep optional packages and GUI support optional;
-  provide the documented fallback or a clear `user-error`. Use opt-in keymaps,
-  not global bindings. Documented public commands must be autoloadable.
+Support Emacs 29.1+. Keep Ghostel, Magit, Consult and GUI optional.
+Public commands must be autoloadable. Keymaps are opt-in or buffer-local.
+Write Markdown in English.
 
-## Code ownership
+## Ownership and state
 
-- `herdr-protocol.el`, `herdr-model.el`, `herdr-events.el`, `herdr.el` own
-  transport, decoding/validation, cache updates, and connection lifecycle.
-- `agent-fleet.el` owns shared control APIs, target resolution, candidates,
-  hooks, and output snapshots. Feature modules reuse these interfaces.
-- `agent-fleet-display.el` owns generic frame lifecycle and presentation;
-  dashboard, attach, and editor modules own their respective interactions.
-- Project, worktree, parallel, and cleanup behavior belongs in the matching
-  `agent-fleet-*.el` module. Magit and Consult integrations remain optional leaves.
-- Do not duplicate connections, target resolution, state stores, or raw payload
-  parsing in feature modules. Preserve structured errors for Lisp callers.
+- herdr-core.el owns transport, pinned endpoints, validation, cache, events
+  and reconnect. Feature modules reuse its APIs.
+- agent-fleet.el owns Agent identity, selection and shared control operations.
+  Display owns generic frame lifecycle. Feature modules own their interactions.
+- Core is the sole lifecycle authority. Keep runtime state, reported work
+  status and connection health distinct. Unreported status stays unreported.
+- Install snapshots before subsequent events, apply events before hooks, and
+  isolate consumer failures. Reconnect gets a fresh snapshot; do not replay
+  mutation requests after an uncertain result.
+- Use Core identity, terminal address and creation identity, never names, to
+  pin operations and buffers. Preserve structured errors and partial outcomes.
+- Parent relationships come from Core; do not maintain a Fleet Task lifecycle.
+- Project is a canonical codebase identity. Unify linked Git worktrees and
+  retain absent Projects. Never interpret a remote path on the local machine.
 
-## State and cleanup safety
+## Lifecycle safety
 
-- Herdr is the sole lifecycle authority. Use pushed events, not background
-  polling or terminal-text inference. Output buffers are finite snapshots.
-- Apply events to the model before consumer hooks. For authoritative cache
-  replacement, use `herdr-call-with-deferred-events`; replay queued events in
-  order, including on error.
-- Use stable pane/Herdr IDs for operations and ownership, not display names.
-- Canonicalize Project paths and unify linked worktrees under one identity.
-  Reuse `agent-fleet-project-agents` for set queries. An unresolved Project
-  stays absent; do not substitute a cwd basename.
-- Derive task state from live members. All required members must be
-  authoritatively done before a task is done; missing agents are not completion.
-- Cleanup preserves every agent-associated Workspace and its resources,
-  regardless of status. Unknown ownership fails closed. Recheck identities and
-  ownership before each destructive operation; retain partial results and
-  enough identity for retry. Never infer success without acknowledgement.
-- Use Herdr RPCs and metadata for worktree operations. A clean working tree
-  does not prove commits are safe to discard; cleanup must preserve worktrees.
+- Closing an attach buffer/process only detaches the viewer.
+- Prompt submission is explicit. Sending, acknowledged submission and work
+  completion are different outcomes. Preserve drafts on errors and uncertainty.
+- Kill is explicit and includes dependent-descendant impact. Do not silently
+  broaden it or pretend a client preview freezes server topology.
+- Cleanup only removes finished Fleet history through terminal.rm. Never call
+  terminal.kill or delete files from cleanup. A live agent reporting done is
+  protected. Unknown ownership/identity fails closed.
+- Revalidate reviewed targets before each removal. Preserve parent records
+  with remaining children. Stop dispatch after uncertain results; retain
+  exact diagnostics and unattempted targets. Never infer acknowledgement.
+- Use isolated Core sessions and temporary XDG config/state for integration
+  tests; never stop or clean the user's default Core.
 
-## Attach and display
+## Presentation
 
-- Reuse one live attach buffer per pane. Killing its buffer/process only
-  detaches the client; it must not close the Herdr pane or agent.
-- CLI subprocesses must use the active connection's resolved socket. Scope
-  environment changes to the subprocess, not global `process-environment`.
-- Probe required Ghostel APIs and module availability, not just `require`.
-  Keep prompt submission explicit; never silently inject Enter.
-- Use the shared presentation API and explicit success outcomes. A third-party
-  nil return does not establish whether a view opened.
-- Child frames require supported Emacs, GUI, and APIs; follow the documented
-  fallback. Center them on the non-child origin; never nest auxiliary children.
-- Launch dashboard-child actions from the recorded origin. Close the child
-  only after the destination opens; restore focus and retain it on failure.
-- Attach replaces the origin window without splitting. Auxiliary output,
-  tree, diff, and Magit views must not resize the attached terminal window;
-  genuine parent-frame resizing must still reach the PTY. Document third-party
-  limitations before adding window-configuration save/restore exceptions.
-- Closing a temporary review/view must preserve its origin buffer and any
-  attached terminal client.
+- Pin attach and all CLI subprocesses to the control connection's endpoint.
+  Scope environment changes to subprocesses.
+- Probe Ghostel's required APIs and native module availability.
+- Child frames require supported Emacs, GUI and APIs. Center on a non-child
+  origin; close Dashboard children only after successful destination opening.
+  Restore focus and retain them on failure.
+- Attach replaces the origin window. Auxiliary Fleet views must not resize
+  the attached terminal; genuine frame resizing must still reach the PTY.
+- Preserve origin buffers and terminal clients when closing temporary views.
+  Document third-party limitations.
 
 ## Editing and verification
 
-- Check `git status` before editing; preserve unrelated and concurrent changes.
-  Use `apply_patch` for manual edits and `rg` for searches. Avoid destructive
-  Git/filesystem operations; clarify ambiguous targets first.
-- Commit only when requested, after inspecting the staged diff.
-- Write Markdown documentation in English. Update user docs when behavior
-  changes; keep plans and implementation history out of this file.
-- For code changes, run `make test` (includes compilation with warnings as
-  errors) and `git diff --check`. For documentation-only edits, check the diff
-  and referenced paths. Preserve existing safety regression coverage.
-- Add relevant regressions: event ordering and replay on error for snapshots;
-  endpoint stability and subprocess isolation for socket changes; linked
-  worktrees and absent Projects for identity changes; success, nil/error,
-  repeated-open, and unsupported-runtime paths for display changes.
-- For GUI/attach display changes, also smoke-test graphical Emacs, including
-  centering, focus, close timing, and origin preservation. Use mocks for ordinary
-  ERT; keep real-service/optional-integration checks separate.
-- Report actual checks and results, including unavailable GUI or live-service
-  validation. Do not claim tests passed against current code if they loaded
-  stale bytecode.
+- Check git status; preserve unrelated changes. Use rg and apply_patch.
+- Commit/push only when requested. Inspect staged changes before committing.
+- Update behavior docs and tests with changes; preserve relevant safety
+  regressions when replacing obsolete protocols.
+- Run make test (strict compilation), git diff --check and affected live
+  tests. For display changes also smoke-test graphical Emacs and real attach.
+- Report actual results and unavailable validation. Never test stale bytecode.
