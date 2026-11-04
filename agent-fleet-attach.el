@@ -8,17 +8,19 @@
 (defcustom agent-fleet-attach-inhibit-evil-escape t
   "Inhibit Evil escape sequences in agent terminals."
   :type 'boolean :group 'agent-fleet)
+(defvar-local agent-fleet-observe-p nil "Non-nil for a read-only Core viewer.")
 
 (defun agent-fleet-attach--ghostel-ready-p ()
   "Return whether Ghostel has its working native module and launch API."
   (and (require 'ghostel nil t) (featurep 'ghostel-module) (fboundp 'ghostel-exec)))
 
-(defun agent-fleet-attach--live-buffer (reference)
+(defun agent-fleet-attach--live-buffer (reference &optional observe)
   "Find the live attach viewer for REFERENCE."
   (cl-find-if (lambda (buffer)
                 (with-current-buffer buffer
                   (and (bound-and-true-p agent-fleet-attach-mode)
                        (equal agent-fleet-target reference)
+                       (eq agent-fleet-observe-p observe)
                        (process-live-p (get-buffer-process buffer)))))
               (buffer-list)))
 
@@ -40,6 +42,7 @@
 (defun agent-fleet-attach--ctrl-g ()
   "Route an external editor request when the bridge is enabled."
   (interactive)
+  (when agent-fleet-observe-p (user-error "Read-only observer; attach to use the editor bridge"))
   (if (bound-and-true-p agent-fleet-editor-bridge-mode)
       (agent-fleet-editor-arm-current-attach)
     (herdr-core-request "terminal.keys"
@@ -60,10 +63,20 @@
 (defun agent-fleet-attach (target)
   "Attach to TARGET in the current window, reusing its live viewer."
   (interactive (list (agent-fleet-current-target)))
+  (agent-fleet-attach--open target nil))
+
+;;;###autoload
+(defun agent-fleet-observe (target)
+  "Observe TARGET live without sending input or resizing its PTY."
+  (interactive (list (agent-fleet-current-target)))
+  (agent-fleet-attach--open target t))
+
+(defun agent-fleet-attach--open (target observe)
+  "Open TARGET's viewer, with read-only OBSERVE semantics when non-nil."
   (let* ((record (agent-fleet-resolve target t))
          (address (plist-get record :address))
          (reference (agent-fleet-reference record))
-         (buffer (agent-fleet-attach--live-buffer reference)))
+         (buffer (agent-fleet-attach--live-buffer reference observe)))
     (unless (and (equal (plist-get record :state) "live")
                  (not (member (plist-get record :reason) '("spawn_pending" "holder_lost"))))
       (user-error "Terminal is finished or recovering; inspect its details"))
@@ -71,17 +84,22 @@
       (unless (agent-fleet-attach--ghostel-ready-p)
         (let* ((process-environment (herdr-core-environment))
                (socket (getenv "HC_SOCKET")))
-          (user-error "Install working Ghostel, or run: HC_SOCKET=%s %s attach %s"
+          (user-error "Install working Ghostel, or run: HC_SOCKET=%s %s attach %s%s"
                       (shell-quote-argument socket) (shell-quote-argument herdr-core--program)
+                      (if observe "--observe " "")
                       (shell-quote-argument address))))
-      (setq buffer (generate-new-buffer (format "*agent:%s*" (agent-fleet-name record))))
+      (setq buffer (generate-new-buffer (format "*%s:%s*" (if observe "observe" "agent")
+                                                (agent-fleet-name record))))
       (condition-case err
           (let ((process-environment (herdr-core-environment)))
-            (ghostel-exec buffer herdr-core--program (list "attach" address))
+            (ghostel-exec buffer herdr-core--program
+                          (append '("attach") (and observe '("--observe")) (list address)))
             (unless (process-live-p (get-buffer-process buffer))
               (error "hc attach did not start"))
             (with-current-buffer buffer
               (setq-local agent-fleet-target reference)
+              (setq-local agent-fleet-observe-p observe)
+              (when observe (setq-local header-line-format "Read-only observer · input and resize disabled by Core"))
               (when (and (not (string-match-p "/" address))
                          (file-directory-p (plist-get record :cwd)))
                 (setq default-directory (file-name-as-directory (plist-get record :cwd))))

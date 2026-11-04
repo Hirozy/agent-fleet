@@ -96,6 +96,7 @@ Run `M-x agent-fleet` or `C-c a a`.
 | Dashboard key | Action |
 |---|---|
 | RET | Attach |
+| v | Observe live without sending input or resizing the agent PTY |
 | n | Open the start form |
 | p | Compose a prompt |
 | o | Read an output snapshot |
@@ -135,14 +136,91 @@ When invoked from attach, Fleet output, prompt and Magit views use an auxiliary
 child frame on supported graphical Emacs. On a text terminal they replace the
 current buffer without splitting. Genuine parent-frame resizing still reaches
 the PTY. Arbitrary third-party window commands are outside this geometry
-guarantee. Output is a finite snapshot; realtime observe is not implemented.
+guarantee. Output is a finite snapshot. `C-c a v` / `agent-fleet-observe` instead
+opens a realtime `hc attach --observe` viewer. Interactive and observe viewers
+are reused separately. Core ignores observer input and resize; explicit Fleet
+commands such as Prompt remain available. The external-editor key is disabled
+in an observer. Its own viewport may crop/wrap output when its size differs
+from the agent's PTY; it does not take over the agent's dimensions.
 
 The optional `agent-fleet-editor-bridge-mode` retains the external-editor
 workflow. In attach, `C-c C-g` arms it and sends exactly Ctrl-G; no Enter is
 injected. The editor opens separately and closing it preserves the attach client.
 
-Magit opens the agent's actual checkout. Existing worktrees are supported as
-cwd values; creating worktrees and remote checkout review are deferred.
+Magit opens the agent's actual local checkout. When Fleet recorded a review
+base, the diff includes tracked changes since that commit, including commits
+made by the agent. Status also lists untracked files.
+
+## Worktrees and batch launch
+
+`C-c a w` / `agent-fleet-start-worktree` asks for a command, source repository,
+new branch and new directory. It creates a local Git worktree, records the exact
+starting commit as `fleet.review-base`, and starts the agent there. Existing
+destinations and branches are not overwritten. The worktree and branch remain
+even if startup fails. Remove them explicitly through Git or Magit after review;
+Fleet cleanup never deletes them.
+
+```elisp
+(agent-fleet-start-worktree '("claude") "/code/repo" "/code/worker" "feature/x"
+                            :base "HEAD")
+```
+
+`C-c a b` / `agent-fleet-start-batch` collects a command and member directories,
+optionally creating a new worktree for each member. A review buffer lists the
+launches. `C-c C-c` requests them once; the same buffer retains each member's
+started, failed or uncertain result. Closing the report does not cancel launches
+already requested. Successful members are preserved when another fails. An
+uncertain launch is not retried; inspect the Dashboard before starting again.
+
+```elisp
+(agent-fleet-start-batch
+ '((:argv ("claude") :cwd "/code/repo"
+    :worktree (:directory "/code/worker-a" :branch "feature/a"))
+   (:argv ("codex") :cwd "/code/other")))
+```
+
+Members carry a shared `fleet.batch` label visible in Details. The report tracks
+launch acknowledgements only; program and work status continue to come from Core.
+
+## Remote agents and context
+
+Configure machines through `hc machine add`; Fleet does not manage machine
+provisioning. `C-c a r` / `agent-fleet-start-remote` chooses a connected machine,
+remote command or template, and absolute POSIX cwd. Git on the remote machine
+discovers the Project and review base; a non-Git directory remains a valid cwd
+without a Project. Remote template arguments can include an initial task.
+
+References pin the machine's permanent Core ID, terminal ID and creation time.
+Route names can change without redirecting a pinned operation to a different
+machine. Offline or replaced machines fail closed. Identity checks precede RPCs;
+Core 0.1.17 does not offer an atomic identity precondition on routed mutations,
+so avoid concurrently rebinding machine routes while issuing operations.
+
+Remote Projects are separate by default. Explicitly associate one with a local
+codebase for same-Project selection and context path mapping:
+
+```elisp
+(setq agent-fleet-remote-projects
+      '((:machine "PERMANENT-CORE-ID"
+         :remote "/srv/code/repo" :local "/Users/me/code/repo")))
+```
+
+Find the permanent ID with `hc machine ls --json`. This mapping does not sync
+files. Prompt context maps relative paths into the agent's actual remote
+checkout, including linked worktrees. Without a mapping the draft explicitly
+identifies a local reference. Externally adopted agents have no inferred remote
+Project metadata; their Project stays absent until explicitly supplied.
+
+`C-c a f` / `agent-fleet-send-file` transfers a local file of at most 8 MiB through
+`terminal.put`, then opens an unsent prompt containing the acknowledged remote
+path. It writes a Core-owned artifact, not a checkout file. Submit explicitly
+with `C-c C-c`; history removal also removes these artifacts.
+
+For remote targets, the status/diff commands show a read-only status and tracked
+diff snapshot via `machine.exec`, without requiring Magit or interpreting remote
+paths locally. The recorded review base includes agent commits; untracked files
+are listed without reading their contents. Timed-out or truncated responses are
+reported as incomplete failures. There is no automatic repository synchronization.
 
 ## End programs and clean history
 
@@ -189,7 +267,10 @@ close them. Start new Core agents explicitly. Existing Git checkouts can be reus
 - `make test`: strict byte compilation and isolated ERT, including retained
   external-editor safety regressions.
 - `make test-live`: fresh temporary Core session/config/state; validates events,
-  reconnect, history removal and parent/child termination. Set `FLEET_TEST_HC`
+  reconnect, history removal, parent/child termination, and a second Core reached
+  through a local relay for remote launch, context transfer, review and rename.
+  This tests real Core routing but does not test SSH authentication or a WAN.
+  Set `FLEET_TEST_HC`
   when hc is outside PATH.
 - `make test-gui GUI_LOAD_PATH='-L /path/to/ghostel/lisp -L /path/to/compat ...'`:
   a fresh graphical Emacs with your optional packages on its load path. Tests

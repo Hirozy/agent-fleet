@@ -35,7 +35,11 @@ cancel server execution.
 Terminal records retain raw fields. Important fields include address,
 created_ms, state, status, cwd, labels, parent, die_with_parent, first_message
 and exit information. Addresses are scoped to a Core; UI references also pin
-the persistent Core id and creation timestamp.
+the persistent gateway Core id and creation timestamp. For routed terminals,
+the address component is (remote permanent Core id, terminal id). `machine.list`
+resolves the current route before an operation; it must be connected. Renaming
+a route preserves identity, replacing its machine does not. Identity creation
+may query machines and must not run inside the event process filter.
 
 Runtime state is live or finished. Reported work status can be absent or any
 program-provided word. done is not finished. A kept terminal lost during
@@ -68,6 +72,10 @@ event state.
 | Output snapshot | terminal.read |
 | External editor key | terminal.keys, keys=["ctrl+g"] |
 | Attach | hc attach subprocess |
+| Observe | hc attach --observe subprocess |
+| Remote launch | terminal.run, on=current route for pinned machine ID |
+| Remote Git review | machine.exec, literal argv and cwd, decoded base64 output |
+| Transfer context file | terminal.put, base64 bytes, acknowledged artifact path |
 
 Initial template tasks are appended to the template argv. Inspect first_message:
 sent=false does not undo startup. A plain command's extra argv are arguments,
@@ -103,6 +111,18 @@ OSC 7501 integrations depend on the installed provider configuration.
 Fleet does not install hooks, claim status support from a command name, or
 silently use output quietness as readiness/completion.
 
-Remote addresses may appear in inventories. Local Project/Git operations reject
-remote paths. Full remote workflow, worktree creation, batch launch and realtime
-observe are deferred.
+Remote addresses are present in the subscription snapshot and events. Renaming
+a machine removes old addresses and adds the new routes. Remote Git discovery
+uses machine.exec; remote paths never enter local Git/file APIs. Fleet records
+fleet.machine, fleet.project, fleet.checkout-root and fleet.review-base labels
+at launch. Explicit path mappings associate remote codebases with local Projects.
+Routed RPCs accept a mutable route name, not a permanent-ID precondition;
+client identity checks cannot atomically prevent concurrent route rebinding.
+
+Local worktree creation uses Git directly, retaining the resolved commit as
+fleet.review-base. Batch members carry fleet.batch but remain independent Core
+roots. Cleanup neither deletes these worktrees nor kills batch members.
+
+Observe delegates framing and input/resize isolation to the pinned hc CLI.
+The real GUI check opens interactive and observe viewers concurrently, sends
+observer input, changes observer size/focus, and checks the original Core PTY.

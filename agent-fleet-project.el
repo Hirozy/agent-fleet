@@ -7,6 +7,8 @@
 (require 'subr-x)
 (require 'project)
 (require 'agent-fleet)
+(declare-function agent-fleet-remote-project "agent-fleet-remote" (record))
+(declare-function agent-fleet-remote-context-path "agent-fleet-remote" (record file))
 (defcustom agent-fleet-project-backend 'project
   "Source for project detection: built-in `project' or `projectile'.
 The default `project' uses `project-current'/`project-root' with a
@@ -115,17 +117,19 @@ Non-Git roots retain their explicit `file-truename' identity."
 
 (defun agent-fleet-project-for-agent (record)
   "Return the local Project of RECORD, never interpreting remote paths locally."
-  (unless (string-match-p "/" (plist-get record :address))
+  (if (string-match-p "/" (plist-get record :address))
+      (progn (require 'agent-fleet-remote) (agent-fleet-remote-project record))
     (agent-fleet-project-root-for-cwd (plist-get record :cwd))))
 
 (defun agent-fleet-project-label (record)
   "Return RECORD's Project label, or an em dash."
   (if-let* ((root (agent-fleet-project-for-agent record)))
-      (file-name-nondirectory (directory-file-name root)) "—"))
+      (if (stringp root) (file-name-nondirectory (directory-file-name root))
+        (concat (file-name-nondirectory (directory-file-name (nth 2 root))) " (remote)")) "—"))
 
 (defun agent-fleet-project-agents (&optional root)
   "Return live members in canonical Project ROOT, defaulting to the current one."
-  (let ((root (if root (agent-fleet-project--canonical-root root)
+  (let ((root (if root (if (listp root) root (agent-fleet-project--canonical-root root))
                 (agent-fleet-project-root-for-cwd default-directory))))
     (and root (cl-remove-if-not
                (lambda (r) (equal root (agent-fleet-project-for-agent r)))
@@ -167,6 +171,14 @@ Non-Git roots retain their explicit `file-truename' identity."
                        (cdr (assoc (completing-read "Same-Project agent: " choices nil t) choices)))
                    (message "No same-Project agent; showing all Fleet agents")
                    (agent-fleet-read-agent))))
+    (let ((record (agent-fleet-resolve target)))
+      (when (and file (string-match-p "/" (plist-get record :address)))
+        (require 'agent-fleet-remote)
+        (setq context (concat
+                       (if-let* ((path (agent-fleet-remote-context-path record file)))
+                           (format "Remote file: %s\n" path)
+                         "Local source reference; no remote path mapping or file transfer.\n")
+                       context))))
     (agent-fleet-prompt target context)))
 (provide 'agent-fleet-project)
 ;;; agent-fleet-project.el ends here

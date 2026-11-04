@@ -97,6 +97,8 @@
 
 (defun agent-fleet-dashboard-attach () "Attach to the current row."
   (interactive) (agent-fleet-dashboard--visit #'agent-fleet-attach (agent-fleet-dashboard--target)))
+(defun agent-fleet-dashboard-observe () "Observe the current row without taking input."
+  (interactive) (agent-fleet-dashboard--visit #'agent-fleet-observe (agent-fleet-dashboard--target)))
 (defun agent-fleet-dashboard-prompt () "Compose for the current row."
   (interactive) (agent-fleet-dashboard--visit #'agent-fleet-prompt (agent-fleet-dashboard--target)))
 (defun agent-fleet-dashboard-output () "Inspect the current row."
@@ -147,7 +149,8 @@
 (defvar agent-fleet-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map tabulated-list-mode-map)
-    (dolist (pair '(("RET" . agent-fleet-dashboard-attach) ("p" . agent-fleet-dashboard-prompt)
+    (dolist (pair '(("RET" . agent-fleet-dashboard-attach) ("v" . agent-fleet-dashboard-observe)
+                    ("p" . agent-fleet-dashboard-prompt)
                     ("o" . agent-fleet-dashboard-output) ("i" . agent-fleet-dashboard-details)
                     ("m" . agent-fleet-dashboard-magit) ("d" . agent-fleet-dashboard-diff)
                     ("c" . agent-fleet-dashboard-cleanup) ("n" . agent-fleet-dashboard-start)

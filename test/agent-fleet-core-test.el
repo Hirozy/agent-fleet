@@ -290,6 +290,8 @@
                     "(dolist (command '(agent-fleet agent-fleet-start agent-fleet-start-for-project "
                     "agent-fleet-start-form agent-fleet-adopt agent-fleet-prompt "
                     "agent-fleet-show-output agent-fleet-attach agent-fleet-cleanup "
+                    "agent-fleet-start-worktree agent-fleet-start-batch agent-fleet-observe "
+                    "agent-fleet-start-remote agent-fleet-send-file "
                     "agent-fleet-magit-status agent-fleet-details herdr-core-connect)) "
                     "(unless (commandp command) (error \"Missing autoload: %s\" command)))\n"
                     "(autoload-do-load (symbol-function 'agent-fleet-command-map) 'agent-fleet-command-map)\n"
