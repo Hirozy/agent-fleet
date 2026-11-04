@@ -10,6 +10,10 @@
   :type 'boolean :group 'agent-fleet)
 (defvar-local agent-fleet-observe-p nil "Non-nil for a read-only Core viewer.")
 
+(defun agent-fleet-attach--inhibit-return-anchor (window _force)
+  "Preserve WINDOW's saved position during a Fleet review return."
+  (agent-fleet-display-window-restoring-p window))
+
 (defun agent-fleet-attach--ghostel-ready-p ()
   "Return whether Ghostel has its working native module and launch API."
   (and (require 'ghostel nil t) (featurep 'ghostel-module) (fboundp 'ghostel-exec)))
@@ -35,6 +39,7 @@
     (unwind-protect
         (progn (set-window-dedicated-p window nil)
                (set-window-buffer window buffer)
+               (set-window-parameter window 'agent-fleet-return-stack nil)
                (set-buffer buffer)
                window)
       (set-window-dedicated-p window dedicated))))
@@ -115,6 +120,9 @@
                          (file-directory-p (plist-get record :cwd)))
                 (setq default-directory (file-name-as-directory (plist-get record :cwd))))
               (setq-local evil-escape-inhibit agent-fleet-attach-inhibit-evil-escape)
+              (when (boundp 'ghostel-inhibit-anchor-functions)
+                (add-hook 'ghostel-inhibit-anchor-functions
+                          #'agent-fleet-attach--inhibit-return-anchor nil t))
               (agent-fleet-attach-mode 1)))
         (error (when (buffer-live-p buffer) (kill-buffer buffer))
                (signal (car err) (cdr err)))))

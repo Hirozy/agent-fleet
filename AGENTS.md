@@ -49,9 +49,11 @@ Write Markdown in English.
 - Pin attach and all CLI subprocesses to the control connection's endpoint.
   Scope environment changes to subprocesses.
 - Probe Ghostel's required APIs and native module availability.
-- Child frames require supported Emacs, GUI and APIs. Center on a non-child
-  origin; close Dashboard children only after successful destination opening.
-  Restore focus and retain them on failure.
+- Dashboard reuses the selected window. Preserve per-window return buffers,
+  point and scrolling; nested reviews return one step at a time. Attachment
+  ends that return path only on success. Retain the review on failure.
+- Auxiliary child frames require supported Emacs, GUI and APIs. Center on a
+  non-child origin; preserve focus and the view when destination opening fails.
 - Attach replaces the origin window. Auxiliary Fleet views must not resize
   the attached terminal; genuine frame resizing must still reach the PTY.
 - Preserve origin buffers and terminal clients when closing temporary views.

@@ -109,6 +109,7 @@
                                           :no_parent t :labels '(:fleet.role "agent"))))
            (address (plist-get record :address)))
       (hc-live-until (lambda () (equal "idle" (agent-fleet-status (herdr-core-terminal address)))))
+      (should (equal "fleet-test" (agent-fleet-type (herdr-core-terminal address))))
       (let* ((result (herdr-core-request
                       "terminal.send" (list :terminal address :text "fleet-message"
                                             :wait t :timeout 5) 15))
