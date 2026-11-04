@@ -1,875 +1,200 @@
-# agent-fleet
+# Agent Fleet
 
-An Emacs package for bringing Herdr-managed coding agents into Emacs as a
-multi-agent control and viewing interface.
-
-Claude Code, Codex, Pi, and other CLI agents keep running in real PTYs
-managed by Herdr. Emacs provides the control plane: start agents, send
-prompts, watch their state, inspect output, isolate work in Git worktrees,
-review changes with Magit, and attach to a live terminal when direct
-interaction is needed.
-
-Agent Fleet deliberately focuses on agents. It uses Herdr workspaces, panes,
-worktrees, and events to provision and locate them, but it is not a general
-Emacs frontend for managing every Herdr Session or Workspace resource. The
-only server-lifecycle controls it provides are the explicit local
-`herdr-start` and `herdr-stop` commands described below.
-
-## Features
-
-- A live dashboard for every Herdr-managed agent, with project and task
-  context and filters.
-- Agent lifecycle commands: start, prompt, wait, read, interrupt, rename, switch,
-  and kill.
-- Explicit local Herdr server lifecycle commands: `herdr-start` and
-  `herdr-stop`.
-- Automatic connection to a running Herdr server on first use.
-- `project.el` integration and per-agent Git worktree isolation.
-- Parallel tasks that run multiple agents in independent worktrees.
-- Magit status and diff commands for an agent's checkout.
-- Interactive terminal attach through Ghostel.
-- Event-driven state updates, notifications, reconnect, and snapshot recovery.
+Agent Fleet brings herdr-core coding agents into Emacs. Core owns terminals,
+processes and reported status. Emacs provides launch, prompts, attention,
+terminal attachment, code review and finished-history cleanup.
 
 ## Requirements
 
 - Emacs 29.1 or newer.
-- The Herdr CLI reachable on PATH, or a running Herdr server reachable through
-  its local Unix socket.
-- `transient` 0.7.2 or newer.
-- One or more supported agent CLIs, such as Claude Code, Codex, or Pi.
-- Magit for the optional status and diff integration.
-- Ghostel for an interactive terminal inside Emacs (optional; the core
-  works without it installed).
+- herdr-core `hc` 0.1.17 or newer with protocol generation 1 and the required
+  methods. The checked-in schema is from 0.1.17.
+- An installed coding-agent command or Core template.
+- Optional Ghostel with a working native module for interactive attachment.
+- Optional Magit for code review; optional Consult for agent selection.
 
-The current protocol reference targets **Herdr 0.9.0 (protocol 22)**.
-The JSON control plane requires **Herdr 0.9.0 (protocol 22)** and
-tolerates additive fields. Terminal attach is different:
-the Herdr CLI and server must support the same private terminal protocol.
-The new stable endpoint-generation negotiation used by Herdr's own client
-shell does not apply to `herdr agent attach`. Updating the CLI alone may
-therefore require a server upgrade before attach works. Agent Fleet never
-automatically restarts a server; preserve running work before stopping one.
-
-The transport and control plane load without Magit or Ghostel. Optional Magit
-and terminal integrations are detected only when their commands are used.
+A terminal can be live while its program reports `done`. Programs without
+OSC 7501 reports display `unreported`; Fleet never infers status from text.
+Missing status does not remove an agent from Fleet. Wait reasons are preserved:
+a timeout, blocked status or process exit is not presented as successful work.
 
 ## Installation
 
-For a source checkout, generate the autoload definitions once (and again after
-updating the checkout):
-
-```sh
-make autoloads
-```
-
-Package managers generate the same file during installation. The package does
-not bind any global keys; set them up with `use-package`:
+Run `make autoloads` after updating a source checkout, then load the generated
+autoload file through your package manager or configuration:
 
 ```elisp
-(use-package agent-fleet
-  :load-path "/path/to/agent-fleet"
-  :bind ("s-d" . agent-fleet)
-  :bind-keymap ("C-c a" . agent-fleet-command-map)
-  :custom
-  ;; Optional: use a native child frame for the dashboard
-  (agent-fleet-dashboard-display 'buffer))
-
-(use-package agent-fleet-attach
-  :defer t
-  :bind (:map agent-fleet-attach-mode-map
-         ("C-c a" . agent-fleet-attach-command-map)))
+(add-to-list 'load-path "/path/to/agent-fleet")
+(load "/path/to/agent-fleet/agent-fleet-autoloads.el")
+(setq herdr-core-executable (expand-file-name "~/.local/bin/hc"))
+(global-set-key (kbd "C-c a") 'agent-fleet-command-map)
 ```
 
-Both public maps are registered as Emacs prefix commands. The attach example
-uses plain use-package `:bind`; its local binding is installed when the attach
-module loads. For the core map, `:bind-keymap` is the robust source-checkout
-form because it loads `agent-fleet` only when the prefix is first used, even
-when the generated autoload file has not already been loaded. Plain `:bind`
-also works for the core map when package initialization has loaded
-`agent-fleet-autoloads.el`; in either form, feature commands use generated
-autoloads, so opening prefix help does not load the dashboard or terminal
-integration.
+Fleet installs no global bindings. Its attach mode provides a buffer-local
+`C-c a` map whose commands use the current terminal.
 
-`agent-fleet-command-map` is the entry point from ordinary code buffers.
-Project start and context composition use the calling buffer's context;
-agent-specific actions ask you to select an agent. With the prefix above,
-its bindings are:
+The default Dashboard opens in a buffer. To opt into a centered child frame:
 
-| Key after `C-c a` | Command | Scenario |
-|---|---|---|
-| `a` | `agent-fleet` | Open or focus the dashboard |
-| `l` | `agent-fleet-list` | List all agents |
-| `L` | `agent-fleet-list-project-agents` | List peers in a selected agent's Project |
-| `!` | `agent-fleet-next-needs-attention` | Find an agent needing attention |
-| `s` | `agent-fleet-start` | Start an agent |
-| `N` | `agent-fleet-start-for-project` | Start an agent for the current Project |
-| `P` | `agent-fleet-prompt-dwim` | Prepare file/region context for an agent |
-| `t` | `agent-fleet-attach` | Attach to a selected agent's terminal |
-| `p` | `agent-fleet-prompt` | Prompt a selected agent |
-| `i` | `agent-fleet-interrupt` | Interrupt a selected agent |
-| `x` | `agent-fleet-kill` | Kill a selected agent |
-| `r` | `agent-fleet-rename` | Rename a selected agent |
-| `o` | `agent-fleet-show-output` | Inspect recent output |
-| `w` | `agent-fleet-worktree-status` | Inspect worktree status |
-| `m` | `agent-fleet-magit-status` | Open Magit status |
-| `d` | `agent-fleet-magit-diff` | Open the working-tree diff |
-| `h` / `?` | `describe-prefix-bindings` | Show the prefix's bindings |
-
-`s-d` also opens the dashboard directly. In an attached terminal, use
-`agent-fleet-attach-command-map` to act on its agent without selecting one
-again (see [Acting on the attached agent](#acting-on-the-attached-agent)).
-Less frequent maintenance, task, and connection commands remain available
-through `M-x`.
-
-## Quick start
-
-Start the configured local Herdr Session, then open the dashboard:
-
-```text
-M-x herdr-start
-M-x agent-fleet
+```elisp
+(setq agent-fleet-dashboard-display 'child-frame)
 ```
 
-`herdr-start` launches the configured Session as the headless process
-`herdr --session NAME server`, waits for its socket to become ready,
-and connects Emacs to that exact socket. The server is launched detached
-(via `nohup`), so it is not an Emacs child process: it keeps running
-after you quit Emacs, and so do its panes and agents — Emacs is only a
-client that attaches to the server's socket. To stop it explicitly, use
-`M-x herdr-stop`; after confirmation, Emacs disconnects first and sends
-the `server.stop` request. Stopping exits all panes and agents owned by
-that server.
+Unsupported graphical runtimes fall back to a buffer. Child views always use
+a non-child origin, and Dashboard navigation closes its child only after the
+destination opens successfully.
 
-By default, the first dashboard or control command connects to Herdr
-automatically. From the dashboard, press `h` to open the transient command
-menu, or start an agent directly with:
+## Connect
 
-```text
-M-x agent-fleet-start
+The first operation connects using `hc connect`. By default hc may start Core;
+set `herdr-core-auto-start` to nil to require an existing socket.
+
+Configure `herdr-core-session` (default `"default"`) and optionally
+`herdr-core-socket`. Endpoint precedence is explicit socket, `HC_SOCKET`,
+then the standard session socket under the XDG runtime/state directory.
+If Core's config.toml specifies a custom socket, configure the same path
+in `herdr-core-socket`.
+
+The executable and subprocess environment are captured at connection time.
+Reconnect and attach use that same endpoint. Configuration changes apply after
+an explicit disconnect/reconnect. `M-x herdr-core-disconnect` detaches Fleet;
+it does not stop Core or any program. No Fleet command stops the Core server.
+
+## Start and include agents
+
+`C-c a n` / `agent-fleet-start` asks for a template or command and a working
+directory. The name defaults to the Project name, or directory name when no
+Project exists, normalized for Core and suffixed on conflict. Names are display
+labels, never identity.
+
+With a prefix argument, use a single form to edit command, directory, optional
+name and initial template task. `C-c C-c` requests launch once.
+`agent-fleet-start-for-project` starts in the current Project.
+
+```elisp
+(agent-fleet-start '("claude") :cwd "/path/to/code")
+(agent-fleet-start '("reviewer") :cwd "/path/to/code"
+                   :task "Review the changes without editing.")
 ```
 
-The interactive command asks for an agent kind, a working directory, and
-a name. Herdr Workspaces are selected or created internally; no Workspace
-selection is required. The suggested name is
-`<project-name>-<serial>`, falling back to `<directory-name>-<serial>` when
-the selected directory has no Project. For example, `ops-transformer-1` or
-`ops-transformer-dev-1`. The smallest positive serial unused by any cached
-agent is chosen across the active connection. Press `RET` to accept the suggestion
-or type your own name. A directory label does not create a Project identity.
-For a root directory without a basename, the agent kind is used. The working
-directory defaults to the calling buffer's `default-directory`; press `RET`
-to accept it or select another existing directory. Directories without a
-Project are supported. Project, worktree, and programmatic entry points can
-also supply a working directory, branch, and extra CLI arguments.
+These calls return asynchronous request IDs. Fleet starts independent root
+terminals with `keep` and automatic removal disabled. A first message that
+was not sent is reported; the already-started program is preserved. Inspect
+Details and open Prompt to explicitly submit again.
 
-## Dashboard
+Fleet marks its agents with `fleet.role=agent`. Use `agent-fleet-adopt` to
+include an external terminal, or set the label through Core. Descendants of
+included agents appear as helpers unless explicitly marked as agents.
+A missing status does not mean a terminal is safe to discard.
 
-`M-x agent-fleet` opens `*Agent Fleet*`. Each row shows the agent's project,
-name, kind, state, and task. The buffer updates from Herdr events; it does not
-periodically poll the server. Opening also reconciles the list from the server,
-like the `g` action, so the dashboard opens on fresh state rather than a
-possibly-stale cache. That reconciliation is atomic with respect to the live
-subscription: events received while `agent.list` is in flight are queued, the
-server snapshot is installed first, and the queued events are then replayed in
-arrival order. A newer status or lifecycle event therefore cannot be replaced
-by an older list response, and received events are still replayed if the refresh
-fails. Repeating `M-x agent-fleet` focuses the existing dashboard window or
-frame instead of creating another dashboard; the explicit
-`agent-fleet-dashboard-open-*` commands still provide one-shot display
-overrides.
+Core records parent relationships. Fleet only reads them for details and
+termination impact; there is no separate Fleet Task lifecycle.
 
-| Key | Action |
+## Dashboard and commands
+
+Run `M-x agent-fleet` or `C-c a a`.
+
+| Dashboard key | Action |
 |---|---|
-| `N` | Start a new agent |
-| `o` | Inspect recent output |
-| `s` | Send a prompt |
-| `i` | Send `Ctrl-C` |
-| `x` | Kill the agent |
-| `r` | Rename the agent |
-| `g` | Refresh from the server |
-| `P` | Show agents in this project / clear the project filter |
-| `T` | Toggle a parallel-task filter |
-| `w` | Show worktree status |
-| `d` | Open the working-tree diff |
-| `m` | Open Magit status |
-| `a` / `RET` | Attach to the live terminal |
-| `!` | Jump to the next agent needing attention (`blocked`; prefix adds `done`) |
-| `h` | Open the transient help menu |
-| `p` / `k` / `↑` | Move up a row (skips the project-group separator) |
-| `n` / `j` / `↓` | Move down a row (skips the project-group separator) |
-| `q` | Close the dashboard window or frame |
+| RET | Attach |
+| n | Open the start form |
+| p | Compose a prompt |
+| o | Read an output snapshot |
+| i | Identity, state and parent details |
+| m / d | Magit status / working-tree diff |
+| s / k | Interrupt / explicitly end a program |
+| h | Toggle finished history |
+| P | Toggle the current row's Project filter |
+| ! | Toggle blocked/error members |
+| c | Review finished-history cleanup |
+| g | Render the current event-driven cache |
+| q | Close |
 
-The dashboard normally opens in an ordinary Emacs window. It can instead use
-Emacs's native child-frame support or a standalone graphical frame; set
-`agent-fleet-dashboard-display` accordingly (see
-[Configuration](#configuration)):
+The connection banner shows stale/disconnected state independently of program
+state. Project identity follows the canonical Git common root across linked
+worktrees. Non-project directories display an em dash. Remote paths are never
+resolved against the local filesystem.
 
-- `'buffer` (default): a regular window.
-- `'child-frame`: a native child frame.
-- `'frame`: a standalone operating-system window.
+`C-c a P` / `agent-fleet-prompt-dwim` opens an editable prompt with the current
+file and selected line range, including selected text up to 4000 characters.
+It prefers a same-Project agent and never saves files automatically.
+Unsaved text can differ from the file on disk; review the draft before sending.
 
-Native child-frame display requires Emacs 29.1 or newer, a graphical Emacs
-frame, and `display-buffer-in-child-frame`. If any requirement is unavailable,
-agent-fleet reports the reason and opens the regular dashboard buffer instead.
+Prompt buffers use `C-c C-c` to submit once and `C-c C-k` to close. The header
+distinguishes sending, sent, rejected and uncertain results. Sent means
+submitted, not completed. Drafts are retained. Neither a closed buffer nor a
+local timeout cancels delivery. Unknown outcomes are never automatically retried.
 
-The configured default can be bypassed for one invocation:
+## Attachment and review
 
-```text
-M-x agent-fleet-dashboard-open-buffer
-M-x agent-fleet-dashboard-open-child-frame
-M-x agent-fleet-dashboard-open-frame
-```
+Ghostel runs `hc attach ADDRESS` with the pinned Core endpoint. One live viewer
+is reused for each Core/terminal identity. Attachment replaces the origin
+window without splitting. Killing its buffer or process detaches the viewer,
+preserving the agent.
 
-Child dashboards open in the center of their parent frame and retain
-proportional size and position when it is resized. Opening output, worktree
-status, Magit, a diff, or a terminal attach uses the originating main frame and
-closes the child dashboard after the destination opens successfully. Attach
-additionally replaces that frame's current window with the live terminal.
-Refresh, filters, prompt, interrupt, kill, rename, and transient help remain in
-the child dashboard. Closing a dashboard frame does not disconnect Herdr or
-stop agents.
+When invoked from attach, Fleet output, prompt and Magit views use an auxiliary
+child frame on supported graphical Emacs. On a text terminal they replace the
+current buffer without splitting. Genuine parent-frame resizing still reaches
+the PTY. Arbitrary third-party window commands are outside this geometry
+guarantee. Output is a finite snapshot; realtime observe is not implemented.
 
-The dashboard supports its keys in normal and motion states when Evil is
-loaded. Notifications can be tuned with `agent-fleet-notify-on`; see
-[Configuration](#configuration).
+The optional `agent-fleet-editor-bridge-mode` retains the external-editor
+workflow. In attach, `C-c C-g` arms it and sends exactly Ctrl-G; no Enter is
+injected. The editor opens separately and closing it preserves the attach client.
 
-The dashboard mode line surfaces the Herdr connection state when it is not
-healthy: `Reconnecting (n/max)…` while a dropped subscription is being
-re-established, or `Disconnected — M-x herdr-connect` when there is no
-connection (after an explicit disconnect, a failed initial connect, or once
-reconnect gives up). No banner is shown while connected. The state is driven
-by `herdr-connection-state-changed-hook` — there is no polling timer — so the
-banner tracks the real transitions reported by the Herdr connection layer.
+Magit opens the agent's actual checkout. Existing worktrees are supported as
+cwd values; creating worktrees and remote checkout review are deferred.
 
-## Start and control agents
+## End programs and clean history
 
-Every control command is available interactively as `M-x agent-fleet-<name>`
-and accepts an agent name, pane ID, symbol, or `herdr-agent` object where
-applicable.
+Interrupt asks the program to stop its current work. Kill explicitly ends its
+program and previews dependent descendants. Core may also end descendants
+created after that preview; Fleet cannot atomically freeze this relationship.
 
-| Command | Action |
-|---|---|
-| `M-x agent-fleet-start` | Start an agent (prompts for kind, working directory, and name) |
-| `M-x agent-fleet-prompt` | Send a prompt |
-| `M-x agent-fleet-prompt-and-wait` | Prompt and wait atomically for done/blocked |
-| `M-x agent-fleet-show-output` | Open output in an ordinary buffer |
-| `M-x agent-fleet-wait` | Wait for a specific state |
-| `M-x agent-fleet-interrupt` | Send `Ctrl-C` |
-| `M-x agent-fleet-rename` | Rename the agent |
-| `M-x agent-fleet-switch` | Focus the agent in Herdr |
-| `M-x agent-fleet-kill` | Stop the agent |
-| `M-x agent-fleet-list` | List cached agents in a read-only table (Name, Status, Kind, Task, Project) |
-| `M-x agent-fleet-get` | Show one agent |
-| `M-x agent-fleet-status` | Show an agent's state |
-| `M-x agent-fleet-doctor` | Check socket, connection, manifests, and CLIs |
-
-After a successful interactive start, the agent's terminal is attached
-automatically (see [Attach to a live terminal](#attach-to-a-live-terminal)).
-Fleet reuses an internal Herdr Workspace hosting an agent in the same Project.
-If that Workspace hosts a worktree, the target must belong to that exact
-checkout. Sharing a Project alone does not cross a worktree boundary.
-For a directory without a Project, it matches the canonical working directory
-instead; this does not create a Project identity. When no suitable Workspace
-exists, Fleet creates one and uses its root pane. Placement with an explicit
-working directory does not depend on the focused Herdr Workspace.
-
-Lisp callers can still specify `:workspace` or `:pane` explicitly. Calls without
-a working directory retain the focused-Workspace fallback for compatibility.
-Programmatic calls do not prompt or attach unless attachment is requested.
-Isolated worktree starts use the Workspace provisioned by Herdr for that worktree.
-
-Agent state comes directly from Herdr and is one of `idle`, `working`,
-`blocked`, `done`, or `unknown`.
-
-Agent labels prefer an explicit agent name, then the basename of the agent's
-own cwd, followed by terminal title, kind, and pane ID as fallbacks. Workspace
-labels do not affect agent names. Directory labels do not assign a Project;
-completion candidates use pane IDs to distinguish otherwise identical labels.
-
-Lifecycle hooks (`agent-fleet-agent-started-hook`,
-`agent-fleet-agent-status-changed-hook`, and `agent-fleet-agent-exited-hook`)
-run with the post-event cache already updated, so custom automation can read
-fresh state without polling.
-
-For a Fleet start, queued events replay before the started hook runs; early
-detection does not duplicate the notification. The hook runs outside the start
-request's event-deferral transaction, allowing consumers to wait for live state.
-A hook error propagates without closing the successfully started agent. If the
-target disappears or moves to a different pane ID during startup or its hook,
-start signals `agent-fleet-provisioning-failed` without attaching the stale
-target or rolling back the acknowledged start.
-`agent-fleet-get` applies queued events after caching its response,
-so a newer status or close event takes precedence over an older response.
-
-## Projects and worktrees
-
-Start an agent for the current `project.el` project:
+Cleanup has one meaning: remove finished Fleet terminal records and their
+retained output history. It never kills programs and never deletes directories.
 
 ```text
-M-x agent-fleet-start-for-project
+agent-fleet-cleanup
+  -> review all eligible finished Fleet records on this connection
+  -> SPC to exclude individual records
+  -> C-c C-c to execute once
+  -> results in the same buffer
 ```
 
-This starts at the current Project root, using the same automatic internal
-placement as `agent-fleet-start`. No Workspace selection is required, including
-when the server has no existing Workspaces. An interactive project start
-attaches the terminal afterward.
-
-Here, Project means the logical codebase identity derived from an agent's cwd;
-it is deliberately distinct from a Herdr Workspace. Project detection defaults
-to the built-in `project.el`. Set
-`agent-fleet-project-backend` to `'projectile` to source it from Projectile
-instead; either way, a git repository resolves to its primary checkout
-regardless of backend, so the option only affects how non-git projects are
-detected.
-
-Agents in linked worktrees are mapped back to the same canonical Project, so
-the dashboard's `P` filter shows all agents in that codebase even when they run
-in different Herdr Workspaces. The Lisp API `agent-fleet-project-agents`
-returns the same cached set without issuing a server request. An agent whose
-cwd has no resolvable Project shows `—` in the column; `P` requires an
-actual Project identity.
-
-Standalone worktree commands:
-
-- `M-x agent-fleet-worktree-list`
-- `M-x agent-fleet-worktree-open`
-- `M-x agent-fleet-worktree-status`
-- `M-x agent-fleet-worktree-remove`
-- `M-x agent-fleet-cleanup`
-
-The standalone worktree removal command protects worktrees with uncommitted
-changes unless force is requested. Review the agent's changes before using
-that command; `agent-fleet-cleanup` always skips worktrees.
-
-### Handing a task from the current buffer
-
-`M-x agent-fleet-prompt-dwim` hands the current buffer context to an agent:
-
-- the file path (relative to the agent's project root when possible);
-- the active region's line range;
-- the symbol near point;
-- the selected text, when the region is within
-  `agent-fleet-prompt-dwim-max-region-lines` and
-  `agent-fleet-prompt-dwim-max-region-chars`.
-
-The command first opens an agent completion list. It prefers agents in the
-same Project as the current buffer, and still requires an explicit selection
-when there is only one matching agent. If the buffer has no Project or no
-agent is associated with it, the completion falls back to all cached agents
-and says so in the minibuffer prompt/message. After selection, Agent Fleet
-attaches to the live terminal and pastes the context there with bracketed
-paste, without Enter — it lands in the agent's own input box. Type the
-task after the reference and press Enter to submit. To compose a separate prompt
-in a child frame, use
-`agent-fleet-attach-prompt-in-child-frame` — the `S` key of
-`agent-fleet-attach-command-map`.
-
-The selected text is included only when it is at most
-`agent-fleet-prompt-dwim-max-region-lines` lines and
-`agent-fleet-prompt-dwim-max-region-chars` characters. The character limit is
-also a compatibility setting for configurations that predate the line limit,
-and protects against very large single-line selections. When either limit is
-exceeded, the file and line-range reference is retained and the selected text
-is omitted. It does not save user files or copy an entire buffer by default.
-
-## Parallel tasks
-
-Run multiple agents in independent worktrees as one aggregate task:
-
-```text
-M-x agent-fleet-parallel
-```
-
-The interactive command prompts for each agent's kind and prompt. Use the
-dashboard `T` key to focus on one task; the task title and its aggregate state
-then show in the mode line. Task state is derived from its members — `done`
-only when all agents are done, `blocked` when one is blocked — and no agent is
-killed when another finishes. Use `M-x agent-fleet-show-output` to
-inspect individual results. Cleanup protects every Workspace containing an
-agent, including done agents, and currently skips worktrees because the
-available metadata cannot establish that their commits and changes are
-preserved. Task associations also protect resources when members are missing.
-
-A completed task returns to `running` or `blocked` if a member resumes work;
-a missing member makes it `failed`. Its first completion timestamp remains
-historical metadata and does not make subsequent waits return immediately.
-
-## Review changes with Magit
-
-With Magit installed, the dashboard can open the selected agent's checkout:
-
-- Press `m` for Magit status.
-- Press `d` for the working-tree diff.
-- Run `M-x agent-fleet-magit-status` or
-  `M-x agent-fleet-magit-diff` directly.
-
-The agent's actual checkout is used, including an isolated Herdr worktree. If
-Magit is unavailable, the commands report how to enable the integration.
-
-## Auxiliary views
-
-Every auxiliary view — recent output, worktree status, Magit status, and the
-working-tree diff — opens in an ordinary Emacs buffer: a
-read snapshot of the agent's output or a full Magit session on its
-checkout, sized by Emacs's normal window rules.
-
-Native child frames are reserved for two surfaces that benefit from
-floating over the terminal without disturbing its window geometry (and the
-PTY size the agent sees): the dashboard itself (see
-`agent-fleet-dashboard-display`) and the compose editor opened by
-`agent-fleet-attach-prompt-in-child-frame`. Repeated compose opens reuse a
-single auxiliary child frame per parent, and `M-x
-agent-fleet-dashboard-aux-quit` (or `q` inside the compose buffer) closes
-it and returns focus to the parent.
-
-The unsuffixed view names are the canonical commands.  The former
-`-in-buffer` names remain as obsolete compatibility aliases:
-`agent-fleet-show-output-in-buffer`, `agent-fleet-worktree-status-in-buffer`,
-`agent-fleet-magit-status-in-buffer`, and `agent-fleet-magit-diff-in-buffer`.
-The same naming rule applies to the attach-buffer view commands; use
-`agent-fleet-attach-inspect`, `agent-fleet-attach-worktree`,
-`agent-fleet-attach-magit`, and `agent-fleet-attach-diff`.
-
-## Attach to a live terminal
-
-Press `a` on a dashboard row or run:
-
-```text
-M-x agent-fleet-attach
-```
-
-The command runs `herdr agent attach <pane-id>` inside the Ghostel terminal
-backend. The attach buffer is named `*agent:NAME*` and is reused for the same
-pane. It opens in the selected window, replacing its contents, so the terminal
-fills the window you acted from. Killing the buffer or terminal process
-detaches from the PTY; it does not kill the agent or close its pane.
-
-Use a prefix argument to request terminal takeover:
-
-```text
-C-u M-x agent-fleet-attach
-```
-
-Choose a backend explicitly via `agent-fleet-attach-backend`; see
-[Configuration](#configuration). When no in-Emacs backend is available,
-agent-fleet reports the `herdr agent attach` command to run in your own
-terminal.
-
-The attach CLI targets the same Herdr socket as the active control
-connection: Ghostel inherits a subprocess-local `HERDR_SOCKET_PATH`
-pinned to that socket (Emacs's global `process-environment` is never
-changed), and the no-backend fallback command embeds the same endpoint
-with shell quoting. The PTY attach and the control RPCs therefore
-always reach the same Herdr Session.
-
-### Acting on the attached agent
-
-An attach buffer already knows which agent it is driving, so once attached you
-do not need to return to the dashboard or pick from a completion listing. The
-single-key bindings live in `agent-fleet-attach-command-map`. Unlike the main
-map, these commands always target the current attach buffer's pane; starting,
-listing, and selecting other agents belong to the main map. The package does
-not bind a prefix key by default, so set one yourself:
-
-```elisp
-(use-package agent-fleet-attach
-  :defer t
-  :bind (:map agent-fleet-attach-mode-map
-         ("C-c a" . agent-fleet-attach-command-map)))
-```
-
-With the prefix above, these keys act on the current agent directly:
-
-| Key | Action |
-|---|---|
-| `C-c a o` | Inspect recent output (buffer) |
-| `C-c a d` | Open the working-tree diff (Magit, buffer) |
-| `C-c a m` | Open Magit status (buffer) |
-| `C-c a w` | Show worktree status (buffer) |
-| `C-c a s` | Send a prompt |
-| `C-c a S` | Compose a prompt in a child frame |
-| `C-c a i` | Send `Ctrl-C` |
-| `C-c a x` | Kill the agent |
-| `C-c a r` | Rename the agent |
-| `C-c a h` / `C-c a ?` | Open the transient action menu |
-
-View keys (`o`/`d`/`m`/`w`) open an ordinary buffer; `S` opens the compose
-child frame. The compose child frame floats over the terminal's parent so
-the attached terminal's window geometry — and the PTY size the agent sees
-— never changes while composing.
-
-`C-c` passes through to Emacs in the terminal's char mode, so the prefix
-reaches Emacs rather than the PTY; `h` (or `?`) lists the same actions
-for discoverability. To send a literal key sequence (such as `shift+tab`
-or `esc`) to the attached terminal, use Ghostel's own quote key — `C-q`
-(`ghostel-send-next-key`) — rather than an Agent Fleet command. The
-commands are also available as `M-x
-agent-fleet-attach-*` and signal a clear error outside an attach buffer.
-
-### Composing prompts with C-g
-
-Inside an attach buffer, `C-g` is handled by Agent Fleet. With the optional
-editor bridge disabled (the default), it opens
-`agent-fleet-attach-prompt-in-child-frame`, preserving the local compose
-workflow. With the bridge enabled, Agent Fleet arms a one-shot route and sends
-`Ctrl-G` to the exact Herdr pane. The CLI can then export its complete draft
-to the file passed to `$EDITOR`; that file is opened by Emacs in an Agent Fleet
-editor buffer in a newly created standalone graphical frame. The attach frame
-and window remain unchanged.
-
-#### Configure `emacsclient` as the agent editor
-
-When Agent Fleet provisions a new pane for an agent, it sets both `EDITOR` and
-`VISUAL` to `emacsclient --quiet` by default. No global environment change is
-required. Enable the bridge before using the agent's external-editor action:
-
-```elisp
-(agent-fleet-editor-bridge-mode 1)
-```
-
-The default command connects to Emacs's default server. If this Emacs uses a
-custom server name, configure a matching command before creating the agent:
-
-```elisp
-;; Set the server name before any Emacs server is started.
-(setq server-name "agent-fleet"
-      agent-fleet-agent-editor-command
-      "emacsclient --quiet --socket-name agent-fleet")
-(agent-fleet-editor-bridge-mode 1)
-```
-
-Use `--quiet` to prevent `emacsclient` from writing `Waiting for Emacs...` into
-the agent PTY. Do **not** use `--no-wait` or `-n`: the editor process must wait
-until `C-c C-c` or `C-c C-k` releases it, otherwise the agent may read the
-draft before editing is complete.
-
-Environment injection applies to panes created through `workspace.create`,
-`pane.split`, or `tab.create`. An explicitly reused `:pane` and the root pane
-returned by `worktree.create` retain their existing environment because those
-Herdr operations do not expose an environment override. Agent Fleet never
-mutates Emacs's global `process-environment`. The editor bridge is intended for
-agents and Emacs on the same host with a shared filesystem.
-
-| Key | Action |
-|---|---|
-| `C-g` (bridge disabled) | Open the Agent Fleet compose child frame |
-| `C-g` (bridge enabled) | Send `Ctrl-G` and route the CLI editor file |
-| `C-c C-c` (editor view) | Save, release `emacsclient`, and close the view |
-| `C-c C-k` (editor view) | Discard unsaved edits and release `emacsclient` successfully |
-| `C-c a S` | Open the independent Agent Fleet compose child frame |
-
-The editor bridge requires a graphical attach frame because it creates a
-dedicated standalone operating-system frame rather than replacing the attach
-window or reusing an unrelated window. If the frame cannot be created or the
-editor frame/window is lost, the editor request is aborted and the CLI is
-released. The exact hint `C-c C-c submit, C-c C-k abort` appears in the
-editor frame's header line. Finishing or aborting closes the editor frame and
-returns focus to the attach window. The route accepts one server file visit
-only, expires after `agent-fleet-editor-route-timeout`, and cannot distinguish
-simultaneous `C-g` requests from multiple agents; a second pending request is
-rejected.
-
-In the bridge-disabled compose workflow, text is pasted into the agent's
-Ghostel terminal via bracketed paste (so multi-line prompts stay atomic) but
-Enter is **not** pressed — the user reviews the text and presses Enter manually
-to submit. In the bridge workflow, the CLI owns restoring its draft after the
-editor exits; Agent Fleet does not scrape terminal output or inject Enter.
-`C-c a S` remains available regardless of bridge state.
-
-### Evil and evil-escape
-
-Attach buffers inhibit `evil-escape` locally by default. Some terminal modes
-forward both the synthetic first key used by `evil-escape` and the real key to
-the PTY, which can duplicate the first character of an escape sequence such as
-`jk`. The default prevents that input corruption without changing Evil
-globally; toggle it with `agent-fleet-attach-inhibit-evil-escape` (see
-[Configuration](#configuration)).
-
-Terminal TUIs usually implement their own scrollback. If scrolling feels slow
-because the backend sends navigation keys into the TUI, switch to the terminal
-backend's copy or scrollback mode before navigating the buffer.
-
-## Connection
-
-`agent-fleet-auto-connect` controls when Emacs connects to Herdr:
-
-- `'on-demand` (default): connect before the first dashboard or control command.
-- `'after-init`: also attempt a connection shortly after Emacs starts.
-- `nil`: require `M-x herdr-connect` explicitly.
-
-Automatic connection does not start or own the Herdr server. If the server is
-restarted, the subscription reconnects with backoff and refreshes the local
-snapshot. A command issued after a failed startup connection retries on demand.
-The dashboard mode line reports `Reconnecting`/`Disconnected` during these
-transitions (see [Dashboard](#dashboard)), so a stale-looking list is never
-silent about why.
-
-With Herdr 0.9.0, event subscriptions start with live events, not retained
-history. Initial connection, reconnect, and pane-set subscription rebuilds
-enumerate panes, establish the subscription, and then fetch an authoritative
-snapshot. Events received during that snapshot are deferred and applied
-after it. A final pane-set check covers panes created between enumeration
-and subscription; retries are bounded and failures enter the normal
-connection recovery path. Only one event stream is active at a time. The
-snapshot recovers current state across a disconnected interval, not every
-intermediate status transition. An empty headless Session is a valid
-connection even when it has no Workspace or focused pane.
-
-Use `M-x herdr-start` when Emacs should launch the configured local Session.
-If `M-x agent-fleet` cannot connect to that Session's socket, it reports
-`Herdr session "NAME" is not running; run M-x herdr-start, then retry`.
-`herdr-start` requires a valid non-nil `agent-fleet-default-session-name` and no explicit
-`herdr-socket-path`; it waits synchronously up to `herdr-startup-timeout` and
-keeps a diagnostic log file if startup fails. The server is launched detached
-and survives Emacs exit, so a later `herdr-start` simply reuses it; if the
-target is already running, no duplicate server is started. `M-x herdr-stop` is
-the explicit shutdown command; it asks for confirmation and uses `server.stop`
-against the current connection's pinned socket when available. Neither command
-performs Session enumeration or runtime Session switching.
-
-The socket is discovered with the following precedence (highest first):
-a nonempty explicit `herdr-socket-path`; the configured
-`agent-fleet-default-session-name`; the `HERDR_SOCKET_PATH` environment
-variable; and the default `~/.config/herdr/herdr.sock`. The default
-Session is `default`, so normal startup does not invoke `herdr status`.
-Override the location explicitly with
-`herdr-socket-path`, or name a Herdr Session with
-`agent-fleet-default-session-name`:
-
-```elisp
-;; Use the default Session (~/.config/herdr/herdr.sock).
-(setq agent-fleet-default-session-name "default")
-
-;; Use a named Session (~/.config/herdr/sessions/work/herdr.sock).
-(setq agent-fleet-default-session-name "work")
-```
-
-A Session name must be a safe single path component (no separator or
-NUL, not `.` or `..`). Ordinary connection discovery only resolves the
-path; it never creates directories or starts Herdr, so a configured Session
-whose socket is missing is a connection error with a `herdr session attach
-NAME` hint. Use `M-x herdr-start` to launch a valid configured named Session.
-Set `agent-fleet-default-session-name` to `nil` only to use
-`HERDR_SOCKET_PATH` or the default socket path without a named Session;
-the client does not auto-discover a different active Session with
-`herdr status`.
-
-`agent-fleet-default-session-name` is an alias for the underlying
-`herdr-default-session-name`. Both names share one value, and existing
-Herdr configuration remains supported. The Fleet name is available in
-`M-x customize-group RET agent-fleet`.
-The Fleet name also supports deferred `use-package :custom` settings before
-the package is loaded; no explicit `require` is needed for this option.
-
-This is a connection-configuration option: changing it does not affect
-an existing connection. Reconnect and every RPC stay pinned to the
-endpoint saved on the current connection; only the next `M-x
-herdr-connect` after an explicit disconnect resolves the current
-setting. Agent Fleet maintains one active Herdr connection and does not
-expose runtime Session switching or general Session/Workspace
-management. Run `M-x agent-fleet-doctor` to check the configured default
-Session, the effective socket, the Herdr connection, agent manifests,
-and configured CLI executables.
-
-## Configuration
-
-All options are Emacs customization variables in the `agent-fleet` and `herdr`
-groups; set them with `setq` or <kbd>M-x customize-group RET agent-fleet</kbd>.
-
-### Connection and transport
-
-| Option | Default | Meaning |
-|---|---|---|
-| `herdr-socket-path` | `nil` | Explicit Herdr Unix socket path; highest discovery precedence. `nil` uses `agent-fleet-default-session-name`, then `HERDR_SOCKET_PATH`, then `~/.config/herdr/herdr.sock` |
-| `agent-fleet-default-session-name` | `"default"` | Alias for `herdr-default-session-name`. A valid name resolves to its socket (`default` → `~/.config/herdr/herdr.sock`; other → `~/.config/herdr/sessions/NAME/herdr.sock`). `nil` skips named-Session resolution and uses `HERDR_SOCKET_PATH` or the default socket path. Changing it does not affect an existing connection; only the next connect after a disconnect resolves it |
-| `herdr-executable` | `"herdr"` | Herdr executable used by `M-x herdr-start`; it is invoked as `herdr --session NAME server` without a shell |
-| `herdr-startup-timeout` | `10.0` | Maximum seconds `M-x herdr-start` waits for the local server socket to become ready |
-| `herdr-protocol-request-timeout` | `5.0` | Default timeout in seconds for a synchronous Herdr request |
-| `herdr-protocol-ping-timeout` | `3.0` | Timeout in seconds for a `ping` |
-| `herdr-subscription-start-timeout` | `3.0` | Seconds to wait for the `subscription_started` acknowledgement |
-| `herdr-reconnect-max-attempts` | `12` | Maximum reconnection attempts before giving up |
-| `herdr-reconnect-delay` | `2.0` | Base delay in seconds between reconnection attempts |
-| `herdr-reconnect-max-delay` | `60.0` | Cap in seconds on the reconnection backoff |
-| `herdr-log-level` | `'warn` | Logging verbosity: `'error`, `'warn`, `'info`, `'debug`, `'trace` (trace records full frames; terminal output may contain secrets) |
-| `herdr-log-buffer` | `*herdr-log*` | Name of the Herdr log buffer |
-
-### Agent control
-
-| Option | Default | Meaning |
-|---|---|---|
-| `agent-fleet-auto-connect` | `'on-demand` | When to connect: `nil` (manual), `'on-demand`, or `'after-init` |
-| `agent-fleet-auto-connect-delay` | `1.0` | Idle seconds before an `after-init` connection |
-| `agent-fleet-agent-executables` | claude/codex/pi | Known agent kinds and their CLI executables; used by `agent-fleet-doctor` and kind completion |
-| `agent-fleet-project-backend` | `'project` | Project detection source: `'project` (built-in `project.el`) or `'projectile` (requires Projectile); git repos resolve the same either way |
-| `agent-fleet-default-read-source` | `'recent_unwrapped` | Default `agent.read` source: `'visible`, `'recent`, `'recent_unwrapped`, or `'detection` |
-| `agent-fleet-default-read-lines` | `120` | Default line count for reads and output snapshots |
-| `agent-fleet-default-read-format` | `'text` | Default read format: `'text` (ANSI stripped) or `'ansi` |
-| `agent-fleet-start-timeout-ms` | `30000` | Startup timeout in ms passed to `agent.start` (Herdr requires 3000–300000) |
-| `agent-fleet-wait-timeout-ms` | `120000` | Default timeout in ms for `agent-fleet-wait` and `-prompt-and-wait` |
-| `agent-fleet-default-wait-until` | `'(done blocked)` | Default statuses `wait`/`prompt-and-wait` wait for |
-| `agent-fleet-output-buffer-prefix` | `*Agent Output: ` | Prefix for output buffer names (buffer is `PREFIX<name>*`) |
-| `agent-fleet-prompt-dwim-max-region-lines` | `50` | Maximum selected-region lines included verbatim by `agent-fleet-prompt-dwim`; larger regions send reference-only context |
-| `agent-fleet-prompt-dwim-max-region-chars` | `4000` | Secondary character ceiling for selected text, retained for compatibility and very long single-line regions |
-
-### External editor bridge
-
-| Option | Default | Meaning |
-|---|---|---|
-| `agent-fleet-agent-editor-command` | `"emacsclient --quiet"` | Command assigned to `EDITOR` and `VISUAL` when Agent Fleet provisions a new agent pane; nil disables injection |
-| `agent-fleet-editor-auto-start-server` | `t` | When enabling the bridge, start this Emacs's built-in server if it does not own one; never changes or stops an existing server |
-| `agent-fleet-editor-route-timeout` | `30.0` | One-shot seconds to wait for the next `$EDITOR` server file visit |
-| `agent-fleet-editor-frame-parameters` | `((name . "Agent Fleet Editor") (width . 100) (height . 35) (minibuffer . t))` | Parameters for the standalone editor frame; any `parent-frame` entry is ignored |
-
-The bridge is opt-in: run `M-x agent-fleet-editor-bridge-mode` and enable it.
-It lazily loads `server`; ordinary Agent Fleet load/connect has no server side
-effect. Set `agent-fleet-editor-auto-start-server` to `nil` when the server
-must be started manually. `agent-fleet-agent-editor-command` must invoke
-`emacsclient` for that same server.
-
-### Dashboard
-
-| Option | Default | Meaning |
-|---|---|---|
-| `agent-fleet-notify-on` | `'(blocked done)` | Agent statuses that trigger a notification; `nil` disables notifications |
-| `agent-fleet-dashboard-buffer-name` | `*Agent Fleet*` | Name of the dashboard buffer |
-| `agent-fleet-dashboard-display` | `'buffer` | Display backend: `'buffer`, `'child-frame`, or `'frame` |
-
-### Terminal attach
-
-| Option | Default | Meaning |
-|---|---|---|
-| `agent-fleet-attach-backend` | `'auto` | Terminal backend: `'auto` or `'ghostel` |
-| `agent-fleet-attach-buffer-prefix` | `*agent:` | Prefix for attach buffer names (buffer is `PREFIX<name>*`) |
-| `agent-fleet-attach-inhibit-evil-escape` | `t` | Inhibit `evil-escape` locally in attach buffers to avoid duplicated input |
-
-## Cleanup
-
-`M-x agent-fleet-cleanup` scans all resources on the current Herdr connection.
-If eligible targets exist, it opens a review buffer in the current window,
-preserving the existing window geometry. The buffer lists the exact proposed
-operations and protected resources, and warns that shells or other processes
-may be terminated. Press `C-c C-c` to execute the listed cleanup once; before
-execution, press `q` or `C-g` to cancel. After execution, the same buffer
-shows the outcome, including protected, skipped, and failed resources. With
-no candidates, no review buffer opens.
-
-Both views use theme-aware headings and status highlighting, with keyboard
-hints pinned in the header. Review groups `[CLOSE]` targets and `[KEEP]`
-resources, showing full paths, terminal IDs, and protection reasons on separate
-lines. Results put failures and uncertain outcomes first, followed by pending,
-skipped, closed, and protected resources. Text labels remain readable without
-color; long paths wrap instead of being truncated. No extra package is required.
-
-If execution is interrupted, the buffer retains confirmed results and lists
-unattempted targets. A close request interrupted before acknowledgement is
-marked as uncertain, since the server may already have applied it. This also
-applies to timeouts, connection loss, and invalid acknowledgements after a
-close request is dispatched. Execution stops at that point, retains the
-diagnostic, and lists the remaining targets as not attempted. An explicit
-server rejection is recorded as failed. Run
-`M-x agent-fleet-cleanup` again to scan fresh state; the old review cannot be
-executed again. Quitting the review restores the original buffer without
-killing it or its attached terminal client.
-
-Cleanup protects an entire Workspace whenever any agent is associated with
-it, regardless of agent status. This includes sibling panes, the Workspace's
-worktree, and positive evidence in either the current snapshot or live cache.
-Task associations protect their resources conservatively, including when a
-member is missing; `done` status does not authorize cleanup. A primary Git
-checkout directory is never deleted. Worktrees are always skipped because
-current Herdr RPC metadata cannot prove that their commits and changes have
-been preserved; cleanup does not call `worktree.remove` or force deletion.
-Unknown or unsafe ownership is protected. Cleanup does not poll in the
-background.
-
-For Lisp callers, `(agent-fleet-cleanup)` with no arguments returns a
-read-only report. `:select t` opens the same review buffer and immediately
-returns the scan report with `:review-opened t`; execution waits for `C-c C-c`.
-`:no-confirm t` does not bypass that review. `:targets` accepts explicit
-eligible runtime pane IDs and
-applies the same safety rules. `:project` and `:task` are Lisp-only filters.
-`:no-confirm t` is supported only with explicit Lisp targets. Reports and
-execution results include protected, skipped, and failed resources. Before
-each operation, cleanup rechecks fresh identities, the connection, and whole-
-Workspace agent evidence; unknown evidence fails closed.
-For multiple targets in one Workspace, later checks account for closures
-acknowledged earlier in the same run. Other identity or membership changes
-still prevent cleanup.
-
-Herdr's close RPCs do not offer an atomic "close only if still agent-free"
-condition. Final client-side revalidation narrows but cannot eliminate the
-race with an agent starting or moving before the server executes the close.
-Do not start or move agents during cleanup, including through external
-automation. If that cannot be ensured, quit the review without executing.
-
-The former `agent-fleet-cleanup-worktrees`, `agent-fleet-cleanup-tabs`,
-`agent-fleet-task-cleanup`, `agent-fleet-cleanup-task`, and
-`agent-fleet-worktree-cleanup` commands are removed. Update bindings and
-callers to `agent-fleet-cleanup`.
-
-## Low-level Herdr client
-
-The `herdr` library is available for direct protocol access
-(`M-x herdr-connect`, `M-x herdr-start`, `M-x herdr-stop`,
-`M-x herdr-disconnect`, and `M-x herdr-doctor`), but most
-users should prefer the `agent-fleet-*` commands, which resolve targets, keep
-the local model synchronized, and expose lifecycle hooks. The protocol uses one
-short-lived socket per request and one long-lived event subscription; Herdr
-remains the source of truth and reconnecting rebuilds the local snapshot.
-The low-level protocol documentation covers Herdr methods that Agent Fleet does
-not surface; their presence is not a commitment to build a general Herdr UI.
-Authoritative cache rebuilds use the same event-deferral boundary described in
-the dashboard section, so synchronous request pumping cannot discard a pushed
-event that arrived during the rebuild. See
-[`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the wire protocol and event shapes.
-
-## Architecture
-
-```text
-Emacs
-  |
-  +-- agent-fleet-dashboard.el  live dashboard and contextual actions
-  +-- agent-fleet-attach.el     interactive terminal attach
-  +-- agent-fleet-editor.el     optional $EDITOR/server bridge for attaches
-  +-- agent-fleet-display.el    shared child-frame presentation lifecycle
-  +-- agent-fleet-project.el    logical project/codebase mapping
-  +-- agent-fleet-worktree.el   isolated checkout management
-  +-- agent-fleet-magit.el      optional status and diff integration
-  +-- agent-fleet-parallel.el   multi-agent task orchestration
-  +-- agent-fleet-cleanup.el    cleanup scan, protection, and execution
-  +-- agent-fleet.el            agent lifecycle, target resolution, and control
-  |
-  +-- herdr.el                  connection and requests
-      +-- herdr-events.el       subscriptions and hook dispatch
-      +-- herdr-model.el        live cache
-      +-- herdr-protocol.el     newline-delimited JSON transport
-  |
-  v
-Herdr server --> real PTYs --> Claude Code / Codex / Pi / other CLI agents
-```
-
-## Development
-
-Run the complete byte-compilation and mock regression suite:
-
-```sh
-make test
-```
-
-Run live integration tests against a running local Herdr server:
-
-```sh
-make test-live
-```
-
-Other useful targets:
-
-```sh
-make compile
-make doctor
-make clean
-```
-
-## License
-
-GPL-3.0-or-later. See [`LICENSE`](LICENSE).
+Dashboard filters do not restrict cleanup. Live agents, including those reporting
+done, are preserved. Records with remaining children are retained so relationships
+are not lost. Finished children are processed before parents. New records created
+after review are not added to the selection.
+
+Identity, current state and Fleet association are rechecked before each removal.
+Core also rejects removal of live terminals. Failed/uncertain results and
+unattempted targets remain visible; uncertain outcomes stop further removals.
+There is no automatic retry and no worktree cleanup.
+
+## Migration from the original Herdr backend
+
+This version uses herdr-core exclusively. Restart Emacs when switching from the
+old backend so old bytecode, hooks and loaded definitions are not retained.
+
+Removed: the original `herdr-*` connection commands, Workspace/Tab/Pane
+provisioning, `agent-fleet-parallel`, Task APIs and old worktree RPC commands.
+Configure `herdr-core-*` options and use literal argv lists for the Lisp start API.
+Consult now exposes the optional `consult-agent-fleet` command.
+
+Existing old-Herdr programs are not transferred to Core. The migration does not
+close them. Start new Core agents explicitly. Existing Git checkouts can be reused.
+
+## Verification
+
+- `make test`: strict byte compilation and isolated ERT, including retained
+  external-editor safety regressions.
+- `make test-live`: fresh temporary Core session/config/state; validates events,
+  reconnect, history removal and parent/child termination. Set `FLEET_TEST_HC`
+  when hc is outside PATH.
+- `make test-gui GUI_LOAD_PATH='-L /path/to/ghostel/lisp -L /path/to/compat ...'`:
+  a fresh graphical Emacs with your optional packages on its load path. Tests
+  real Ghostel attachment, frame lifecycle, geometry and detach, plus Magit when
+  available. Results go to `FLEET_GUI_RESULT` or `/tmp/fleet-gui-result`.
+
+See [the protocol contract](docs/PROTOCOL.md) and
+[the pinned schema](docs/hc-0.1.17.openrpc.json).

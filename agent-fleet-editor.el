@@ -49,9 +49,9 @@
 (defvar server-name)
 (defvar-local server-buffer-clients nil)
 
-(declare-function agent-fleet-attach--current-pane-id
+(declare-function agent-fleet-attach--current-address
                   "agent-fleet-attach" ())
-(declare-function herdr-request "herdr" (method &optional params))
+(declare-function herdr-core-request "herdr-core" (method &optional params timeout))
 (declare-function agent-fleet-display-origin-frame
                   "agent-fleet-display" (&optional frame))
 
@@ -259,15 +259,15 @@ is removed and the prior `server-window' value is restored."
     (user-error "Agent Fleet editor bridge is not enabled"))
   (when agent-fleet-editor--active-requests
     (user-error "Finish the current external-editor request before starting another"))
-  (let* ((pane-id (agent-fleet-attach--current-pane-id))
+  (let* ((pane-id (agent-fleet-attach--current-address))
          (origin-info (agent-fleet-editor--record-origin))
          (route (agent-fleet-editor--arm-route pane-id origin-info)))
     (condition-case err
         (progn
-          ;; Send exactly Ctrl-G to Herdr through `agent.send_keys'; it does
+          ;; Send exactly Ctrl-G to Herdr through `terminal.keys'; it does
           ;; not synthesize Enter or any other terminal key.
-          (herdr-request "agent.send_keys"
-                         `(("target" . ,pane-id) ("keys" . ["ctrl+g"])))
+          (herdr-core-request "terminal.keys"
+                              (list :terminal pane-id :keys ["ctrl+g"]))
           (message "agent-fleet: waiting for external editor request"))
       (error
        (agent-fleet-editor--clear-pending-route

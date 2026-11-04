@@ -1,878 +1,108 @@
-# Herdr Socket API Protocol Reference
-
-Reference for the Herdr wire contract used by Agent Fleet, refreshed against
-**Herdr 0.9.0** (protocol **22**), tag commit
-`b99002ac99b09e00b4ca692436cb15a6b0d676f1`.
-
-Verification sources:
-
-- [Release notes](https://github.com/herdrdev/herdr/releases/tag/v0.9.0).
-- [Tagged API schemas](https://github.com/herdrdev/herdr/tree/v0.9.0/src/api/schema),
-  compared with the previously supported v0.8.2 schemas.
-- [Socket server](https://github.com/herdrdev/herdr/blob/v0.9.0/src/api/server.rs)
-  and [subscriptions](https://github.com/herdrdev/herdr/blob/v0.9.0/src/api/subscriptions.rs).
-- Isolated local 0.9.0 server probes for ping, snapshots, provisioning, live
-  events, subscription rebuilding and reconnect. These do not verify every
-  optional RPC in the reference catalog below.
-
-This document is the spec the Emacs client (`herdr-protocol.el`, `herdr-model.el`,
-`herdr-events.el`, `herdr.el`) is built against. Herdr may change between
-versions, so the client must always:
-
-- discover the socket from the configured endpoint and verify the protocol
-  compatibility floor at runtime (`ping`),
-- tolerate unknown JSON fields (Herdr protocol clients are expected to be
-  forward-compatible),
-- treat `session.snapshot` as the canonical resync; never synthesize a
-  client-side missed-event replay. In 0.9.0, subscribe before requesting the
-  snapshot: global subscriptions no longer replay retained history. Event
-  application remains idempotent.
-
-### Changes relevant to Agent Fleet in 0.9.0
-
-| Area | Verified change | Fleet handling |
-|---|---|---|
-| Global events | Subscription starts at registration, not retained history | Subscribe before snapshot on protocol 22; defer events while installing it |
-| Per-pane status | Still requires an explicit pane ID; an unfiltered subscription has no initial status push | Enumerate panes first; reconcile a post-ACK snapshot and check subscription coverage |
-| Ping capabilities | Adds integer `endpoint_protocol_generation` and booleans `surface_interest`, `health_check` | Preserve mixed-type fields; do not require endpoint-shell features for JSON RPC |
-| Workspace create/close | Adds optional `source_workspace_id` and `close_group` (default false) | Existing provisioning unchanged; never enable group close implicitly |
-| Worktree requests | Adds `trust_repository` (default false) | Existing requests unchanged; never bypass repository trust automatically |
-| Agent prompt | Success follows prompt/Enter submission; waiting requires observed activity for a non-working agent | Keep atomic prompt-with-wait RPC; preserve structured failures |
-| Terminal attach | Multiline paste handling fixed; private terminal handshake still versioned | Continue using Herdr CLI/Ghostel; keep CLI and server terminal protocols compatible |
-
-The existing AgentInfo, PaneInfo, SessionSnapshot and event payload wire
-shapes used by Fleet remain compatible. Newly added machine/client-shell UI
-methods are outside Fleet's product scope. This reference is not a backlog.
-
----
-
-## 1. Transport
-
-- **Unix domain socket** (AF_UNIX). The client discovers the path with
-  the following precedence (highest first): a nonempty explicit
-  `herdr-socket-path`; the configured `herdr-default-session-name`
-  (`default` → `~/.config/herdr/herdr.sock`; any other valid name →
-  `~/.config/herdr/sessions/<name>/herdr.sock`); the `HERDR_SOCKET_PATH`
-  environment variable; and the default `~/.config/herdr/herdr.sock`.
-  The default Session is `default`, so normal startup does not invoke
-  `herdr status`. A nil `herdr-default-session-name` skips named-Session
-  resolution and uses the environment variable or the default socket path.
-  A missing socket for a configured Session is a connection error; the name
-  must be a safe single path component. The resolved endpoint is saved on
-  the connection and reused by reconnect and every RPC, so a later setting
-  change does not move a live connection.
-- The explicit Emacs command `herdr-start` launches the configured named
-  Session through the CLI as `herdr --session NAME server` and waits for the
-  resolved socket to answer `ping`. It is a narrow local lifecycle command,
-  not Session enumeration or switching. The explicit `herdr-stop` command
-  disconnects Emacs first and then sends the `server.stop` RPC on the saved
-  socket; it does not invoke a stop CLI command.
-- **Newline-delimited JSON.** Each message is one UTF-8 JSON object terminated by
-  `\n`. A single JSON object may be split across multiple `recv` calls, so a
-  client must buffer until the terminating `\n`.
-- No length prefix. No authentication on the local socket.
-
-## 2. Connection model  ⚠ critical
-
-Probed empirically — this is the single most important design fact:
-
-- **Request connections are one-shot.** Open a socket, send exactly one
-  request line, read exactly one response line, then the **server closes the
-  connection** (confirmed: a second request on the same socket gets
-  `BrokenPipeError`). Each request opens a fresh connection. There is therefore
-  no request-multiplexing / pending-request table — the `id` field is still
-  echoed in the response and is useful for logging, but is not needed for
-  correlation on a shared socket.
-- **Subscription connections are long-lived.** Open a socket, send
-  `events.subscribe`, read the `subscription_started` ack, then the server
-  pushes event lines indefinitely until the client closes. A subscription
-  connection does **not** accept further requests.
-- One client therefore holds: N short-lived one-shot request sockets (created
-  on demand) + 1 long-lived subscription socket (held for the session).
-
-## 3. Message envelopes
-
-```
-request      : {"id":"<str>","method":"<str>","params":{...}}      required: id, method, params
-success      : {"id":"<str>","result":<method-specific>}            required: id, result
-error        : {"id":"<str>","error":{"code":"<str>","message":"<str>"}}  required: id, error
-```
-
-Pushed events use **two** envelope shapes depending on which subscription
-produced them (verified against `src/api/schema/events.rs`):
-
-```
-GLOBAL push  : {"event":"<underscored>","data":{"type":"<underscored>",...payload}}
-PER-PANE push: {"event":"<dotted>","data":{...payload}}            // NOTE: data is UNTAGGED (no "type")
-```
-
-- **Global** events (`EventEnvelope`): `event` is an *underscored* `EventKind`
-  (`#[serde(rename_all="snake_case")]`, e.g. `"pane_created"`), and `data` is
-  an `EventData` enum tagged `#[serde(tag="type")]` — so `data.type` repeats
-  the underscored kind.
-- **Per-pane** subscription events (`SubscriptionEventEnvelope`): `event` is a
-  *dotted* `SubscriptionEventKind` (explicit dotted renames, e.g.
-  `"pane.agent_status_changed"`), and `data` is a `SubscriptionEventData`
-  enum marked `#[serde(untagged)]` — so there is **no `type` field** inside
-  `data`, and `event` is dotted, not underscored. The three per-pane kinds are
-  `pane.agent_status_changed`, `pane.output_matched`, `pane.scroll_changed`.
-- `params` is always a JSON object; for parameter-less methods (`ping`,
-  `session.snapshot`, `server.*` with `EmptyParams`) it is `{}` (empty object),
-  **not** `null`.
-- Pushed subscription messages have **no `id`** — they are not correlated to a
-  request. Route them by the `event` field. Because per-pane pushes are dotted
-  while the model's event arms speak the underscored form, the client
-  normalizes dotted→underscored on receipt (a no-op for global pushes, which
-  contain no dots).
-
-## 4. Error model
-
-Server errors come back on the same one-shot connection as the request:
-
-```json
-{"id":"r1","error":{"code":"invalid_request","message":"invalid request: missing field `pane_id` at line 1 column 220"}}
-```
-
-Observed codes: `invalid_request`. The schema defines `error.code` (string) and
-`error.message` (string), both required. The client maps these to structured
-Lisp errors (`herdr-request-error` carrying the `code`), not bare `error`.
-
-A missing/unknown-field request is rejected with `invalid_request` and the
-**whole request** fails (it is atomic). The response `id` may be the request's
-`id` or empty `""` on early parse failure — do not rely on it for correlation;
-the one-shot connection already disambiguates.
-
-## 5. `ping`
-
-- Request: `{"id":"1","method":"ping","params":{}}`
-- Result:
-  ```json
-  {"type":"pong","version":"0.9.0","protocol":22,
-   "capabilities":{"live_handoff":true,"detached_server_daemon":true,
-                   "endpoint_protocol_generation":1,
-                   "surface_interest":true,"health_check":true}}
-  ```
-- `protocol` (int) is the authoritative protocol version; compare against
-  `herdr-required-protocol-version` (22). It is not the stable endpoint
-  generation. `capabilities` has mixed value types: the generation is an
-  integer and the other current entries are booleans. Tolerate unknown keys
-  and an omitted/null capabilities object. The JSON client requires protocol
-  22 or newer; endpoint generation 1 is not required for this API. Direct
-  terminal attach uses a separate private handshake.
-
-## 6. `session.snapshot`
-
-- Request: `{"id":"1","method":"session.snapshot","params":{}}`
-- Result: `{"snapshot":{ ... }}` where the snapshot object is:
-
-```
-snapshot = {
-  protocol: int,
-  version: str,
-  focused_workspace_id?, focused_tab_id?, focused_pane_id?: str,
-  workspaces: [ WorkspaceInfo ],
-  tabs:       [ TabInfo ],
-  panes:      [ PaneInfo ],
-  agents:     [ AgentInfo ],   // a distinct struct, described below
-  layouts:    [ PaneLayoutSnapshot ],
-}
-```
-
-A fresh headless server can return empty arrays and omit all focused IDs.
-That is a valid snapshot, not a connection failure. No `worktrees` array is
-included; worktree metadata comes from its dedicated RPCs and events.
-
-### WorkspaceInfo
-```
-workspace_id, label (str, required), number (int), focused (bool),
-active_tab_id (str, required), tab_count (int), pane_count (int),
-agent_status (str: idle|working|blocked|done|unknown),
-tokens? ({str:str}), worktree? (WorkspaceWorktreeInfo)
-```
-
-### TabInfo
-```
-tab_id, workspace_id, label (str, required), number (int), focused (bool),
-pane_count (int), agent_status (str)
-```
-
-### PaneInfo
-```
-pane_id, terminal_id, workspace_id, tab_id (str, required),
-focused (bool, required), cwd?, foreground_cwd?,
-label?, agent? (str: "claude"|"codex"|"pi"|...), title?,
-terminal_title?, terminal_title_stripped?, display_agent?,
-agent_status (str, required),
-state_labels? ({str:str}), tokens? ({str:str}),
-agent_session? ({ agent, kind: "id"|"path", source, value }),
-scroll? ({ offset_from_bottom, max_offset_from_bottom, viewport_rows }),
-revision (int, required)
-```
-
-### AgentInfo
-A **distinct** struct (NOT a superset of PaneInfo). It shares most fields with
-`PaneInfo` but adds `name?`, `screen_detection_skipped?`,
-`launch_pending?`, `interactive_ready?`, `state_change_seq?` and **omits**
-`label` and `scroll`. The agent-kind field is `agent?` (Option<String>); the
-optional human name is `name?`. An "agent" in the snapshot is identified by
-`pane_id` and `agent` (kind). The named-agent concept (regex
-`[a-z][a-z0-9_-]{0,31}`, unique across live agents) applies to agents created
-via `agent.start`, which takes `name`/`kind`/`pane_id`/`args`. Phase 1 keys
-agents by `pane_id`; the optional `name` slot is populated in Phase 2.
-
-### AgentStatus enum
-`idle`, `working`, `blocked`, `done`, `unknown`.
-Connection health is tracked separately. Fleet does not add `dead` or
-`disconnected` as authoritative agent lifecycle states.
-
-## 7. Events: subscribe + push
-
-### 7.1 `events.subscribe`
-- Request params: `{"subscriptions":[ Subscription, ... ]}` (required:
-  `subscriptions`).
-- A `Subscription` is an object with a `type` field (dotted kind) plus,
-  for pane-scoped subscriptions, extra required fields.
-- Result: `{"type":"subscription_started"}`. The connection then becomes
-  push-only.
-- Global lifecycle events start at subscription registration in 0.9.0;
-  retained earlier events are not replayed. Setup-window events are retained.
-  There is no client-supplied replay cursor.
-- A per-pane status subscription without `agent_status` does **not** emit an
-  initial status. A matching explicit status filter can emit one. Fleet uses
-  unfiltered status subscriptions and obtains initial state from a snapshot
-  taken after the subscription acknowledgement.
-
-### 7.2 Subscription `type` values (dotted), 27 total
-
-Global (no extra fields):
-```
-workspace.created workspace.updated workspace.metadata_updated
-workspace.renamed workspace.moved workspace.reordered workspace.closed
-workspace.focused
-worktree.created worktree.opened worktree.removed
-tab.created tab.closed tab.focused tab.renamed tab.moved
-pane.created pane.closed pane.updated pane.focused pane.moved pane.exited
-pane.agent_detected
-layout.updated
-```
-
-Pane-scoped (require `pane_id`):
-```
-pane.agent_status_changed   { type, pane_id, agent_status? }
-pane.scroll_changed         { type, pane_id }
-```
-
-Content-match (require `pane_id` + `source` + `match`):
-```
-pane.output_matched         { type, pane_id, source, match, lines?, strip_ansi? }
-```
-
-Because `pane.agent_status_changed` needs a `pane_id`, a fleet client must
-subscribe **per agent pane** and **rebuild** that subset whenever panes are
-created/closed.
-
-### 7.3 Pushed event kinds
-
-**Global** pushes carry an underscored `event` (and a tagged `data.type` that
-repeats it) — the 26 `EventKind` variants (`src/api/schema/events.rs`):
-
-```
-workspace_created workspace_updated workspace_metadata_updated workspace_closed
-workspace_renamed workspace_moved workspace_reordered workspace_focused
-worktree_created worktree_opened worktree_removed
-tab_created tab_closed tab_renamed tab_moved tab_focused
-pane_created pane_closed pane_updated pane_focused pane_moved
-pane_output_changed pane_exited pane_agent_detected pane_agent_status_changed
-layout_updated
-```
-
-Note `pane_scroll_changed` is **not** a global `EventKind` — it exists only as a
-per-pane subscription kind. (`pane_agent_status_changed` *is* a global
-`EventKind` and enters the `EventHub` ring, but there is no *global* subscription
-type for it — see §7.2 — so a fleet client only ever receives it via the
-per-pane subscription below.)
-
-**Per-pane** pushes carry a dotted `event` and untagged `data` — the 3
-`SubscriptionEventKind` variants (`src/api/schema/events.rs`):
-
-```
-pane.agent_status_changed   { pane_id, workspace_id, agent_status,
-                              agent?(str), title?(str),
-                              display_agent?(str), state_labels }
-pane.output_matched         { pane_id, matched_line(str), read(PaneReadResult) }
-pane.scroll_changed         { pane_id, workspace_id, scroll(PaneScrollInfo) }
-```
-
-**The dotted→underscored mapping is one-way and global-only.** A *global*
-subscription type (`pane.created`) produces an *underscored* global push
-(`pane_created`) — the `.`→`_` mapping holds. A *per-pane* subscription type
-(`pane.output_matched`) produces a *dotted* per-pane push
-(`pane.output_matched`) — the kind is **not** remapped to `pane_output_changed`
-(earlier versions of this doc had that backwards); `pane_output_changed` is a
-separate *global* `EventKind` pushed to global subscribers, not to
-`pane.output_matched` subscribers.
-
-### 7.4 Event payloads (selected)
-
-- `workspace_*`: carry `workspace` (WorkspaceInfo) and/or `workspace_id`.
-- `tab_*`: carry `tab` (TabInfo) and/or `tab_id`/`workspace_id`.
-- `pane_created`/`pane_updated`: carry `pane` (PaneInfo).
-- `pane_closed`/`pane_exited`: carry `pane_id`/`workspace_id`.
-- `pane_focused`: `pane_id`/`workspace_id`.
-- `pane_moved`: carries `pane`, `previous_pane_id/tab_id/workspace_id`, and
-  possibly `created_*`/`closed_*` — a move may change a pane's
-  workspace-qualified `pane_id`; the agent `name` (Phase 2) survives as a live
-  alias. Phase 1 treats `pane_id` as mutable across moves and resyncs from
-  snapshot on reconnect.
-- `pane_agent_detected`: `pane_id`, `workspace_id`, `agent?` (the agent
-  **kind string**, not AgentInfo), `released` (bool), `final_status?`
-  (AgentStatus). This is the screen-detection signal; the agent kind may not
-  be known yet, so `agent` is omitted when none was recognized. `final_status`
-  is `Some` **only when `released` is true** (the agent already finished);
-  a freshly-detected active agent carries `released: false` and no
-  `final_status` — its status arrives in the following
-  `pane_agent_status_changed` event, never in the detection itself. The
-  detection carries no `:pane` and no `agent_status`; the cwd/terminal-title
-  identity comes from the pane (a `pane_created`/`pane_updated` event or the
-  snapshot), so a detection alone yields only a minimal cache entry
-  (enriched by `pane_*` events and `agent.get`/`agent.start` results).
-- `pane_agent_status_changed`: `pane_id`, `workspace_id`, `agent_status`,
-  `agent?` (kind **string**), `title?`, `display_agent?`, `state_labels`.
-  Note `agent` here is `Option<String>` (the kind), NOT an `AgentInfo` struct
-  — a status event only PATCHES the already-cached agent's status/kind, it
-  never carries a full agent to parse-and-replace (the agent was established
-  by the snapshot or a prior detection/`pane_created`). The Phase 3 dashboard
-  (`agent-fleet-dashboard.el`) drives its live refresh from this event via
-  the `agent-fleet-agent-status-changed-hook` — no polling, no new wire
-  protocol. The `AgentStatus` enum (above) is authoritative
-  for the five rendered states.
-
-## 8. Other Phase-1-relevant methods
-
-The schema (`src/api/schema.rs`, surfaced via `herdr api schema`) defines the
-full method catalog; only the methods the client actually issues are below.
-Every success result is a `ResponseResult` tagged
-`#[serde(tag="type", rename_all="snake_case")]`, so a result is always
-`{"type":"<variant>",...fields}` — never a bare payload. The client unwraps
-these envelopes tolerantly (`agent-fleet--unwrap-agent` for the `:agent`
-envelope, `agent-fleet--unwrap-read` for `:read`).
-
-- `events.wait` — `{"match_event":{"event":"<underscored>","workspace_id"?...},
-  "timeout_ms":<int|null>}`. Blocks (one-shot connection) until a matching
-  event arrives or timeout. An `events.wait` match against
-  `pane_agent_status_changed` is the one server-side wait that targets a status
-  transition (the `EventMatch.event` is the underscored global `EventKind`).
-
-### 8.1 Phase 2 agent control methods
-
-These are the RPCs the `agent-fleet.el` control layer (Phase 2) issues over
-the Phase 1 client. `agent.*` methods take a **`target`** string — an agent
-name *or* a pane id, resolved by the server. `pane.*` methods
-require a real `pane_id`.
-
-| Method | Request params | Result (`{type, ...}`) |
-|---|---|---|
-| `agent.start` | `{name, kind, pane_id, args?, timeout_ms?}` | `agent_started` → `{agent: AgentInfo, argv: [str]}` |
-| `agent.prompt` | `{target, text}` | `agent_prompted` → `{agent: AgentInfo}` |
-| `agent.prompt` (wait) | `{target, text, wait:{until, timeout_ms}}` | success: `agent_prompted` → `{agent: AgentInfo}`; failure: error `timeout`/`agent_prompt_stalled`/`agent_not_running` |
-| `agent.wait` | `{target, until, timeout_ms}` | `agent_info` → `{agent: AgentInfo}` |
-| `agent.read` | `{target, source, lines, format, strip_ansi}` | `pane_read` → `{read: PaneReadResult}` |
-| `agent.send_keys` | `{target, keys:[...]}` | `ok` → `{}` |
-| `agent.rename` | `{target, name}` | `agent_info` → `{agent: AgentInfo}` |
-| `agent.focus` | `{target}` | `agent_info` → `{agent: AgentInfo}` |
-| `agent.list` | `{}` | `agent_list` → `{agents: [AgentInfo]}` |
-| `agent.get` | `{target}` | `agent_info` → `{agent: AgentInfo}` |
-
-Notes on params:
-- `agent.start` requires `name`, `kind`, and `pane_id`; `args` is an optional
-  list of extra CLI arguments. `target` (for the other `agent.*` methods) is
-  a name *or* pane id, resolved by the server.
-
-Fleet defers pushed events during the `agent.start` response/cache update
-and during `agent.get` response/cache updates. Queued
-events then replay in order, including on error. Early detection cannot repeat
-the started notification, and older RPC data cannot resurrect a closed pane.
-Startup is committed before replay and consumer hooks run, so an error does not
-authorize provisioning rollback after an acknowledged start. The started hook
-runs after the start transaction releases event deferral. Fleet rechecks the
-target both after replay and after the hook, and signals a provisioning error
-instead of attaching or returning an unavailable pane identity.
-
-Provisioning / teardown (used by `agent-fleet-start` / `-kill`):
-
-| Method | Request params | Result (`{type, ...}`) |
-|---|---|---|
-| `workspace.create` | `{source_workspace_id?, cwd?, focus?, label?, env?}` | `workspace_created` → `{workspace: WorkspaceInfo, tab: TabInfo, root_pane: PaneInfo}` |
-| `pane.split` | `{workspace_id?, target_pane_id?, direction, ratio?, cwd?, focus?, right_click?, env?}` | `pane_info` → `{pane: PaneInfo}` |
-| `tab.create` | `{workspace_id?, cwd?, focus?, label?, env?}` | `tab_created` → `{tab: TabInfo, root_pane: PaneInfo}` |
-| `pane.current` | `{}` | `pane_info` → `{pane: PaneInfo}` (focused pane) |
-| `pane.close` | `{pane_id}` | `ok` → `{}` — also drives `pane_closed` removal + exited hook |
-
-Notes:
-
-- **`workspace.create` returns a ready root pane.** The client targets that
-  pane directly for `agent.start`; creating another tab would leak an unused
-  shell and was previously hidden by an unfaithful mock response.
-- **`pane.split` has no `tab_id`.** The required field is `direction`
-  (`"right"`\|`"down"`, a `SplitDirection` enum), not `split_direction`.
-  `target_pane_id` selects the pane to split from (defaulting to the focused
-  pane); `ratio`/`cwd` are optional; `focus` (bool) defaults false. The client
-  reads the result's `:pane` for the new `pane_id`.
-- **`tab.create` returns `root_pane`.** The result carries `:tab` (TabInfo)
-  and `:root_pane` (a shell PaneInfo at the tab cwd); the client targets
-  `root_pane.pane_id` for `agent.start` — no separate `pane.split`.
-- **Provisioning `env` is a string-to-string object.** `workspace.create`,
-  `pane.split`, and `tab.create` apply it to the newly created shell pane.
-  `agent.start` and `worktree.create` do not accept an `env` field.
-
-- **`wait` field** on `agent.prompt` makes submit+wait a single atomic RPC,
-  avoiding the race where the agent finishes between a separate prompt and
-  wait (§19). `until` is a JSON array of `AgentStatus` strings.
-- **Interrupt** is `agent.send_keys` with `keys:["ctrl+c"]`, *not* a `cancel`
-  method — different CLIs attach different semantics to Ctrl-C, so the key is
-  exposed directly (§21).
-- **Output is a read-snapshot.** `agent.read` returns a `PaneReadResult`
-  (`{pane_id, workspace_id, tab_id, source, format, text, revision,
-  truncated}`); it is never mirrored or persisted (§23/§46 — pane output may
-  contain secrets). `agent-fleet-show-output` opens a fresh snapshot in a
-  read-only buffer.
-- **`strip_ansi` is a JSON boolean**, not a string. The Emacs client encodes
-  `t`→`true` and `nil`/`:false`→`false` (via `(json-false :false)`).
-- **`ReadSource`** enum (for `agent.read`/`pane.read`): `visible`, `recent`,
-  `recent_unwrapped` (default — ignores soft wrapping, best for logs), `detection`.
-- **`AgentStatus`** (the `until` array for `agent.wait`/`prompt` wait): the
-  five statuses in §AgentStatus. `agent-fleet` maps them straight from Herdr
-  with no client-side parsing (§12).
-
-### 8.2 Phase 4 project integration (no new wire protocol)
-
-`agent-fleet-project.el` (Phase 4, §69) is a **client-side** layer: it maps
-agents to Emacs `project.el` projects by **canonical cwd** (`file-truename
-(project-root …)`), not the workspace label (§32: "do not identify a project
-from its label alone"). It
-adds no protocol — it reuses the Phase 2 RPCs above:
-
-- `agent-fleet-start-for-project` resolves `(project-current)`, then calls
-  `workspace.create` (with `cwd=root`, already documented) when no existing
-  workspace hosts the project, and targets its returned `root_pane` directly.
-  When reusing an existing workspace, interactive starts provision via
-  `tab.create {cwd?}`; programmatic starts without attachment use
-  `pane.split {cwd?}` when a suitable pane exists. Workspace selection is
-  internal: starts with a cwd reuse a workspace hosting a same-Project agent,
-  or an agent at the same canonical cwd when no Project resolves. The focused
-  workspace is not a fallback for an unrelated explicit cwd. Explicit
-  `:workspace`/`:pane` arguments remain available to Lisp callers.
-  Automatic reuse of a worktree-hosting workspace additionally requires the
-  target's checkout root to match that worktree's path, even for one Project.
-- `agent-fleet-project-agents` and the dashboard `P` filter match agents by
-  the canonical root of their `cwd` (an `AgentInfo`/`PaneInfo` field), so
-  multiple workspaces per repo (worktrees, §32) all resolve to one project.
-
-`agent-fleet-start-for-project` also forwards `:worktree`/`:branch`/`:base`
-(Phase 5, §8.3) so a project can start an agent in an isolated worktree.
-
-### 8.3 Phase 5 worktree RPCs
-
-`worktree.*` methods create/open/list/remove git worktrees — separate
-checkouts of a repo — so multiple agents do not modify the same working
-tree.  The client layer is `agent-fleet-worktree.el`
-plus the `:worktree t` branch of `agent-fleet-start`.
-
-| Method | Request params | Result |
-|---|---|---|
-| `worktree.create` | `{cwd, base?, branch?, focus?, label?, path?, workspace_id?}` | `(:type "worktree_created" :workspace <WorkspaceInfo> :tab <TabInfo> :root_pane <PaneInfo> :worktree <WorktreeInfo>)` |
-| `worktree.open`   | same as create | same as create plus `:already_open` (bool) |
-| `worktree.list`   | `{cwd?, workspace_id?}` | `(:type "worktree_list" :source <WorktreeSourceInfo> :worktrees [<WorktreeInfo>...])` |
-| `worktree.remove` | `{workspace_id (required), force?}` | `(:type "worktree_removed" :path :workspace_id :forced)` |
-
-Notes:
-
-- All four worktree request types also accept `trust_repository` in 0.9.0,
-  default false. Fleet does not send it or change global Git trust settings.
-
-- **`worktree.create` auto-provisions the root pane.**  The result carries
-  `:workspace`, `:tab`, and `:root_pane` (a shell at the worktree cwd), so
-  `agent.start` targets `root_pane.pane_id` directly — no separate
-  `pane.split`.  This is the `:worktree t` flow in
-  `agent-fleet-start` → `agent-fleet--provision-worktree`.
-- **`WorktreeInfo`** (keyed by `path`, the canonical id): `path, branch
-  (str|null), is_bare, is_detached, is_prunable, is_linked_worktree, label,
-  open_workspace_id (str|null)`.  `open_workspace_id` links a worktree to
-  the workspace currently hosting it; the dashboard `w` action resolves an
-  agent's worktree by matching its `workspace_id` against this field.
-- **`WorktreeSourceInfo`** (from `worktree.list`'s `:source`): `repo_key,
-  repo_name, repo_root, source_checkout_path, source_workspace_id?` — repo
-  metadata shown read-only by the `w` status view.
-- **The session snapshot has NO `:worktrees` key.**  Worktree state is
-  populated only from `worktree.*` events (§7.2/§7.4) and the
-  `worktree.list` RPC — never from `session.snapshot`.  The client upserts
-  the worktree + workspace eagerly after `worktree.create`/`open` (closing
-  the race before the pushed `worktree_created`/`opened` event lands), the
-  same pattern used for agents after `agent.start`.
-- **No polling (§25).**  `worktree.list` is called only on a user action
-  (a command or the dashboard `w` key), never on a timer.
-- **Repository scope, not global enumeration.** `worktree.list` uses the
-  explicit `workspace_id` or `cwd`; with neither, it uses Herdr's active
-  Workspace. A non-Git source returns `not_git_worktree`. Cleanup does not use
-  this RPC to authorize or perform worktree removal. Only this specific
-  non-Git error is tolerated by callers that list worktrees; other errors fail
-  closed. Repository list results are upserted without clearing unrelated
-  cached worktrees. Removal events evict deleted entries.
-
-### 8.4 Phase 6 Magit integration (no new wire protocol)
-
-`agent-fleet-magit.el` (Phase 6, §36/§71) adds **no RPC** — Magit status
-and diff operate on the local filesystem (the agent's checkout), not over
-the Herdr socket.  The git root is resolved client-side: by canonical cwd
-(`agent-fleet-project-root-for-cwd`, §8.2) — which yields the *worktree*
-root for a worktree agent (vc/project.el resolve per-worktree) and the main
-repo root for a bare agent — with the cached worktree path
-(`WorktreeInfo.path`, §8.3) as a fallback when the agent has no usable cwd
-(§36 "open agent worktree in Magit").  `magit-status` / `magit-diff-working-tree`
-are then called with that root as `default-directory`; cherry-pick, merge,
-and worktree deletion are Magit's own keys inside the status buffer (§71:
-"use Magit public API").  Magit is an optional dependency (§55): the entry
-points `user-error` when it is absent; `herdr-doctor` reports availability.
-The cleanup command (`agent-fleet-cleanup`) does not call `worktree.remove`.
-Worktrees are always skipped because the available RPC metadata cannot prove
-that their commits and changes have been preserved. The RPC remains available
-for the separate worktree API. Cleanup scans all resources on the current
-connection and presents a review buffer for exact eligible targets. The
-interactive UX occupies the current window without adding a split and
-preserves existing window geometry. It lists exact operations and protected resources,
-and warns that shell and other processes may be terminated. `C-c C-c`
-executes the reviewed cleanup once; before execution, `q` or `C-g` cancels.
-After execution, the same buffer displays the outcome, including protected,
-skipped, and failed resources. No buffer opens when there are no candidates.
-Headings and status labels inherit Emacs theme faces, keyboard hints stay in
-the header, and paths and reasons wrap without truncation. Results prioritize
-failed and uncertain operations and retain each reviewed target's terminal
-IDs and paths. These presentation changes add no RPCs.
-An interrupted run retains confirmed results and stops issuing new close
-requests. A close interrupted before acknowledgement is reported as uncertain;
-timeouts, connection loss, and invalid acknowledgements after dispatch have
-the same treatment. The structured diagnostic is retained in
-`:uncertain-errors`, and unattempted targets remain listed. An explicit server
-rejection is a failed operation. A fresh scan is required before another run.
-
-Any Workspace containing an agent is protected in full, including agents with
-`done` status, sibling panes, and its worktree. Snapshot and live-cache agent
-evidence both count. Task associations conservatively protect resources,
-including when a member is missing; status `done` does not authorize cleanup.
-A primary Git checkout directory is never deleted. Fresh identities, the
-connection, and whole-Workspace agent evidence are rechecked before each
-operation. Unknown or unsafe evidence is protected, and each report accounts
-for protected, skipped, and failed resources. Cleanup never force-deletes or
-falls back to `worktree.remove`.
-For several approved operations within one Workspace, each later check accounts
-only for exact pane identities whose closure was acknowledged earlier in that
-run. Unrelated topology or ownership changes still veto cleanup.
-
-### 8.5 Phase 7 parallel orchestration (no new wire protocol)
-
-`agent-fleet-parallel.el` (Phase 7, §37/§38/§72) adds **no RPC**.  It
-composes the Phase 2/5 primitives to spawn N isolated worktree agents,
-prompt each, and track their aggregate status — all client-side:
-
-- Per spec `(kind . prompt)`: `worktree.create` (§8.3) → `agent.start`
-  (§8.1, targeting the auto-provisioned root pane) → `agent.prompt`
-  (§8.1, submit-ack only — no `wait` field).  Parallel execution is free:
-  `agent.prompt` returns on the submit ack, so the N agents work
-  concurrently after `agent-fleet-parallel` returns.
-- **Aggregate status is client-side.**  The task's `running`/`blocked`/
-  `done` state is computed live from the cache by mapping
-  `agent-fleet-status` over the spawned pane-ids; the
-  `pane_agent_status_changed` event (§7) drives it via the existing
-  status-changed hook bus — no new event, no polling (§25).  It is **not a
-  race** (§38): `done` only when *all* agents are done; a single
-  `blocked` agent makes the task `blocked`; no agent is killed on first
-  `done`.
-- Historical completion timestamps do not override aggregate state. A resumed
-  member makes the task running or blocked again, and a missing member is
-  failed even after an earlier all-done transition. Task waits use current state.
-- **No result extraction (§40).**  Agents are persistent interactive
-  workers, not RPC functions — `agent.read` is terminal state, never a
-  structured final answer.  `agent-fleet-task-wait` pumps
-  `accept-process-output` (event-driven, like `agent-fleet-wait`) and
-  returns STATUS only. Task is a Lisp-only filter for cleanup, not another
-  deletion workflow. Task associations protect resources, including when a
-  member is missing; historical completion timestamps and `done` status do not
-  authorize cleanup. Worktrees are skipped, and every Workspace containing an
-  agent is protected wholesale. Cleanup targets only independently eligible
-  runtime resources, with fresh identity and ownership checks before each
-  operation.
-- The **task is fleet-side metadata** (§41), not Herdr-cached: a registry
-  of `agent-fleet-task` structs mapping pane-ids → task-ids, so the
-  dashboard `T` filter and the Task column resolve without scanning.
-
-### 8.6 Phase 8 interactive terminal (no new wire protocol)
-
-`agent-fleet-attach.el` (Phase 8, §43/§44/§45/§73/§79) adds **no RPC**.
-There is **no `agent.attach` socket method** (§43): attach is a client-side
-PTY bridge, not socket I/O.  It spawns the `herdr agent attach <pane-id>`
-CLI helper — which bridges a single live pane as an interactive PTY client
-(§44 path A) — inside the optional Ghostel terminal backend:
-
-```
-Emacs Ghostel terminal backend
-  ↓  PTY
-herdr agent attach <pane-id>            ← CLI subprocess, not an RPC
-  ↓  socket
-Herdr server → one live agent pane
-```
-
-- **No new Fleet RPC.**  The pane-id is resolved client-side
-  (`agent-fleet--resolve-pane-id`, §8.1) from the cache; the attach CLI is a
-  subprocess started with `ghostel-exec`.  The existing subscription/event
-  bus is untouched.
-- The Herdr CLI still uses the private terminal protocol (22 in 0.9.0), not
-  endpoint-generation negotiation. Its server must support that same terminal
-  protocol even when Fleet's JSON control connection succeeds. Fleet never
-  restarts an incompatible server automatically.
-- **The terminal backend is optional (§45).**
-  `agent-fleet-attach-backend` (default `auto`) uses Ghostel when its dynamic
-  module is ready. Otherwise path C applies: a `user-error` prints the command
-  for the user to run in their own terminal. Eat and vterm are not current
-  attach backends, and the core control plane works without Ghostel installed.
-- **The §45.1 stale-module guard.**  ghostel's lisp can `require`
-  successfully while its dynamic module fails to load (an older/broken
-  on-disk module, or a missing libghostty-vt dependency).  `auto` checks
-  `featurep 'ghostel-module` (the feature `module-load` sets only on a
-  successful load), not just the `require`, so a ghostel whose module did
-  not take falls back to the external command hint rather than calling a
-  `ghostel-exec` that would fail.
-- **Security (§46/§23, unchanged).**  Attach is user-initiated interactive
-  viewing — the terminal buffer is **transient**, not persisted or
-  continuously mirrored (the same boundary as the output view's
-  read-snapshot).  Killing the process detaches and the agent is preserved
-  (detach does **not** close the pane — §79).  No result extraction (§40):
-  the buffer is a live terminal, never a structured answer.
-
-## 9. Reconnect and subscription coverage
-
-Initial connect, reconnect and pane-set rebuilds share one bounded
-synchronization procedure:
-
-1. Close the previous event stream intentionally, if present.
-2. Request `pane.list` from the connection's pinned endpoint.
-3. Subscribe to global events and status changes for those explicit pane IDs.
-4. Await the subscription acknowledgement, then request `session.snapshot`.
-5. Install the snapshot under `herdr-call-with-deferred-events`; replay queued
-   events in arrival order, including when the operation signals.
-6. Compare the subscribed pane IDs with the post-event cache. A pane created
-   between steps 2 and 3 otherwise has neither a replayed creation event nor a
-   status subscription. Retry the sequence when the sets differ, at most
-   three attempts per synchronization.
-7. Notify `herdr-synced-hook` after successful reconciliation.
-
-Only one subscription stream is active at a time. Snapshot recovery establishes
-current state across the stream gap; it cannot reconstruct every intermediate
-transition. Events from a discarded synchronization attempt are replayed before
-the next attempt, never over a later snapshot. New pane-set events after
-synchronization schedule an event-driven rebuild, not background polling.
-
-A failed initial connection closes its stream and reports failure. Rebuild or
-reconnect failures use the existing bounded reconnect/backoff path and must
-not advertise incomplete status coverage as connected. Reconnect repeats
-`ping` and retains the saved endpoint regardless of later configuration changes.
-
-Protocol 19/20 retains the legacy snapshot-then-subscribe path. Such servers
-can replay their retained EventHub history; replay guards and stale-pane
-reconciliation remain for compatibility. Protocol 22 no longer depends on that
-history.
-
-Workspace labels still use the model's existing derivation:
-custom name, then root-pane cwd basename, then the cached server label.
-Legacy replayed workspace labels do not override the cwd-derived value.
-
-## 10. Selected RPC reference (outside the implemented workflow)
-
-The methods below are available in the Herdr socket API
-(<https://herdr.dev/docs/socket-api/>). Most are not currently issued by
-agent-fleet; the narrowly scoped cleanup uses are noted below. This is a
-reference for possible future
-feature work — workspace/tab management, layout export/import, pane
-navigation, notifications, plugins, and integrations. Parameter and
-result field names follow the Herdr JSON wire convention
-(`snake_case`); decoded Emacs plists retain those underscores, for example
-`:pane_id`. Lisp struct accessors use hyphenated names.
-
-### 10.1 Workspace management
-
-| Method | Params | Result |
-|---|---|---|
-| `workspace.list` | `{}` | list of `WorkspaceInfo` |
-| `workspace.get` | `{workspace_id}` | `WorkspaceInfo` |
-| `workspace.focus` | `{workspace_id}` | focused workspace info |
-| `workspace.rename` | `{workspace_id, label}` | `WorkspaceInfo` |
-| `workspace.move` | `{workspace_id, before_workspace_id?}` | reordered list |
-| `workspace.move_block` | `{workspace_ids: [...], before_workspace_id?}` | authoritative ordered list (`workspace_ids` must be unique; the anchor cannot be part of the block) |
-| `workspace.close` | `{workspace_id, close_group?}` | `{type: "ok"}` |
-| `workspace.report_metadata` | `{workspace_id, source, tokens, ttl_ms}` | metadata ack |
-
-Notes:
-- The session snapshot already carries all workspaces (`snapshot.workspaces`),
-  so `workspace.list` is only needed for a live refresh without re-snapshotting.
-- `workspace.move` / `workspace.move_block` reorder workspaces; the result is
-  the authoritative ordered list (the server assigns `number` fields).
-- `workspace.report_metadata` attaches display-only token metadata with a TTL;
-  it does not change the workspace's identity or label.
-- In 0.9.0, closing a primary Workspace with open worktree Workspaces requires
-  explicit `close_group: true`; otherwise the entire group is preserved.
-  Fleet rollback and cleanup do not supply group intent.
-- Interactive `agent-fleet-cleanup` scans whole eligible Workspaces; Lisp
-  callers may target a subset only within an entirely agent-free Workspace.
-  Cleanup never calls `worktree.remove`. Worktrees are always skipped because existing
-  metadata cannot prove commits and changes are preserved. Any snapshot or
-  live-cache evidence of an agent protects its
-  whole Workspace, including siblings and the associated worktree; status does
-  not change this rule. Task associations, including missing members, also
-  protect conservatively. A primary Git checkout directory is never deleted.
-  Before each eligible runtime operation, cleanup rechecks fresh identities,
-  the connection, and whole-Workspace agent evidence; unknown evidence is
-  protected. The interactive command reviews exact operations and protected
-  resources in the current window without adding a split, preserving existing
-  window geometry;
-  `C-c C-c` executes once and, before execution, `q` or `C-g` cancels. The
-  same buffer shows the outcome after execution. Herdr has no atomic
-  conditional-close RPC, so final client-side revalidation cannot eliminate
-  the race with an agent starting or moving before the server executes close.
-  `workspace.close` returns `Ok`, not `workspace_closed`;
-  the latter is the pushed event. Verified against the
-  [0.9.0 Workspace handler](https://github.com/herdrdev/herdr/blob/v0.9.0/src/app/api/workspaces.rs).
-
-### 10.2 Tab management
-
-| Method | Params | Result |
-|---|---|---|
-| `tab.list` | `{}` | list of `TabInfo` |
-| `tab.get` | `{tab_id}` | `TabInfo` |
-| `tab.focus` | `{tab_id}` | focused tab info |
-| `tab.rename` | `{tab_id, label}` | `TabInfo` |
-| `tab.move` | `{tab_id, before_tab_id?}` | reordered list |
-| `tab.close` | `{tab_id}` | closed ack |
-
-Notes:
-- The snapshot carries all tabs (`snapshot.tabs`); `tab.list` is a live
-  refresh without re-snapshotting.
-- `tab.close` returns `{"type":"ok"}` and shuts down the tab's detached
-  terminal runtimes. Closing the last tab also closes its Workspace, unless
-  an implicit worktree-group close requires confirmation. Verified in
-  [Herdr 0.9.0 tab handlers](https://github.com/herdrdev/herdr/blob/v0.9.0/src/app/api/tabs.rs).
-- Tab closure may be used internally when reclaiming an eligible agent-free
-  runtime container; it is not a separate cleanup selection. Cleanup protects
-  every Workspace with any agent and rechecks fresh identities and whole-
-  Workspace agent evidence before each operation. Herdr provides no atomic
-  conditional-close RPC.
-
-### 10.3 Pane management (beyond §8.1)
-
-| Method | Params | Result |
-|---|---|---|
-| `pane.list` | `{}` | list of `PaneInfo` |
-| `pane.get` | `{pane_id?}` | `PaneInfo` (defaults to focused pane) |
-| `pane.rename` | `{pane_id, label}` | `PaneInfo` |
-| `pane.close` | `{pane_id}` | `ok` |
-| `pane.swap` | `{pane_id, direction}` or `{source_pane_id, target_pane_id}` | `pane_swap` (`changed`, `focused_pane_id`, `layout`, `reason?`) |
-| `pane.move` | `{pane_id, destination, focus}` | `pane_move` (`changed`, previous ids, `pane`, layouts, `focused_pane_id`, `reason?`) |
-| `pane.zoom` | `{pane_id?, mode: "toggle"\|"on"\|"off"}` | `pane_zoom` (`changed`, `zoom_changed`, `focus_changed`, `pane_id`, `zoomed`, `layout`, `reason?`) |
-| `pane.resize` | `{pane_id, direction, amount}` | layout update |
-| `pane.focus_direction` | `{direction}` | focused pane info |
-| `pane.layout` | `{pane_id?}` | tab layout snapshot (`workspace_id`, `tab_id`, `zoomed`, `area`, `focused_pane_id`, pane/split rectangles) |
-| `pane.process_info` | `{pane_id}` | shell PID, foreground PGID, process details (PID, name, argv, cwd) |
-| `pane.neighbor` | `{pane_id, direction}` | adjacent pane info |
-| `pane.edges` | `{pane_id}` | layout geometry |
-| `pane.send_text` | `{pane_id, text}` | ack |
-| `pane.send_input` | `{pane_id, ...}` | ack |
-| `pane.input.set` | `{pane_id, right_click}` | ack |
-| `pane.report_agent` | `{pane_id, source, agent, state, message}` | ack |
-| `pane.report_agent_session` | `{pane_id, source, agent, agent_session_id}` | ack |
-| `pane.report_metadata` | `{pane_id, title, display_agent, state_labels, tokens, ttl_ms, seq}` | ack |
-| `pane.clear_agent_authority` | `{pane_id}` | ack |
-| `pane.release_agent` | `{pane_id}` | ack |
-| `pane.wait_for_output` | `{pane_id, ...}` | output match result |
-| `pane.graphics.info` | `{}` | client display metrics + visibility |
-| `pane.graphics.set` | `{pane_id, format, data_base64, placement}` | ack |
-| `pane.graphics.clear` | `{pane_id}` | ack |
-| `pane.graphics.stream` | `{pane_id, ...}` | ack |
-
-Notes:
-- `pane.send_text` / `pane.send_input` inject raw text/input; agent-fleet
-  uses `agent.send_keys` instead (§8.1) which resolves a target by name or
-  pane id.
-- `pane.report_agent` / `pane.report_agent_session` / `pane.report_metadata`
-  are for integration reporting (external tools pushing state into Herdr);
-  agent-fleet does not push state, it only reads it.
-- `pane.graphics.*` manages experimental image overlays on panes.
-
-### 10.4 Layout management
-
-| Method | Params | Result |
-|---|---|---|
-| `layout.export` | `{tab_id?, pane_id?}` | BSP tree (`workspace_id`, `tab_id`, `zoomed`, `focused_pane_id`, `root`) |
-| `layout.apply` | `{workspace_id, tab_id?, tab_label, focus, root}` | creates a fresh tab |
-| `layout.set_split_ratio` | `{tab_id, path, ratio}` | `layout_split_ratio_set` |
-
-Notes:
-- `layout.export` serializes a tab's pane tree into a portable BSP structure.
-- `layout.apply` reconstructs a tab from a declarative tree (splits, panes with
-  labels, cwd, commands, env vars).
-
-### 10.5 Agent view and explain
-
-| Method | Params | Result |
-|---|---|---|
-| `agent.view.set` | `{source, label, filter, sort}` | `agent_view` (`active`, `source`, `label?`) |
-| `agent.view.clear` | `{source?}` | `agent_view` |
-| `agent.explain` | `{target}` | detection rules, manifest source/version, matched rule, evidence, skip-state reason, idle fallback reason |
-
-Notes:
-- `agent.view.set` / `clear` configure Herdr's UI agent projections (filtering
-  and sorting the sidebar). The `filter` uses operations like `any`/`eq`/`in`
-  with fields and context values; `sort` specifies fields and asc/desc.
-- `agent.explain` returns the detection rules and state evaluation for a
-  specific agent, useful for debugging why an agent was or was not detected.
-
-### 10.6 Server, client, notification
-
-| Method | Params | Result |
-|---|---|---|
-| `server.stop` | `{}` | stopped |
-| `server.reload_config` | `{}` | reloaded |
-| `server.agent_manifests` | `{}` | `agent_manifest_status` (update diagnostics) |
-| `server.reload_agent_manifests` | `{}` | `agent_manifest_reload` |
-| `client.window_title.set` | `{title}` | `client_window_title` (`changed`, `reason`) |
-| `client.window_title.clear` | `{}` | `client_window_title` |
-| `notification.show` | `{title, body?, position?, sound?}` | `notification_show` (`shown`, `reason`) |
-
-Notes:
-- `notification.show` `sound` values: `none`, `done`, `request`. `position`
-  and `sound` are optional. The `shown` boolean and `reason` (e.g.
-  `shown`, `disabled`, `rate_limited`, `no_foreground_client`, `busy`)
-  indicate whether the notification was actually displayed.
-- `server.agent_manifests` / `server.reload_agent_manifests` manage the
-  agent CLI manifest cache; `herdr-doctor` already reports manifest status
-  via the `herdr.el` doctor layer (no direct RPC from agent-fleet).
-
-### 10.7 Plugin and integration management
-
-| Method | Params | Result |
-|---|---|---|
-| `plugin.link` | `{path, plugin_id, source}` | ack |
-| `plugin.list` | `{}` | list of plugins |
-| `plugin.unlink` | `{plugin_id}` | ack |
-| `plugin.enable` | `{plugin_id}` | ack |
-| `plugin.disable` | `{plugin_id}` | ack |
-| `plugin.action.list` | `{plugin_id}` | list of actions |
-| `plugin.action.invoke` | `{plugin_id, action_id, context}` | ack |
-| `plugin.log.list` | `{plugin_id}` | list of logs |
-| `plugin.pane.open` | `{plugin_id, entrypoint, placement}` | pane info |
-| `plugin.pane.focus` | `{plugin_id}` | pane info |
-| `plugin.pane.close` | `{plugin_id}` | ack |
-| `integration.install` | `{...}` | ack |
-| `integration.uninstall` | `{...}` | ack |
-
-Notes:
-- The plugin system allows external tools to register manifests, invoke
-  actions, and manage plugin-owned terminal panes. agent-fleet does not
-  currently interact with the plugin system.
+# Herdr Core Contract
+
+Baseline: **hc 0.1.17**, protocol generation **1**, probed in an isolated local
+session. [The bundled schema](hc-0.1.17.openrpc.json) was generated by that
+installed binary using `hc schema`.
+
+Upstream references:
+- [API and events](https://github.com/herdrdev/herdr-core/blob/master/schema/README.md)
+- [OpenRPC](https://github.com/herdrdev/herdr-core/blob/master/schema/hc.openrpc.json)
+- [CLI reference](https://github.com/herdrdev/herdr-core/blob/master/docs/commands.md)
+
+Upstream master is additive but may contain features absent in the baseline.
+For example, the locally probed 0.1.17 hello did not advertise automatic_input.
+Fleet delegates binary attach framing to the matching hc CLI.
+
+## Connection and compatibility
+
+Two plain-mode `hc connect` processes use JSON-RPC 2.0, UTF-8 JSON lines.
+The control process correlates asynchronous requests by id. The subscription
+process carries events after its initial response. No binary framing is
+implemented in Lisp.
+
+`hello` verifies generation 1, version >= 0.1.17, persistent core identity
+and required method names. Both transports must identify the same Core.
+The executable and complete subprocess environment are pinned once.
+`HC_SOCKET` and `HC_SESSION` are explicit; inherited `HC_TERMINAL_ID` is cleared.
+
+CLI autostart is configurable. Reconnect retries are bounded and reuse the
+pinned endpoint. Outstanding operations fail as uncertain on timeout or
+connection loss; they are never automatically retried. A timeout does not
+cancel server execution.
+
+## Model and ordering
+
+Terminal records retain raw fields. Important fields include address,
+created_ms, state, status, cwd, labels, parent, die_with_parent, first_message
+and exit information. Addresses are scoped to a Core; UI references also pin
+the persistent Core id and creation timestamp.
+
+Runtime state is live or finished. Reported work status can be absent or any
+program-provided word. done is not finished. A kept terminal lost during
+recovery can remain live without a process. Fleet starts agents with keep=false.
+
+events.subscribe returns seq and terminals. Its callback installs the snapshot
+before subsequent notifications in the same process chunk. Snapshot validation
+completes before swapping the cache. Applied events advance seq; older or
+duplicate events are ignored. missed replaces the cache with its fresh snapshot.
+Reconnect takes a new snapshot and establishes a new sequence baseline.
+
+Model updates precede consumer hooks. Consumer exceptions are reported without
+dropping subsequent events. RPC query responses do not overwrite newer cached
+event state.
+
+## Fleet operations
+
+| Operation | Method |
+|---|---|
+| Start root agent | terminal.run, no_parent=true, keep=false, rm=false |
+| Templates | templates.list |
+| Explicitly include external agent | terminal.label, fleet.role=agent |
+| Fresh terminal query | terminal.get |
+| Inventory including finished | terminal.list, all=true |
+| Submit prompt | terminal.send, force=false |
+| Wait | terminal.wait |
+| Interrupt | terminal.interrupt |
+| End program | terminal.kill |
+| Remove finished history | terminal.rm |
+| Output snapshot | terminal.read |
+| External editor key | terminal.keys, keys=["ctrl+g"] |
+| Attach | hc attach subprocess |
+
+Initial template tasks are appended to the template argv. Inspect first_message:
+sent=false does not undo startup. A plain command's extra argv are arguments,
+not a task. Fleet refuses its initial-task option unless argv[0] is a template.
+
+terminal.send may wait for human input to pause. The UI distinguishes submitted
+from completed. terminal.wait reasons are preserved, including timeout,
+not_started, status, exit and message. No status means no reliable agent-turn
+completion signal. Output is not parsed to infer success.
+
+## Cleanup
+
+Only finished Fleet-associated records are candidates. Related helpers use
+Core parent links. A parent with remaining child records is retained; selected
+children are removed first so removing a parent cannot orphan retained members.
+
+Each removal checks a fresh all-terminal inventory, Core identity, creation
+identity, current state and Fleet association. The response must contain the
+exact removed address. terminal.rm also rejects live records server-side.
+A server rejection is failed; a timeout, interruption or malformed acknowledgement
+after dispatch is uncertain and stops later removals. Preflight failure stops
+the run without claiming that a removal occurred. New records are not added
+to an existing review.
+
+There are no workspace, tab or worktree deletion calls. Kill is a separate,
+explicit operation. Its preview cannot freeze descendants created concurrently.
+
+## Scope and provider support
+
+The local Core contract is exercised with deterministic shell programs, not
+paid model requests. Claude Code, Codex and Pi are offered as commands; their
+OSC 7501 integrations depend on the installed provider configuration.
+Fleet does not install hooks, claim status support from a command name, or
+silently use output quietness as readiness/completion.
+
+Remote addresses may appear in inventories. Local Project/Git operations reject
+remote paths. Full remote workflow, worktree creation, batch launch and realtime
+observe are deferred.
