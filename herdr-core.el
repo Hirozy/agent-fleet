@@ -190,6 +190,11 @@ route names.  This operation queries machine identity; do not call in filters."
        (numberp (plist-get record :created_ms))
        (member (plist-get record :state) '("live" "finished"))))
 
+(defun herdr-core--valid-send-result-p (result)
+  "Return whether RESULT acknowledges a send with Core's required turn."
+  (and (listp result) (integerp (plist-get result :turn))
+       (>= (plist-get result :turn) 0)))
+
 (defun herdr-core--snapshot (snapshot)
   "Atomically install authoritative SNAPSHOT."
   (unless (and (integerp (plist-get snapshot :seq))
