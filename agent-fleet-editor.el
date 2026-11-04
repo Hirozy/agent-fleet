@@ -25,13 +25,12 @@
 ;; Optional bridge for CLI agents that use $EDITOR to edit their current
 ;; prompt draft after C-g.  Agent Fleet does not implement an editor helper or
 ;; parse terminal output: it arms a one-shot route for the next Emacs server
-;; file visit, sends C-g to the exact Herdr pane, and displays the file in a
+;; file visit, sends Ctrl-G to the Core terminal, and displays the file in a
 ;; newly created standalone graphical frame while keeping the recorded attach
 ;; frame and window unchanged.
 ;;
-;; The bridge is deliberately opt-in.  Agent Fleet assigns EDITOR/VISUAL when
-;; it provisions an ordinary agent pane; agents started in caller-owned panes
-;; or `worktree.create' root panes inherit their existing environment.  The
+;; The bridge is opt-in.  Configure the agent's external editor to run
+;; emacsclient against this Emacs server before using C-c C-g.  The
 ;; route is a short-lived association between one attach buffer and the next
 ;; server file visit; it is not a general server multiplexer and cannot
 ;; disambiguate two simultaneous C-g requests.
@@ -223,8 +222,8 @@ non-nil, is displayed after cleanup."
           :origin-buffer (and (window-live-p window)
                               (window-buffer window)))))
 
-(defun agent-fleet-editor--arm-route (pane-id origin-info)
-  "Arm a one-shot editor route for PANE-ID and ORIGIN-INFO.
+(defun agent-fleet-editor--arm-route (terminal origin-info)
+  "Arm a one-shot editor route for TERMINAL and ORIGIN-INFO.
 ORIGIN-INFO is a plist produced by `agent-fleet-editor--record-origin'.
 The route installs a temporary `server-window' function and returns the
 route.  Signal `user-error' when another route is pending.  This is an
@@ -235,7 +234,7 @@ internal helper; use `agent-fleet-editor-arm-current-attach' interactively."
     (user-error "Agent Fleet editor bridge is not enabled with this Emacs's running server"))
   (when agent-fleet-editor--pending-route
     (user-error "An external-editor request is already pending"))
-  (let* ((route (append (list :pane-id pane-id
+  (let* ((route (append (list :terminal terminal
                               :previous-server-window server-window
                               :dispatcher nil
                               :timer nil)
@@ -250,24 +249,24 @@ internal helper; use `agent-fleet-editor-arm-current-attach' interactively."
     route))
 
 (defun agent-fleet-editor-arm-current-attach ()
-  "Arm the editor bridge and send C-g to the current attach pane.
-The pane id is read from the attach buffer's stable local identity.  No
-Enter or other terminal key is injected.  If the Herdr send fails, the route
+  "Arm the editor bridge and send C-g to the current attach terminal.
+The terminal address is read from the attach buffer's stable local identity.  No
+Enter or other terminal key is injected.  If the Core send fails, the route
 is removed and the prior `server-window' value is restored."
   (interactive)
   (unless agent-fleet-editor-bridge-mode
     (user-error "Agent Fleet editor bridge is not enabled"))
   (when agent-fleet-editor--active-requests
     (user-error "Finish the current external-editor request before starting another"))
-  (let* ((pane-id (agent-fleet-attach--current-address))
+  (let* ((terminal (agent-fleet-attach--current-address))
          (origin-info (agent-fleet-editor--record-origin))
-         (route (agent-fleet-editor--arm-route pane-id origin-info)))
+         (route (agent-fleet-editor--arm-route terminal origin-info)))
     (condition-case err
         (progn
-          ;; Send exactly Ctrl-G to Herdr through `terminal.keys'; it does
+          ;; Send exactly Ctrl-G to Core through `terminal.keys'; it does
           ;; not synthesize Enter or any other terminal key.
           (herdr-core-request "terminal.keys"
-                              (list :terminal pane-id :keys ["ctrl+g"]))
+                              (list :terminal terminal :keys ["ctrl+g"]))
           (message "agent-fleet: waiting for external editor request"))
       (error
        (agent-fleet-editor--clear-pending-route
@@ -605,7 +604,7 @@ signalling a diagnostic."
 (defun agent-fleet-editor--start-request (route buffer)
   "Create and present a request from ROUTE and server BUFFER."
   (let ((request (append (list :buffer buffer
-                               :pane-id (plist-get route :pane-id)
+                               :terminal (plist-get route :terminal)
                                :origin-frame (plist-get route :origin-frame)
                                :origin-window (plist-get route :origin-window)
                                :origin-buffer (plist-get route :origin-buffer)
@@ -673,8 +672,8 @@ signalling a diagnostic."
 (define-minor-mode agent-fleet-editor-bridge-mode
   "Enable the opt-in Agent Fleet external-editor bridge.
 
-When enabled, `C-g' in an attach buffer sends Ctrl-G to the exact Herdr pane
-and routes the next `$EDITOR' server file visit into an Agent Fleet editor
+When enabled, `C-c C-g' sends Ctrl-G to the current attach terminal and routes
+the next `$EDITOR' server file visit into an Agent Fleet editor
 view.  The mode lazily loads and, when configured, starts Emacs's built-in
 server.  Disabling it never stops that server."
   :global t

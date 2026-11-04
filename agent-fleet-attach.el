@@ -48,12 +48,9 @@
     (herdr-core-request "terminal.keys"
                         (list :terminal (agent-fleet-attach--current-address) :keys ["ctrl+g"]))))
 
-;;;###autoload (autoload 'agent-fleet-attach-command-map "agent-fleet-attach" nil t 'keymap)
-(defvar agent-fleet-attach-command-map agent-fleet-command-map)
-(fset 'agent-fleet-attach-command-map agent-fleet-attach-command-map)
 (defvar agent-fleet-attach-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c a") agent-fleet-attach-command-map)
+    (define-key map (kbd "C-c a") agent-fleet-command-map)
     (define-key map (kbd "C-c C-g") #'agent-fleet-attach--ctrl-g) map))
 (define-minor-mode agent-fleet-attach-mode
   "Agent operations scoped to this attach buffer."
@@ -63,13 +60,27 @@
 (defun agent-fleet-attach (target)
   "Attach to TARGET in the current window, reusing its live viewer."
   (interactive (list (agent-fleet-current-target)))
-  (agent-fleet-attach--open target nil))
+  (agent-fleet-call-with-presentation (lambda () (agent-fleet-attach--present target nil))))
 
 ;;;###autoload
 (defun agent-fleet-observe (target)
   "Observe TARGET live without sending input or resizing its PTY."
   (interactive (list (agent-fleet-current-target)))
-  (agent-fleet-attach--open target t))
+  (agent-fleet-call-with-presentation (lambda () (agent-fleet-attach--present target t))))
+
+(defun agent-fleet-attach--present (target observe)
+  "Open TARGET's viewer at the origin, closing an auxiliary view on success."
+  (if (not (frame-parameter nil 'agent-fleet-auxiliary-frame))
+      (agent-fleet-attach--open target observe)
+    (let ((child (selected-frame)) (origin (agent-fleet-display-origin-frame)))
+      (select-frame-set-input-focus origin)
+      (select-window (frame-selected-window origin))
+      (condition-case err
+          (prog1 (agent-fleet-attach--open target observe)
+            (agent-fleet-display-close-auxiliary-frame child))
+        ((error quit)
+         (when (frame-live-p child) (select-frame-set-input-focus child))
+         (signal (car err) (cdr err)))))))
 
 (defun agent-fleet-attach--open (target observe)
   "Open TARGET's viewer, with read-only OBSERVE semantics when non-nil."

@@ -13,6 +13,10 @@
   "Commands offered alongside Core templates." :type '(repeat string) :group 'agent-fleet)
 (defvar agent-fleet--last-command nil)
 (defvar-local agent-fleet-target nil "Pinned identity for this view.")
+(defvar-local agent-fleet-target-function nil
+  "Optional function resolving the target at point in a Fleet view.")
+(defvar-local agent-fleet-presentation-function nil
+  "Optional function calling a presentation thunk at this view's origin.")
 (defvar-local agent-fleet-operation-state nil)
 (defvar-local agent-fleet-operation-result nil)
 (declare-function agent-fleet-project-root-for-cwd "agent-fleet-project" (cwd))
@@ -31,6 +35,18 @@
 (autoload 'agent-fleet-start-remote "agent-fleet-remote" nil t)
 (autoload 'agent-fleet-send-file "agent-fleet-remote" nil t)
 (declare-function agent-fleet-remote-start-options "agent-fleet-remote" (machine cwd))
+(declare-function evil-make-overriding-map "evil-core" (keymap &optional state copy))
+
+(defun agent-fleet-protect-keymap (map)
+  "Keep MAP's Fleet commands accessible when optional Evil is active."
+  (with-eval-after-load 'evil
+    (evil-make-overriding-map map)))
+
+(defun agent-fleet-call-with-presentation (function)
+  "Call presentation FUNCTION through the current view's origin handler."
+  (if agent-fleet-presentation-function
+      (funcall agent-fleet-presentation-function function)
+    (funcall function)))
 
 (defun agent-fleet-label (terminal key)
   "Read label KEY from TERMINAL."
@@ -92,21 +108,30 @@
     (unless choices (user-error "No Fleet agents; start one or use agent-fleet-adopt"))
     (cdr (assoc (completing-read (or prompt "Agent: ") choices nil t) choices))))
 
-(defun agent-fleet-current-target ()
-  "Return this view's target, or ask for an agent."
-  (or agent-fleet-target (agent-fleet-read-agent)))
+(defun agent-fleet-current-target (&optional all)
+  "Return this view's target, or ask for an agent, including history with ALL."
+  (or agent-fleet-target
+      (and agent-fleet-target-function (funcall agent-fleet-target-function))
+      (agent-fleet-read-agent nil all)))
 
 (defun agent-fleet--name (cwd &optional remote)
   "Generate a Core-compatible unique name from CWD."
   (require 'agent-fleet-project)
-  (let* ((root (or (and (not remote) (agent-fleet-project-root-for-cwd cwd)) cwd))
+  (let* ((case-fold-search nil)
+         (root (or (and (not remote) (agent-fleet-project-root-for-cwd cwd)) cwd))
          (base (replace-regexp-in-string
-                "[^a-z0-9_-]" "-"
+                "[^a-z0-9_-]+" "-"
                 (downcase (file-name-nondirectory (directory-file-name root)))))
+         (base (replace-regexp-in-string "\\`[^a-z0-9]+" "" base))
          (base (if (string-empty-p base) "agent" (substring base 0 (min 24 (length base)))))
+         ;; Guard after truncation, which can itself leave an ID-shaped name.
+         (base (if (string-match-p "\\`t[0-9][a-z0-9]*\\'" base)
+                   (concat "agent-" (substring base 0 (min 18 (length base)))) base))
          (names (mapcar (lambda (r) (plist-get r :name)) (herdr-core-terminals)))
          (name base) (n 1))
-    (while (member name names) (setq name (format "%s-%d" base (cl-incf n))))
+    (while (member name names)
+      (let ((suffix (format "-%d" (cl-incf n))))
+        (setq name (concat (substring base 0 (min (length base) (- 32 (length suffix)))) suffix))))
     name))
 
 (defun agent-fleet--commands ()
@@ -195,20 +220,23 @@ a successfully started terminal."
 
 (defun agent-fleet-present-buffer (buffer)
   "Present BUFFER without resizing an attached terminal."
-  (let ((origin (agent-fleet-display-origin-frame)))
-    (if (and (bound-and-true-p agent-fleet-attach-mode)
-             (agent-fleet-display-child-frame-available-p origin))
-        (agent-fleet-display-aux-run-at-origin
-         origin (lambda () (switch-to-buffer buffer)
-                  (agent-fleet-display-make-outcome t buffer buffer)))
-      (switch-to-buffer buffer))
-    buffer))
+  (agent-fleet-call-with-presentation
+   (lambda ()
+     (let ((origin (agent-fleet-display-origin-frame)))
+       (if (and (bound-and-true-p agent-fleet-attach-mode)
+                (agent-fleet-display-child-frame-available-p origin))
+           (agent-fleet-display-aux-run-at-origin
+            origin (lambda () (switch-to-buffer buffer)
+                     (agent-fleet-display-make-outcome t buffer buffer)))
+         (switch-to-buffer buffer))
+       buffer))))
 
 (defvar agent-fleet-review-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map special-mode-map)
     (define-key map (kbd "q") #'agent-fleet-view-quit)
     (define-key map (kbd "C-g") #'agent-fleet-view-quit) map))
+(agent-fleet-protect-keymap agent-fleet-review-mode-map)
 (define-derived-mode agent-fleet-review-mode special-mode "Fleet Review"
   "Read-only Fleet output and review."
   (setq-local truncate-lines nil))
@@ -342,7 +370,7 @@ a successfully started terminal."
 ;;;###autoload
 (defun agent-fleet-details (target)
   "Show TARGET's identity, state and Core parent relationship."
-  (interactive (list (agent-fleet-read-agent "Details: " t)))
+  (interactive (list (agent-fleet-current-target t)))
   (let* ((record (agent-fleet-resolve target t))
          (buffer (get-buffer-create "*Fleet Details*")))
     (with-current-buffer buffer

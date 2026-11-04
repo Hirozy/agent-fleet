@@ -5,7 +5,7 @@
 ;;; Commentary:
 
 ;; These tests exercise the built-in Emacs server bridge without starting a
-;; real server or contacting Herdr.  The presentation and server primitives
+;; real server or contacting Core.  The presentation and server primitives
 ;; are mocked where necessary; the default suite must remain usable on a
 ;; terminal-only Emacs.
 
@@ -53,7 +53,7 @@
     (buffer window &optional presentation presentation-frame presentation-window)
   "Build a minimal active request for BUFFER in WINDOW."
   (list :buffer buffer
-        :pane-id "w1:p1"
+        :terminal "t1"
         :origin-frame (window-frame window)
         :origin-window window
         :origin-buffer (window-buffer window)
@@ -160,8 +160,8 @@
       (should-not agent-fleet-editor-bridge-mode)
       (should (= starts 0)))))
 
-(ert-deftest agent-fleet-editor-arm-sends-exact-pane-and-key ()
-  "Arming sends exactly Ctrl-G to the local attach pane and no Enter."
+(ert-deftest agent-fleet-editor-arm-sends-exact-terminal-and-key ()
+  "Arming sends exactly Ctrl-G to the local attach terminal and no Enter."
   (let* ((process (agent-fleet-editor-test--live-process))
          (server-process process)
          (server-window 'before)
@@ -171,7 +171,7 @@
          (route nil))
     (unwind-protect
         (cl-letf (((symbol-function 'agent-fleet-attach--current-address)
-                   (lambda () "w7:p9"))
+                   (lambda () "t9"))
                   ((symbol-function 'herdr-core-request)
                    (lambda (method params)
                      (should (equal "terminal.keys" method))
@@ -180,7 +180,7 @@
                            sent))))
           (with-temp-buffer
             (setq route (agent-fleet-editor-arm-current-attach))
-            (should (equal '("w7:p9" "ctrl+g") (car sent)))
+            (should (equal '("t9" "ctrl+g") (car sent)))
             (should-not (member "enter" (mapcar #'cadr sent)))
             (should (eq server-window (plist-get route :dispatcher)))
             (agent-fleet-editor--clear-pending-route route)
@@ -199,7 +199,7 @@
          (agent-fleet-editor-route-timeout 60))
     (unwind-protect
         (cl-letf (((symbol-function 'agent-fleet-attach--current-address)
-                   (lambda () "w1:p1"))
+                   (lambda () "t1"))
                   ((symbol-function 'herdr-core-request)
                    (lambda (&rest _) (error "send failed"))))
           (with-temp-buffer
@@ -222,8 +222,8 @@
          (first nil))
     (unwind-protect
         (progn
-          (setq first (agent-fleet-editor--arm-route "w1:p1" info))
-          (should-error (agent-fleet-editor--arm-route "w1:p2" info)
+          (setq first (agent-fleet-editor--arm-route "t1" info))
+          (should-error (agent-fleet-editor--arm-route "t2" info)
                         :type 'user-error)
           (should (eq first agent-fleet-editor--pending-route))
           (agent-fleet-editor--clear-pending-route first)
@@ -242,7 +242,7 @@
          (agent-fleet-editor--active-requests '((:finished nil))))
     (unwind-protect
         (cl-letf (((symbol-function 'agent-fleet-attach--current-address)
-                   (lambda () "w1:p1")))
+                   (lambda () "t1")))
           (should-error (agent-fleet-editor-arm-current-attach)
                         :type 'user-error)
           (should-not agent-fleet-editor--pending-route)
@@ -256,7 +256,7 @@
          (server-window 'previous)
          (agent-fleet-editor-bridge-mode t)
          (info (agent-fleet-editor-test--origin-info))
-         (route (agent-fleet-editor--arm-route "w1:p1" info)))
+         (route (agent-fleet-editor--arm-route "t1" info)))
     (unwind-protect
         (progn
           (agent-fleet-editor--route-timeout route)
@@ -274,7 +274,7 @@
          (server-window 'previous)
          (agent-fleet-editor-bridge-mode t)
          (route (agent-fleet-editor--arm-route
-                 "w1:p1" (agent-fleet-editor-test--origin-info))))
+                 "t1" (agent-fleet-editor-test--origin-info))))
     (unwind-protect
         (progn
           (setq server-window 'replacement)
@@ -310,13 +310,13 @@
                            (plist-get request :presentation-frame) 'editor-frame
                            (plist-get request :presentation-window) 'editor-window
                            (plist-get request :presentation-created-p) t))))
-          (setq first-route (agent-fleet-editor--arm-route "w1:p1" info))
+          (setq first-route (agent-fleet-editor--arm-route "t1" info))
           (agent-fleet-editor--dispatch-server-buffer first-buffer first-route)
           (setq first-request (car agent-fleet-editor--active-requests))
           (should first-request)
           (agent-fleet-editor--finish-request first-request 'abort)
           (should-not agent-fleet-editor--active-requests)
-          (setq second-route (agent-fleet-editor--arm-route "w1:p1" info))
+          (setq second-route (agent-fleet-editor--arm-route "t1" info))
           (agent-fleet-editor--dispatch-server-buffer second-buffer second-route)
           (setq second-request (car agent-fleet-editor--active-requests))
           (should second-request)
@@ -348,7 +348,7 @@
          (server-window 'previous)
          (agent-fleet-editor-bridge-mode t)
          (route (agent-fleet-editor--arm-route
-                 "w1:p1"
+                 "t1"
                  (agent-fleet-editor-test--origin-info origin-buffer
                                                         origin-window)))
          request
@@ -537,7 +537,7 @@
                      (lambda (&rest _) nil)))
             (should-error
              (agent-fleet-editor--start-request
-              (list :pane-id "w1:p1"
+              (list :terminal "t1"
                     :origin-frame (window-frame window)
                     :origin-window window
                     :origin-buffer (window-buffer window))
@@ -569,7 +569,7 @@
                    (lambda (&rest _) nil)))
           (should-error
            (agent-fleet-editor--start-request
-            (list :pane-id "w1:p1"
+            (list :terminal "t1"
                   :origin-frame (window-frame window)
                   :origin-window window
                   :origin-buffer (window-buffer window))
@@ -601,7 +601,7 @@
                      (lambda (&rest _) (cl-incf released))))
             (should-error
              (agent-fleet-editor--start-request
-              (list :pane-id "w1:p1"
+              (list :terminal "t1"
                     :origin-frame (window-frame window)
                     :origin-window window
                     :origin-buffer (window-buffer window))
@@ -973,7 +973,7 @@
           (setq-local agent-fleet-editor--request request)
           (agent-fleet-editor-buffer-mode 1)
           (agent-fleet-editor--arm-route
-           "w1:p1" (agent-fleet-editor-test--origin-info))
+           "t1" (agent-fleet-editor-test--origin-info))
           (agent-fleet-editor-bridge-mode -1)
           (should-not agent-fleet-editor--pending-route)
           (should (eq server-window 'previous))
@@ -1002,7 +1002,7 @@
                    (lambda (&rest _) (setq closed t))))
           (should-error
            (agent-fleet-editor--start-request
-            (list :pane-id "w1:p1"
+            (list :terminal "t1"
                   :origin-frame (window-frame window)
                   :origin-window window
                   :origin-buffer (window-buffer window))

@@ -27,10 +27,12 @@
                       (unless (derived-mode-p 'magit-mode)
                         (error "Magit did not open a review buffer"))
                       (agent-fleet-display-make-outcome t (current-buffer) (current-buffer))))))
-        (if (and (bound-and-true-p agent-fleet-attach-mode)
-                 (agent-fleet-display-child-frame-available-p))
-            (agent-fleet-display--aux-run open)
-          (funcall open))))))
+        (agent-fleet-call-with-presentation
+         (lambda ()
+           (if (and (bound-and-true-p agent-fleet-attach-mode)
+                    (agent-fleet-display-child-frame-available-p))
+               (agent-fleet-display--aux-run open)
+             (funcall open))))))))
 ;;;###autoload
 (defun agent-fleet-magit-status (target)
   "Open Magit status for TARGET's checkout."
