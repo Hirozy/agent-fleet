@@ -33,7 +33,9 @@
   (interactive)
   (when-let* ((buffer (get-buffer "*Agent Fleet*")))
     (with-current-buffer buffer
-      (let ((id (or agent-fleet-dashboard--pending-focus (tabulated-list-get-id))))
+      (let ((id (tabulated-list-get-id))
+            (pending agent-fleet-dashboard--pending-focus)
+            (members (agent-fleet-agents agent-fleet-dashboard--history)))
         (setq tabulated-list-entries
               (mapcar
                (lambda (r)
@@ -50,23 +52,49 @@
                            (equal agent-fleet-dashboard--project (agent-fleet-project-for-agent r)))
                        (or (not agent-fleet-dashboard--attention)
                            (member (agent-fleet-status r) '("blocked" "error")))))
-                (agent-fleet-agents agent-fleet-dashboard--history))))
+                members)))
         (setq header-line-format
-              (format "Core: %s   %s   Project: %s   RET attach  p prompt  o output  c cleanup"
+              (format "Core: %s   %s %d/%d   Project: %s%s   RET attach  p prompt  o output  c cleanup"
                       herdr-core--state (if agent-fleet-dashboard--history "All records" "Live")
-                      (or agent-fleet-dashboard--project "All")))
+                      (length tabulated-list-entries) (length members)
+                      (or agent-fleet-dashboard--project "All")
+                      (if agent-fleet-dashboard--attention "   Attention only" "")))
         (tabulated-list-print t)
-        (when id (agent-fleet-dashboard-focus id))))))
+        (let ((focused (agent-fleet-dashboard--goto pending)))
+          (when (or focused (and pending (herdr-core-terminal pending)))
+            (setq agent-fleet-dashboard--pending-focus nil))
+          (unless (or focused (agent-fleet-dashboard--goto id) (tabulated-list-get-id))
+            (goto-char (point-min))))
+        (unless tabulated-list-entries
+          (let ((inhibit-read-only t))
+            (insert (propertize
+                     (if (or agent-fleet-dashboard--project agent-fleet-dashboard--attention)
+                         (concat "No agents match the current filters. "
+                                 (when agent-fleet-dashboard--project "P clears the Project filter. ")
+                                 (when agent-fleet-dashboard--attention "! clears the attention filter. ")
+                                 "h toggles history.\n")
+                       "No Fleet agents in this view. Press n to start an agent, or h to toggle history.\n")
+                     'face 'shadow))
+            (goto-char (point-min))))))))
+
+(defun agent-fleet-dashboard--goto (address)
+  "Select visible ADDRESS, returning non-nil; leave point alone if absent."
+  (when address
+    (when-let* ((position (save-excursion
+                           (goto-char (point-min))
+                           (while (and (not (eobp)) (not (equal (tabulated-list-get-id) address)))
+                             (forward-line 1))
+                           (and (not (eobp)) (point)))))
+      (goto-char position)
+      t)))
 
 (defun agent-fleet-dashboard-focus (address)
   "Move an existing Dashboard to ADDRESS without stealing focus."
   (when-let* ((buffer (get-buffer "*Agent Fleet*")))
     (with-current-buffer buffer
-      (goto-char (point-min))
-      (while (and (not (eobp)) (not (equal (tabulated-list-get-id) address)))
-        (forward-line 1))
       (setq agent-fleet-dashboard--pending-focus
-            (unless (equal (tabulated-list-get-id) address) address)))))
+            (unless (or (agent-fleet-dashboard--goto address) (herdr-core-terminal address))
+              address)))))
 
 (defun agent-fleet-dashboard--target ()
   "Return a pinned target for the current row."
@@ -159,8 +187,11 @@
                     ("!" . agent-fleet-dashboard-attention) ("g" . agent-fleet-dashboard-refresh)
                     ("q" . agent-fleet-dashboard-quit) ("C-g" . agent-fleet-dashboard-quit)))
       (define-key map (kbd (car pair)) (cdr pair))) map))
+(agent-fleet-protect-keymap agent-fleet-mode-map)
 (define-derived-mode agent-fleet-mode tabulated-list-mode "Agent Fleet"
   "Live agent overview."
+  (setq-local agent-fleet-target-function #'agent-fleet-dashboard--target)
+  (setq-local agent-fleet-presentation-function #'agent-fleet-dashboard--visit)
   (setq tabulated-list-format [("Agent" 24 t) ("Project" 18 t) ("Role" 8 t)
                               ("State" 24 t) ("Parent" 10 t) ("Address" 14 t)])
   (setq tabulated-list-padding 1)
@@ -201,6 +232,9 @@
       (when (eq agent-fleet-dashboard-display 'child-frame)
         (message "Child frames unavailable; opening Dashboard buffer"))
       (agent-fleet-present-buffer buffer))
+    ;; Selecting a frame need not update the current buffer until the next
+    ;; command loop iteration.  Immediate callers must see Dashboard context.
+    (set-buffer buffer)
     buffer))
 
 (defun agent-fleet-dashboard--notify (event)

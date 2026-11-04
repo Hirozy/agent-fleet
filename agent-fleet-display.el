@@ -92,9 +92,7 @@ action function.  PARENT-FRAME defaults to the selected frame."
   "Return the native parent frame for FRAME, or FRAME itself.
 A native child frame (one with a `frame-parent') resolves to that
 parent; an ordinary or standalone frame is its own parent.  This is
-the generic parent resolver used by the auxiliary child layer; the
-dashboard has its own `agent-fleet-dashboard--child-parent-frame' that
-also consults the backend registry."
+the parent resolver shared by Dashboard and auxiliary views."
   (let* ((frame (or frame (selected-frame)))
          (parent (frame-parent frame)))
     (if (frame-live-p parent) parent frame)))
@@ -342,38 +340,21 @@ Windows on any other frame pass through unchanged."
 ;; decisions (keep or close the child frame) from the domain return
 ;; value, which may be nil even on success (e.g. `magit-status').
 
-(defun agent-fleet-display--make-outcome (opened &optional value buffer)
+(defun agent-fleet-display-make-outcome (opened &optional value buffer)
   "Return a view outcome plist.
 OPENED is non-nil when the view was established.  VALUE is the original
 domain return value (may be nil).  BUFFER is the optional destination
 buffer, for callers that want to inspect it."
   (list :opened (if opened t) :value value :buffer buffer))
 
-(defun agent-fleet-display-make-outcome (opened &optional value buffer)
-  "Return an explicit presentation outcome for a feature view.
-OPENED, VALUE, and BUFFER have the same meanings as in the auxiliary display
-runner's outcome contract."
-  (agent-fleet-display--make-outcome opened value buffer))
-
 (defun agent-fleet-display--outcome-opened-p (outcome)
-  "Return non-nil if OUTCOME marks the view as opened.
-A non-outcome value (a plain return from a thunk that has not been
-migrated) is treated as opened when non-nil, for backward compatibility."
-  (if (and (consp outcome) (eq (car outcome) :opened))
-      (plist-get outcome :opened)
-    outcome))
-
-(defun agent-fleet-display--outcome-value (outcome)
-  "Return OUTCOME's domain value, or nil."
-  (if (and (consp outcome) (eq (car outcome) :opened))
-      (plist-get outcome :value)
-    outcome))
-
-(defun agent-fleet-display--outcome-buffer (outcome)
-  "Return OUTCOME's destination buffer, or nil."
-  (if (and (consp outcome) (eq (car outcome) :opened))
-      (plist-get outcome :buffer)
-    nil))
+  "Return non-nil for an explicit opened OUTCOME or live destination.
+Fleet commands return a buffer, window, or `agent-fleet-display-make-outcome'
+result.  Arbitrary non-nil values do not establish that a view opened."
+  (or (and (bufferp outcome) (buffer-live-p outcome))
+      (and (windowp outcome) (window-live-p outcome))
+      (and (consp outcome) (eq (car outcome) :opened)
+           (eq (plist-get outcome :opened) t))))
 
 (defun agent-fleet-display-aux-run-at-origin (origin thunk &optional parameters)
   "Run THUNK in an auxiliary child frame owned by ORIGIN.
@@ -397,10 +378,9 @@ frame instead of the default full-fill.
 
 Origins may be recorded before an asynchronous server visit, which is why
 this entry point accepts an explicit origin instead of relying on the
-currently selected frame.  A non-outcome return value is treated as opened
-when non-nil (backward compat).  Signal a `user-error' when child frames are
-unsupported; an explicit `-in-child-frame' command never falls back to an
-ordinary buffer."
+currently selected frame.  THUNK must return an explicit outcome or a live
+destination buffer/window.  Signal a `user-error' when child frames are
+unsupported; callers choose whether to offer ordinary buffer presentation."
   (let* ((origin (agent-fleet-display--aux-origin-frame origin))
          (reason (agent-fleet-display--child-frame-unavailable-reason origin)))
     (if reason
@@ -451,19 +431,7 @@ Resolve the current origin to a non-child parent frame, then delegate to
 ;;; --- Frame hooks ---------------------------------------------------
 
 (defun agent-fleet-display--setup-frame-hooks ()
-  "Install child-frame lifecycle callbacks as ordinary, idempotent hooks.
-`remove-function' first undoes the erroneous function-composition form used
-by an older release.  It leaves a proper hook list unchanged, so this also
-repairs an already-running Emacs before `add-hook' installs the callbacks in
-the normal representation."
-  (remove-function (default-value 'window-size-change-functions)
-                   #'agent-fleet-display--recenter-on-parent-resize)
-  (remove-function (default-value 'delete-frame-functions)
-                   #'agent-fleet-display--forget-centered-child)
-  (remove-function (default-value 'delete-frame-functions)
-                   #'agent-fleet-display--aux-forget)
-  (advice-remove 'quit-restore-window
-                 #'agent-fleet-display--aux-quit-restore-window)
+  "Install child-frame lifecycle callbacks as ordinary, idempotent hooks."
   (add-hook 'window-size-change-functions
             #'agent-fleet-display--recenter-on-parent-resize)
   (add-hook 'delete-frame-functions

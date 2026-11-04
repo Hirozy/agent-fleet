@@ -28,6 +28,12 @@ option when using a custom socket in Core's config.toml."
 (define-error 'herdr-core-error "Core error")
 (define-error 'herdr-core-request-error "Core rejected request" 'herdr-core-error)
 (define-error 'herdr-core-uncertain "Core request outcome unknown" 'herdr-core-error)
+
+(defun herdr-core-error-message (err)
+  "Return ERR's readable Core message, preserving the structured error itself."
+  (let ((message (and (eq (car-safe err) 'herdr-core-request-error)
+                      (plist-get (plist-get (cdr err) :error) :message))))
+    (if (stringp message) message (error-message-string err))))
 (defvar herdr-core-changed-hook nil "Hook after model or connection changes.")
 (defvar herdr-core-event-hook nil "Hook called with each applied event.")
 (defvar herdr-core--control nil)

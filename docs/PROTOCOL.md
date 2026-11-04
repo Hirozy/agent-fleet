@@ -105,9 +105,12 @@ explicit operation. Its preview cannot freeze descendants created concurrently.
 
 ## Scope and provider support
 
-The local Core contract is exercised with deterministic shell programs, not
-paid model requests. Claude Code, Codex and Pi are offered as commands; their
-OSC 7501 integrations depend on the installed provider configuration.
+The lifecycle contract is exercised with deterministic shell programs, not
+paid model requests. Additional startup-only checks verified Core capability
+negotiation and Pi 1.5.0's native idle report; Claude Code 2.1.311's first-run
+theme picker had no report. Codex 0.166.0 support was checked in the release
+source and installed binary, without starting an interactive session.
+See [provider status setup](PROVIDERS.md) for configuration and validation limits.
 Fleet does not install hooks, claim status support from a command name, or
 silently use output quietness as readiness/completion.
 

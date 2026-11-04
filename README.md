@@ -18,6 +18,11 @@ OSC 7501 reports display `unreported`; Fleet never infers status from text.
 Missing status does not remove an agent from Fleet. Wait reasons are preserved:
 a timeout, blocked status or process exit is not presented as successful work.
 
+See [provider status setup](docs/PROVIDERS.md) for the checked Claude Code,
+Codex and Pi versions, native reporting conditions, first-run setup and the
+limits of the validation performed. No additional Fleet status hooks are needed
+for the native implementations described there.
+
 ## Installation
 
 Run `make autoloads` after updating a source checkout, then load the generated
@@ -65,9 +70,22 @@ it does not stop Core or any program. No Fleet command stops the Core server.
 directory. The name defaults to the Project name, or directory name when no
 Project exists, normalized for Core and suffixed on conflict. Names are display
 labels, never identity.
+Generated names begin with a letter or digit and avoid terminal-ID forms such
+as `t7`. For example, `.emacs.d` becomes `emacs-d`; a directory with no usable
+characters falls back to `agent`. Conflict suffixes stay within Core's 32-character
+limit. Explicit names are checked by Core and its rejection is preserved.
 
 With a prefix argument, use a single form to edit command, directory, optional
-name and initial template task. `C-c C-c` requests launch once.
+name and initial template task. The form starts in the command field, using the
+last selected command or the first entry in `agent-fleet-commands`.
+`C-c C-c` requests launch once and `C-c C-k` closes from any field.
+The form stays open and retains the started, rejected or uncertain result with
+its submitted fields. After a successful launch, `C-c C-a` attaches directly in
+the origin window. A failed initial template message is reported separately
+from a successful launch. Closing the form does not cancel a pending request;
+no result triggers an automatic retry or a focus change.
+Local input errors detected before dispatch leave the fields editable so they
+can be corrected. Submitted forms remain protected against duplicate launches.
 `agent-fleet-start-for-project` starts in the current Project.
 
 ```elisp
@@ -92,6 +110,15 @@ termination impact; there is no separate Fleet Task lifecycle.
 ## Dashboard and commands
 
 Run `M-x agent-fleet` or `C-c a a`.
+
+Dashboard and review bindings also work with optional Evil enabled. Fleet's
+bindings take precedence over Evil's default bindings in these views; explicit
+user Evil bindings can still override them. Use the arrow keys or `C-n`/`C-p`
+to move between rows. In the Dashboard, `C-c a` commands use the current row
+and follow the same origin/child-close rules as the single-key actions.
+The header shows visible/total counts and active filters. Empty lists explain
+how to start an agent or adjust filters. When a selected record disappears,
+selection moves to a remaining row instead of an empty line.
 
 | Dashboard key | Action |
 |---|---|
@@ -146,6 +173,8 @@ from the agent's PTY; it does not take over the agent's dimensions.
 The optional `agent-fleet-editor-bridge-mode` retains the external-editor
 workflow. In attach, `C-c C-g` arms it and sends exactly Ctrl-G; no Enter is
 injected. The editor opens separately and closing it preserves the attach client.
+Configure the provider's external editor to use `emacsclient` connected to this
+Emacs server. Fleet does not provision `EDITOR` or `VISUAL` for Core terminals.
 
 Magit opens the agent's actual local checkout. When Fleet recorded a review
 base, the diff includes tracked changes since that commit, including commits
@@ -272,10 +301,13 @@ close them. Start new Core agents explicitly. Existing Git checkouts can be reus
   This tests real Core routing but does not test SSH authentication or a WAN.
   Set `FLEET_TEST_HC`
   when hc is outside PATH.
+- `make test-optional OPTIONAL_LOAD_PATH='-L /path/to/evil -L /path/to/goto-chg'`:
+  separate integration checks for actual Evil keymaps and widget fields.
 - `make test-gui GUI_LOAD_PATH='-L /path/to/ghostel/lisp -L /path/to/compat ...'`:
   a fresh graphical Emacs with your optional packages on its load path. Tests
   real Ghostel attachment, frame lifecycle, geometry and detach, plus Magit when
-  available. Results go to `FLEET_GUI_RESULT` or `/tmp/fleet-gui-result`.
+  available. When Evil is on the load path, it also checks Dashboard and form
+  commands with Evil active. Results go to `FLEET_GUI_RESULT` or `/tmp/fleet-gui-result`.
 
 See [the protocol contract](docs/PROTOCOL.md) and
 [the pinned schema](docs/hc-0.1.17.openrpc.json).

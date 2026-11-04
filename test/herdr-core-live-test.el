@@ -4,6 +4,7 @@
 (require 'agent-fleet-cleanup)
 (require 'agent-fleet-remote)
 (require 'agent-fleet-worktree)
+(require 'agent-fleet-start)
 
 (defmacro hc-live-isolated (&rest body)
   "Run BODY against a fresh Core under a temporary directory."
@@ -185,5 +186,44 @@ This exercises real routing without SSH."
           (let ((record (agent-fleet-resolve reference t)))
             (should (string-prefix-p "renamed/" (plist-get record :address)))
             (herdr-core-request "terminal.kill" (list :terminal (plist-get record :address)))))))))
+
+(ert-deftest hc-live-generated-names-are-accepted-by-core ()
+  (hc-live-isolated
+    (dolist (directory (list ".emacs.d" "---" "项目" "t7" "t1b"
+                             (concat "t7" (make-string 22 ?a) "-tail")
+                             (make-string 80 ?a)))
+      (let* ((cwd (expand-file-name directory root)) result failure completed)
+        (make-directory cwd)
+        (agent-fleet-start '("true") :cwd cwd
+                           :callback (lambda (r e) (setq result r failure e completed t)))
+        (hc-live-until (lambda () completed))
+        (should-not failure)
+        (let ((record (herdr-core-request "terminal.get"
+                                          (list :terminal (plist-get result :address)))))
+          (should (<= (length (plist-get record :name)) 32))
+          (when (equal directory ".emacs.d")
+            (should (equal (plist-get record :name) "emacs-d"))))))))
+
+(ert-deftest hc-live-start-form-retains-core-rejection-and-success ()
+  (hc-live-isolated
+    (save-window-excursion
+      (let ((default-directory (file-name-as-directory root))
+            (agent-fleet-commands '("true")) (agent-fleet--last-command nil))
+        (dolist (name '("-invalid" "valid-form"))
+          (let ((form (agent-fleet-start-form)))
+            (unwind-protect
+                (with-current-buffer form
+                  (widget-value-set (nth 2 agent-fleet--start-fields) name)
+                  (agent-fleet--start-form-submit)
+                  (hc-live-until (lambda () (not (eq agent-fleet-operation-state 'starting))))
+                  (should (eq agent-fleet-operation-state
+                              (if (equal name "-invalid") 'rejected 'started)))
+                  (should (eq (window-buffer) form))
+                  (should-error (agent-fleet--start-form-submit) :type 'user-error)
+                  (if (equal name "-invalid")
+                      (should-not (herdr-core-terminals))
+                    (should agent-fleet-target)
+                    (should (string-match-p "valid-form" (buffer-string)))))
+              (kill-buffer form))))))))
 
 (provide 'herdr-core-live-test)
