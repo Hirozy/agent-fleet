@@ -4,6 +4,25 @@
 (require 'agent-fleet-batch)
 (require 'agent-fleet-remote)
 
+(ert-deftest fleet-command-input-keeps-spaces-and-template-choices ()
+  (let ((agent-fleet--last-command nil)
+        (original-space (lookup-key minibuffer-local-completion-map (kbd "SPC")))
+        (answer "sh -c \"sleep 60\""))
+    (cl-letf (((symbol-function 'agent-fleet--commands)
+               (lambda () '(("template: reviewer" . ("reviewer")))))
+              ((symbol-function 'completing-read)
+               (lambda (&rest _)
+                 (should (eq (lookup-key minibuffer-local-completion-map (kbd "SPC"))
+                             #'self-insert-command))
+                 answer)))
+      (should (equal (agent-fleet--read-command) '("sh" "-c" "sleep 60")))
+      (should (equal agent-fleet--last-command answer))
+      (setq answer "template: reviewer")
+      (should (equal (agent-fleet--read-command) '("reviewer")))
+      (setq answer "")
+      (should-error (agent-fleet--read-command) :type 'user-error))
+    (should (eq original-space (lookup-key minibuffer-local-completion-map (kbd "SPC"))))))
+
 (defmacro fleet-test-git (&rest body)
   "Run BODY in disposable REPO, with DIR and WT paths available."
   (declare (indent 0))
@@ -55,13 +74,103 @@
                            (push (plist-get options :callback) callbacks))))
                 (agent-fleet-batch-execute)
                 (should-error (agent-fleet-batch-execute) :type 'user-error))
-              ;; Reply in the opposite order from submission.
-              (funcall (nth 0 callbacks) nil '(herdr-core-uncertain :reason timeout))
-              (funcall (nth 1 callbacks) nil '(herdr-core-request-error :error (:message "rejected")))
-              (funcall (nth 2 callbacks) '(:address "t1") nil)
+              (agent-fleet-batch-next)
+              (let ((selected (get-text-property (point) 'fleet-batch-entry)))
+                ;; Reply in the opposite order from submission.
+                (funcall (nth 0 callbacks) nil '(herdr-core-uncertain :reason timeout))
+                (funcall (nth 1 callbacks) nil '(herdr-core-request-error :error (:message "rejected")))
+                (funcall (nth 2 callbacks) (fleet-test-agent "t1") nil)
+                (should (eq selected (get-text-property (point) 'fleet-batch-entry))))
               (should (equal (mapcar (lambda (e) (plist-get e :state)) agent-fleet-batch--entries)
                              '(started failed uncertain))))
           (kill-buffer buffer))))))
+
+(ert-deftest fleet-batch-review-target-is-the-acknowledged-member ()
+  (fleet-test-model (list (fleet-test-agent "t1"))
+    (cl-letf (((symbol-function 'agent-fleet-present-buffer) #'identity))
+      (let ((buffer (agent-fleet-start-batch
+                     '((:argv ("template") :cwd "/tmp" :task "Review only.\nDo not edit.")
+                       (:argv ("missing") :cwd "/tmp")))))
+        (unwind-protect
+            (with-current-buffer buffer
+              (should (string-match-p "Review only.\n    Do not edit." (buffer-string)))
+              (should-error (agent-fleet-current-target) :type 'user-error)
+              (cl-letf (((symbol-function 'agent-fleet-start)
+                         (lambda (argv &rest options)
+                           (if (equal argv '("template"))
+                               (funcall (plist-get options :callback)
+                                        (append (fleet-test-agent "t1")
+                                                '(:first_message (:sent :false :reason "blocked"))) nil)
+                             (funcall (plist-get options :callback) nil
+                                      '(herdr-core-request-error :error (:message "missing")))))))
+                (agent-fleet-batch-execute))
+              (should (string-match-p "Initial task was NOT sent: blocked" (buffer-string)))
+              (should (equal (agent-fleet-current-target) (agent-fleet-reference (herdr-core-terminal "t1"))))
+              (agent-fleet-batch-next)
+              (should-error (agent-fleet-current-target) :type 'user-error)
+              (agent-fleet-batch-previous)
+              (let ((target (agent-fleet-current-target)))
+                (puthash "t1" (plist-put (copy-tree (herdr-core-terminal "t1")) :created_ms 9)
+                         herdr-core--terminals)
+                (should-error (agent-fleet-resolve target) :type 'user-error))
+              (setq herdr-core--hello '(:core (:id "replacement")))
+              (should-error (agent-fleet-current-target) :type 'user-error))
+          (kill-buffer buffer))))))
+
+(ert-deftest fleet-batch-quit-retains-acknowledged-and-undispatched-members ()
+  (fleet-test-model nil
+    (cl-letf (((symbol-function 'agent-fleet-present-buffer) #'identity))
+      (let ((buffer (agent-fleet-start-batch
+                     '((:argv ("a") :cwd "/tmp") (:argv ("b") :cwd "/tmp")
+                       (:argv ("c") :cwd "/tmp")))) (calls 0))
+        (unwind-protect
+            (with-current-buffer buffer
+              (cl-letf (((symbol-function 'agent-fleet-start)
+                         (lambda (_argv &rest options)
+                           (if (= (cl-incf calls) 1)
+                               (funcall (plist-get options :callback) (fleet-test-agent "t1") nil)
+                             (signal 'quit nil)))))
+                (should (eq (condition-case nil (agent-fleet-batch-execute) (quit 'caught)) 'caught)))
+              (should (= calls 2))
+              (should (equal (mapcar (lambda (e) (plist-get e :state)) agent-fleet-batch--entries)
+                             '(started uncertain not-attempted)))
+              (should (equal (plist-get (cadr agent-fleet-batch--entries) :error) '(quit)))
+              (should (string-match-p "1 not attempted" (buffer-string)))
+              (should-error (agent-fleet-batch-execute) :type 'user-error))
+          (kill-buffer buffer))))))
+
+(ert-deftest fleet-batch-malformed-ack-stops-undispatched-launches ()
+  (fleet-test-model nil
+    (cl-letf (((symbol-function 'agent-fleet-present-buffer) #'identity))
+      (let ((buffer (agent-fleet-start-batch '((:argv ("a") :cwd "/tmp")
+                                               (:argv ("b") :cwd "/tmp"))))
+            (calls 0))
+        (unwind-protect
+            (with-current-buffer buffer
+              (cl-letf (((symbol-function 'agent-fleet-start)
+                         (lambda (_argv &rest options)
+                           (cl-incf calls)
+                           (funcall (plist-get options :callback) '(:address "t1") nil))))
+                (agent-fleet-batch-execute))
+              (should (= calls 1))
+              (should (equal (mapcar (lambda (e) (plist-get e :state)) agent-fleet-batch--entries)
+                             '(uncertain not-attempted)))
+              (should (equal (plist-get (car agent-fleet-batch--entries) :record) '(:address "t1")))
+              (should-not (buffer-modified-p)))
+          (kill-buffer buffer))))))
+
+(ert-deftest fleet-start-invalid-ack-is-not-reported-as-started ()
+  (fleet-test-model nil
+    (let (result failure)
+      (cl-letf (((symbol-function 'herdr-core-request-async)
+                 (lambda (_method _params callback &optional _timeout)
+                   (funcall callback '(:address "t1") nil)))
+                ((symbol-function 'agent-fleet-dashboard-focus)
+                 (lambda (&rest _) (ert-fail "Focused an unacknowledged launch"))))
+        (agent-fleet-start '("a") :cwd temporary-file-directory
+                           :callback (lambda (r e) (setq result r failure e))))
+      (should (equal result '(:address "t1")))
+      (should (eq (car failure) 'herdr-core-uncertain)))))
 
 (ert-deftest fleet-batch-core-change-dispatches-nothing ()
   (fleet-test-model nil
