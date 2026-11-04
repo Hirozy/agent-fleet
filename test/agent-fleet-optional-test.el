@@ -5,6 +5,7 @@
 (require 'agent-fleet-start)
 (require 'agent-fleet-cleanup)
 (require 'agent-fleet-batch)
+(require 'agent-fleet-details)
 (setq evil-want-keybinding nil)
 (require 'evil)
 (declare-function evil-change-state "evil-core" (state &optional message))
@@ -31,12 +32,24 @@
         (when (eq mode 'agent-fleet-cleanup-mode)
           (should (eq (key-binding (kbd "SPC")) #'agent-fleet-cleanup-toggle))
           (should (eq (key-binding (kbd "n")) #'agent-fleet-cleanup-next))
-          (should (eq (key-binding (kbd "p")) #'agent-fleet-cleanup-previous)))))
+          (should (eq (key-binding (kbd "p")) #'agent-fleet-cleanup-previous)))
+        (when (eq mode 'agent-fleet-batch-mode)
+          (dolist (key '("n" "p" "RET" "i" "o" "v"))
+            (should (eq (key-binding (kbd key)) (lookup-key agent-fleet-batch-mode-map (kbd key))))))))
     (with-temp-buffer
       (agent-fleet-output-mode)
       (evil-local-mode 1)
       (evil-change-state state)
       (should (eq (key-binding (kbd "g")) #'revert-buffer)))))
+
+(ert-deftest fleet-evil-keeps-details-actions-accessible ()
+  (dolist (state '(motion normal))
+    (with-temp-buffer
+      (agent-fleet-details-mode)
+      (evil-local-mode 1)
+      (evil-change-state state)
+      (dolist (key '("RET" "p" "o" "v" "m" "d" "g" "q" "C-g"))
+        (should (eq (key-binding (kbd key)) (lookup-key agent-fleet-details-mode-map (kbd key))))))))
 
 (ert-deftest fleet-evil-keeps-widget-field-submit-and-close-accessible ()
   (save-window-excursion

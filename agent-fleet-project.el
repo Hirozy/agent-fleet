@@ -141,10 +141,8 @@ Non-Git roots retain their explicit `file-truename' identity."
   (interactive)
   (let ((root (agent-fleet-project-root-for-cwd default-directory)))
     (unless root (user-error "No Project in the current directory"))
-    (let* ((choices (agent-fleet--commands))
-           (choice (completing-read "Template or command: " choices nil nil)))
-      (agent-fleet-start (or (cdr (assoc choice choices)) (split-string-and-unquote choice))
-                         :cwd root :display (called-interactively-p 'interactive)))))
+    (agent-fleet-start (agent-fleet--read-command)
+                       :cwd root :display (called-interactively-p 'interactive))))
 
 ;;;###autoload
 (defun agent-fleet-prompt-dwim ()
@@ -164,11 +162,7 @@ Non-Git roots retain their explicit `file-truename' identity."
                    "\n"))
          (same (agent-fleet-project-agents))
          (target (if same
-                     (let* ((choices (mapcar (lambda (r)
-                                              (cons (format "%s [%s]" (agent-fleet-name r)
-                                                            (plist-get r :address))
-                                                    (plist-get r :address))) same)))
-                       (cdr (assoc (completing-read "Same-Project agent: " choices nil t) choices)))
+                     (agent-fleet--read-target same "Same-Project agent: ")
                    (message "No same-Project agent; showing all Fleet agents")
                    (agent-fleet-read-agent))))
     (let ((record (agent-fleet-resolve target)))

@@ -70,6 +70,9 @@ it does not stop Core or any program. No Fleet command stops the Core server.
 directory. The name defaults to the Project name, or directory name when no
 Project exists, normalized for Core and suffixed on conflict. Names are display
 labels, never identity.
+Type commands with spaces and quoted arguments normally; `TAB` completes command
+and template choices. For example, `sh -c "sleep 60"` keeps `sleep 60` as one argument.
+Shell operators require an explicit shell command.
 Generated names begin with a letter or digit and avoid terminal-ID forms such
 as `t7`. For example, `.emacs.d` becomes `emacs-d`; a directory with no usable
 characters falls back to `agent`. Conflict suffixes stay within Core's 32-character
@@ -103,6 +106,10 @@ Fleet marks its agents with `fleet.role=agent`. Use `agent-fleet-adopt` to
 include an external terminal, or set the label through Core. Descendants of
 included agents appear as helpers unless explicitly marked as agents.
 A missing status does not mean a terminal is safe to discard.
+Agent selection, same-Project selection and adoption show names, addresses and
+status, and pin the offered terminal identity before the selection prompt opens.
+If Core or the terminal changes while choosing, the subsequent operation rejects
+that stale choice instead of acting on a replacement with the same address.
 
 Core records parent relationships. Fleet only reads them for details and
 termination impact; there is no separate Fleet Task lifecycle.
@@ -141,6 +148,15 @@ The connection banner shows stale/disconnected state independently of program
 state. Project identity follows the canonical Git common root across linked
 worktrees. Non-project directories display an em dash. Remote paths are never
 resolved against the local filesystem.
+
+Details (`i`) groups runtime and reported work status, program/location,
+relationships and recovery, and labels into readable sections. Each agent has
+its own view, pinned to its full identity. `g` refreshes that snapshot while
+preserving point; a failed refresh keeps the last successful record visible.
+The header always shows current connection health separately from the snapshot.
+Use `RET` to attach, `v` to observe, `p` to compose a prompt, `o` for output,
+or `m` / `d` for Magit status / diff. These actions use the displayed agent
+without another selection prompt and preserve the attached terminal's geometry.
 
 `C-c a P` / `agent-fleet-prompt-dwim` opens an editable prompt with the current
 file and selected line range, including selected text up to 4000 characters.
@@ -206,6 +222,14 @@ launches. `C-c C-c` requests them once; the same buffer retains each member's
 started, failed or uncertain result. Closing the report does not cancel launches
 already requested. Successful members are preserved when another fails. An
 uncertain launch is not retried; inspect the Dashboard before starting again.
+The review includes each initial task and starts on the first member. Use `n` /
+`p` to move by member; asynchronous replies keep the current member selected.
+For an acknowledged launch, `RET` attaches, `i` opens Details, `o` opens output,
+and `C-c a p` composes a prompt. All actions use that member's original identity.
+Results include counts, readable errors and retained checkout paths. Original
+records and structured errors remain attached to each entry. Interruption or an
+uncertain outcome stops launches that have not yet been dispatched; previously
+dispatched requests still complete, and their later acknowledgements remain visible.
 
 ```elisp
 (agent-fleet-start-batch
@@ -286,6 +310,8 @@ after review are not added to the selection.
 Identity, current state and Fleet association are rechecked before each removal.
 Core also rejects removal of live terminals. Failed/uncertain results and
 unattempted targets remain visible; uncertain outcomes stop further removals.
+Each result retains its reason and structured error, including the original
+response when a removal acknowledgement does not match the reviewed target.
 There is no automatic retry and no worktree cleanup.
 
 ## Migration from the original Herdr backend

@@ -50,7 +50,7 @@
           (sort candidates (lambda (a b) (> (agent-fleet-cleanup--depth a table)
                                             (agent-fleet-cleanup--depth b table)))))
     (mapcar (lambda (r) (list :reference (agent-fleet-reference r)
-                              :record r :selected t :status 'pending)) candidates)))
+                              :record r :selected t :status 'pending :reason nil :error nil)) candidates)))
 
 (defun agent-fleet-cleanup--render ()
   "Render this review and its retained per-record outcomes."
@@ -187,7 +187,9 @@
                   (let* ((address (plist-get record :address))
                          (result (herdr-core-request "terminal.rm" (list :terminal address))))
                     (unless (equal (plist-get result :removed) address)
-                      (signal 'herdr-core-uncertain '(:reason invalid-acknowledgement)))
+                      (signal 'herdr-core-uncertain
+                              (list :method "terminal.rm" :reason 'invalid-acknowledgement
+                                    :expected address :response result)))
                     (setf (plist-get item :status) 'removed))))
             ((error quit)
              (let ((uncertain (and dispatched (not (eq (car err) 'herdr-core-request-error)))))

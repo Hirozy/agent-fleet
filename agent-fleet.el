@@ -32,6 +32,7 @@
 (autoload 'agent-fleet-start-worktree "agent-fleet-worktree" nil t)
 (autoload 'agent-fleet-start-batch "agent-fleet-batch" nil t)
 (autoload 'agent-fleet-observe "agent-fleet-attach" nil t)
+(autoload 'agent-fleet-details "agent-fleet-details" nil t)
 (autoload 'agent-fleet-start-remote "agent-fleet-remote" nil t)
 (autoload 'agent-fleet-send-file "agent-fleet-remote" nil t)
 (declare-function agent-fleet-remote-start-options "agent-fleet-remote" (machine cwd))
@@ -96,17 +97,31 @@
           (user-error "Terminal identity changed during operation"))
         record))))
 
+(defun agent-fleet--read-target (records prompt)
+  "Select from RECORDS with PROMPT, retaining identity from before selection."
+  (let ((choices
+         (mapcar
+          (lambda (r)
+            (let ((pinned (condition-case err
+                              (list :reference (agent-fleet-reference r))
+                            (error (list :error err)))))
+              (cons (format "%s [%s]  %s / %s%s"
+                            (agent-fleet-name r) (plist-get r :address)
+                            (plist-get r :state) (agent-fleet-status r)
+                            (if (plist-get pinned :error) " (unavailable)" ""))
+                    pinned))) records)))
+    (unless choices (user-error "No terminals available"))
+    (let ((selected (cdr (assoc (completing-read prompt choices nil t) choices))))
+      (unless selected (user-error "Select a terminal"))
+      (when-let* ((err (plist-get selected :error))) (signal (car err) (cdr err)))
+      (plist-get selected :reference))))
+
 (defun agent-fleet-read-agent (&optional prompt all)
-  "Read an address with PROMPT; include history when ALL."
+  "Read a pinned agent identity with PROMPT; include history when ALL."
   (herdr-core-connect)
-  (let ((choices (mapcar
-                  (lambda (r) (cons (format "%s [%s]  %s / %s"
-                                            (agent-fleet-name r) (plist-get r :address)
-                                            (plist-get r :state) (agent-fleet-status r))
-                                    (plist-get r :address)))
-                  (agent-fleet-agents all))))
-    (unless choices (user-error "No Fleet agents; start one or use agent-fleet-adopt"))
-    (cdr (assoc (completing-read (or prompt "Agent: ") choices nil t) choices))))
+  (let ((records (agent-fleet-agents all)))
+    (unless records (user-error "No Fleet agents; start one or use agent-fleet-adopt"))
+    (agent-fleet--read-target records (or prompt "Agent: "))))
 
 (defun agent-fleet-current-target (&optional all)
   "Return this view's target, or ask for an agent, including history with ALL."
@@ -144,19 +159,29 @@
    (mapcar (lambda (command) (cons command (split-string-and-unquote command)))
            agent-fleet-commands)))
 
+(defun agent-fleet--read-command ()
+  "Read a template or literal command, retaining spaces in its arguments."
+  (let ((choices (agent-fleet--commands))
+        (minibuffer-local-completion-map (copy-keymap minibuffer-local-completion-map)))
+    ;; Space normally requests word completion in this minibuffer map.
+    (define-key minibuffer-local-completion-map (kbd "SPC") #'self-insert-command)
+    (let* ((choice (completing-read "Template or command: " choices nil nil nil nil
+                                    agent-fleet--last-command))
+           (argv (or (cdr (assoc choice choices)) (split-string-and-unquote choice))))
+      (unless argv (user-error "Provide a command"))
+      (setq agent-fleet--last-command choice)
+      argv)))
+
 (defun agent-fleet--start-interactive ()
   "Read ordinary start options."
   (herdr-core-connect)
   (require 'agent-fleet-project)
   (if current-prefix-arg (list nil :configure t)
-    (let* ((choices (agent-fleet--commands))
-           (choice (completing-read "Template or command: " choices nil nil nil nil
-                                    agent-fleet--last-command))
+    (let* ((argv (agent-fleet--read-command))
            (cwd (read-directory-name "Working directory: "
                                      (or (agent-fleet-project-root-for-cwd default-directory)
                                          default-directory) nil t)))
-      (setq agent-fleet--last-command choice)
-      (list (or (cdr (assoc choice choices)) (split-string-and-unquote choice)) :cwd cwd))))
+      (list argv :cwd cwd))))
 
 ;;;###autoload
 (cl-defun agent-fleet-start (argv &key (cwd default-directory) name task configure display
@@ -197,6 +222,8 @@ a successfully started terminal."
       (herdr-core-request-async
        "terminal.run" params
        (lambda (record err)
+         (when (and (null err) (not (herdr-core--valid-terminal-p record)))
+           (setq err (list 'herdr-core-uncertain :reason 'invalid-launch-response :response record)))
          (if err (message "Start %s: %s (not retried)" name (error-message-string err))
            (let ((first (plist-get record :first_message)))
              (message "Started %s [%s]%s" name (plist-get record :address)
@@ -207,14 +234,13 @@ a successfully started terminal."
          (when callback (funcall callback record err))) 90))))
 
 ;;;###autoload
-(defun agent-fleet-adopt (address)
-  "Explicitly include external terminal ADDRESS as a Fleet agent."
+(defun agent-fleet-adopt (target)
+  "Explicitly include terminal TARGET as a Fleet agent.
+TARGET may be an address or a pinned identity; interactive selection pins it."
   (interactive
    (progn (herdr-core-connect)
-          (list (completing-read "Include terminal: "
-                                 (mapcar (lambda (r) (plist-get r :address))
-                                         (herdr-core-terminals)) nil t))))
-  (let ((record (agent-fleet-resolve address t)))
+          (list (agent-fleet--read-target (herdr-core-terminals) "Include terminal: "))))
+  (let ((record (agent-fleet-resolve target t)))
     (herdr-core-request "terminal.label"
                        (list :terminal (plist-get record :address) :labels '(:fleet.role "agent")))))
 
@@ -248,6 +274,14 @@ a successfully started terminal."
       (agent-fleet-display-close-auxiliary-frame (selected-frame))
     (quit-window)))
 
+(defun agent-fleet-view-buffer (mode reference name)
+  "Reuse a MODE view pinned to REFERENCE, or create a buffer named NAME."
+  (or (cl-find-if (lambda (buffer)
+                    (with-current-buffer buffer
+                      (and (derived-mode-p mode) (equal agent-fleet-target reference))))
+                  (buffer-list))
+      (generate-new-buffer name)))
+
 (define-derived-mode agent-fleet-output-mode agent-fleet-review-mode "Fleet Output"
   "Read a refreshable, identity-pinned output snapshot."
   (setq-local revert-buffer-function #'agent-fleet--output-revert
@@ -279,13 +313,8 @@ a successfully started terminal."
          (result (herdr-core-request "terminal.read"
                                     (list :terminal (plist-get record :address) :lines 200)))
          (reference (agent-fleet-reference record))
-         (buffer (or (cl-find-if
-                      (lambda (b)
-                        (with-current-buffer b
-                          (and (derived-mode-p 'agent-fleet-output-mode)
-                               (equal agent-fleet-target reference))))
-                      (buffer-list))
-                     (generate-new-buffer (format "*Fleet Output: %s*" (plist-get record :address))))))
+         (buffer (agent-fleet-view-buffer 'agent-fleet-output-mode reference
+                                          (format "*Fleet Output: %s*" (plist-get record :address)))))
     (with-current-buffer buffer
       (unless (derived-mode-p 'agent-fleet-output-mode) (agent-fleet-output-mode))
       (agent-fleet--output-render record result)
@@ -435,24 +464,6 @@ a successfully started terminal."
       (herdr-core-request-async
        "terminal.kill" (list :terminal address)
        (lambda (result err) (message "Agent end: %s" (or err result)))))))
-
-;;;###autoload
-(defun agent-fleet-details (target)
-  "Show TARGET's identity, state and Core parent relationship."
-  (interactive (list (agent-fleet-current-target t)))
-  (let* ((record (agent-fleet-resolve target t))
-         (buffer (get-buffer-create "*Fleet Details*")))
-    (with-current-buffer buffer
-      (agent-fleet-review-mode)
-      (let ((inhibit-read-only t))
-        (erase-buffer)
-        (insert (propertize (concat (agent-fleet-name record) "\n\n") 'face 'bold))
-        (dolist (key '(:address :template :cwd :state :status :parent :die_with_parent
-                      :keep :reason :first_message :labels))
-          (insert (propertize (format "%s: " key) 'face 'font-lock-keyword-face)
-                  (format "%S\n" (plist-get record key)))))
-      (setq-local agent-fleet-target (agent-fleet-reference record)))
-    (agent-fleet-present-buffer buffer)))
 
 ;;;###autoload (autoload 'agent-fleet-command-map "agent-fleet" nil t 'keymap)
 (defvar agent-fleet-command-map
