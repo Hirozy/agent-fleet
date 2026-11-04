@@ -5,6 +5,7 @@
 (require 'agent-fleet-dashboard)
 (require 'agent-fleet-attach)
 (require 'agent-fleet-magit)
+(declare-function ghostel-send-string "ghostel" (string))
 
 (defun fleet-gui-smoke-run ()
   "Exercise real frames, Ghostel attachment, PTY size and detach."
@@ -84,6 +85,41 @@
                 (should (eq (window-buffer (frame-selected-window origin)) viewer))
                 (agent-fleet-display-close-auxiliary-frame (selected-frame))
                 (setq report (concat report "Magit auxiliary review passed.\n")))
+              ;; A new Emacs frame initially displays the current buffer.
+              ;; Do not briefly put the interactive viewer in a smaller frame.
+              (switch-to-buffer origin-buffer)
+              (let* ((observer-frame (make-frame '((width . 55) (height . 16))))
+                     before observer)
+                (unwind-protect
+                    (progn
+                      (set-window-buffer (frame-selected-window observer-frame) origin-buffer)
+                      (select-frame-set-input-focus origin)
+                      (switch-to-buffer viewer)
+                      (sit-for 0.3)
+                      (setq before (herdr-core-request "terminal.get" (list :terminal address)))
+                      (select-frame-set-input-focus observer-frame)
+                      (agent-fleet-observe reference)
+                      (setq observer (current-buffer))
+                      (push observer viewers)
+                      (should agent-fleet-observe-p)
+                      (should-not (eq observer viewer))
+                      (sit-for 0.4)
+                      (agent-fleet-observe reference)
+                      (should (eq observer (current-buffer)))
+                      (ghostel-send-string "OBSERVER-MUST-NOT-TYPE\n")
+                      (set-frame-size observer-frame 65 19)
+                      (sit-for 0.4)
+                      (let ((after (herdr-core-request "terminal.get" (list :terminal address))))
+                        (should (equal (plist-get before :cols) (plist-get after :cols)))
+                        (should (equal (plist-get before :rows) (plist-get after :rows))))
+                      (should-not (string-match-p "OBSERVER-MUST-NOT-TYPE"
+                                                  (plist-get (herdr-core-request "terminal.read"
+                                                                                (list :terminal address)) :text))))
+                  (when (buffer-live-p observer)
+                    (let ((kill-buffer-query-functions nil)) (kill-buffer observer)))
+                  (delete-frame observer-frame)
+                  (select-frame-set-input-focus origin)))
+              (setq report (concat report "Observer reuse, input isolation, focus and resize isolation passed.\n"))
               (let ((kill-buffer-query-functions nil)) (kill-buffer viewer))
               (sit-for 0.2)
               (should (equal "live" (plist-get (herdr-core-request

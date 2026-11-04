@@ -2,6 +2,8 @@
 ;; These tests never use the caller's default Core or its state directory.
 (require 'ert)
 (require 'agent-fleet-cleanup)
+(require 'agent-fleet-remote)
+(require 'agent-fleet-worktree)
 
 (defmacro hc-live-isolated (&rest body)
   "Run BODY against a fresh Core under a temporary directory."
@@ -116,5 +118,72 @@
       (should (equal (plist-get (herdr-core-terminal address) :state) "live"))
       (should-not (agent-fleet-cleanup--scan (agent-fleet-cleanup--records)))
       (herdr-core-request "terminal.kill" (list :terminal address)))))
+
+(defmacro hc-live-remote (&rest body)
+  "Run BODY with a second isolated Core reached through a local relay.
+REMOTE-ID and REMOTE-DIR are available.
+This exercises real routing without SSH."
+  (declare (indent 0))
+  `(let* ((remote-dir (expand-file-name "remote" root))
+          (socket (expand-file-name "remote.sock" remote-dir))
+          (wrapper (expand-file-name "relay" root)) remote-id)
+     (make-directory remote-dir)
+     (make-directory (expand-file-name "runtime" remote-dir))
+     (with-temp-file wrapper
+       (insert "#!/bin/sh\n"
+               "export HC_SOCKET=" (shell-quote-argument socket) "\n"
+               "export XDG_CONFIG_HOME=" (shell-quote-argument (expand-file-name "config" remote-dir)) "\n"
+               "export XDG_STATE_HOME=" (shell-quote-argument (expand-file-name "state" remote-dir)) "\n"
+               "export XDG_RUNTIME_DIR=" (shell-quote-argument (expand-file-name "runtime" remote-dir)) "\n"
+               "export PATH=" (shell-quote-argument (concat (file-name-directory herdr-core-executable) ":" (getenv "PATH"))) "\n"
+               "exec /bin/sh -c \"$1\"\n"))
+     (set-file-modes wrapper #o700)
+     (unwind-protect
+         (progn
+           (setq remote-id (plist-get (herdr-core-request
+                                      "machine.add" (list :name "remote" :via wrapper :session "remote") 30) :id))
+           (hc-live-until (lambda () (condition-case nil (herdr-core-machine remote-id) (error nil))) 15)
+           ,@body)
+       (let ((process-environment (herdr-core-environment)))
+         (setenv "HC_SOCKET" socket)
+         (call-process herdr-core-executable nil nil nil "server" "stop")))))
+
+(ert-deftest hc-live-remote-launch-transfer-review-and-rename ()
+  (hc-live-isolated
+    (hc-live-remote
+      ;; A real checkout on the second Core, still isolated from user projects.
+      (agent-fleet-worktree--git remote-dir "init" "-q")
+      (agent-fleet-worktree--git remote-dir "-c" "user.name=Test" "-c" "user.email=test@example.invalid"
+                                "-c" "commit.gpgsign=false" "commit" "-q" "--allow-empty" "-m" "initial")
+      (let (result failure completed)
+        (agent-fleet-start '("sh" "-c" "sleep 60") :machine remote-id :cwd remote-dir
+                           :callback (lambda (r e) (setq result r failure e completed t)))
+        (hc-live-until (lambda () completed) 20)
+        (should-not failure)
+        (let* ((address (plist-get result :address)) reference)
+          (hc-live-until (lambda () (herdr-core-terminal address)))
+          (setq reference (agent-fleet-reference (herdr-core-terminal address)))
+          (should (equal remote-id (car (nth 1 (plist-get reference :fleet-identity)))))
+          (should (agent-fleet-project-for-agent (herdr-core-terminal address)))
+          (let* ((file (expand-file-name "context.txt" root))
+                 (draft (progn (with-temp-file file (insert "fleet-context"))
+                               (agent-fleet-send-file reference file))))
+            (with-current-buffer draft
+              (should (string-match-p "Attached file:" (buffer-string)))
+              (should (eq agent-fleet-operation-state 'draft)))
+            (kill-buffer draft))
+          (let ((review (agent-fleet-remote-review reference)))
+            (with-current-buffer review (should (derived-mode-p 'agent-fleet-remote-review-mode)))
+            (kill-buffer review))
+          (herdr-core-disconnect)
+          (herdr-core-connect)
+          (hc-live-until (lambda () (herdr-core-terminal address)))
+          (should (equal address (plist-get (agent-fleet-resolve reference t) :address)))
+          (herdr-core-request "machine.rename" '(:machine "remote" :new_name "renamed"))
+          (hc-live-until (lambda () (herdr-core-terminal
+                                    (concat "renamed/" (cadr (nth 1 (plist-get reference :fleet-identity)))))))
+          (let ((record (agent-fleet-resolve reference t)))
+            (should (string-prefix-p "renamed/" (plist-get record :address)))
+            (herdr-core-request "terminal.kill" (list :terminal (plist-get record :address)))))))))
 
 (provide 'herdr-core-live-test)

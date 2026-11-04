@@ -112,7 +112,7 @@
          (table (agent-fleet-cleanup--table records))
          (herdr-core--terminals table)
          (identity (plist-get (plist-get item :reference) :fleet-identity))
-         (address (nth 1 identity))
+         (address (herdr-core-identity-address identity))
          (record (gethash address table)))
     (cond
      ((not record) "Record is no longer present")

@@ -25,6 +25,12 @@
 (autoload 'agent-fleet-magit-status "agent-fleet-magit" nil t)
 (autoload 'agent-fleet-magit-diff "agent-fleet-magit" nil t)
 (autoload 'agent-fleet-start-form "agent-fleet-start" nil t)
+(autoload 'agent-fleet-start-worktree "agent-fleet-worktree" nil t)
+(autoload 'agent-fleet-start-batch "agent-fleet-batch" nil t)
+(autoload 'agent-fleet-observe "agent-fleet-attach" nil t)
+(autoload 'agent-fleet-start-remote "agent-fleet-remote" nil t)
+(autoload 'agent-fleet-send-file "agent-fleet-remote" nil t)
+(declare-function agent-fleet-remote-start-options "agent-fleet-remote" (machine cwd))
 
 (defun agent-fleet-label (terminal key)
   "Read label KEY from TERMINAL."
@@ -62,7 +68,7 @@
   "Resolve TARGET, checking pinned identity; FRESH queries Core."
   (herdr-core-connect)
   (let* ((identity (and (listp target) (plist-get target :fleet-identity)))
-         (address (if identity (nth 1 identity) target))
+         (address (if identity (herdr-core-identity-address identity) target))
          (cached (and (stringp address) (herdr-core-terminal address))))
     (unless cached (user-error "Terminal unavailable: %s" address))
     (when (and identity (not (equal identity (herdr-core-identity cached))))
@@ -90,10 +96,10 @@
   "Return this view's target, or ask for an agent."
   (or agent-fleet-target (agent-fleet-read-agent)))
 
-(defun agent-fleet--name (cwd)
+(defun agent-fleet--name (cwd &optional remote)
   "Generate a Core-compatible unique name from CWD."
   (require 'agent-fleet-project)
-  (let* ((root (or (agent-fleet-project-root-for-cwd cwd) cwd))
+  (let* ((root (or (and (not remote) (agent-fleet-project-root-for-cwd cwd)) cwd))
          (base (replace-regexp-in-string
                 "[^a-z0-9_-]" "-"
                 (downcase (file-name-nondirectory (directory-file-name root)))))
@@ -128,27 +134,39 @@
       (list (or (cdr (assoc choice choices)) (split-string-and-unquote choice)) :cwd cwd))))
 
 ;;;###autoload
-(cl-defun agent-fleet-start (argv &key (cwd default-directory) name task configure display)
+(cl-defun agent-fleet-start (argv &key (cwd default-directory) name task configure display
+                                labels callback machine)
   "Start agent ARGV in CWD, optionally named NAME.
 TASK is an initial task for a Core template; CONFIGURE opens a start form.
 DISPLAY opens the Dashboard, as interactive calls do.
+LABELS adds string-valued Core labels; Fleet ownership cannot be overridden.
+CALLBACK receives (RECORD ERROR) once the launch request completes.
+MACHINE is a permanent remote Core ID; CWD then names a directory there.
 Return an asynchronous request ID.  An unsent first message never kills
 a successfully started terminal."
   (interactive (agent-fleet--start-interactive))
   (if configure (agent-fleet-start-form)
     (herdr-core-connect)
     (unless (and argv (cl-every #'stringp argv)) (user-error "Provide a command"))
-    (unless (and (not (file-remote-p cwd)) (file-directory-p cwd))
+    (unless (or machine (and (not (file-remote-p cwd)) (file-directory-p cwd)))
       (user-error "Select an existing local working directory"))
+    (when (and task machine)
+      (user-error "Remote template tasks must be explicit template argv"))
     (when (and task
                (not (member (car argv)
                             (mapcar (lambda (r) (plist-get r :name))
                                     (plist-get (herdr-core-request "templates.list") :templates)))))
       (user-error "Initial task requires a Core template"))
-    (let* ((cwd (file-truename cwd)) (name (or name (agent-fleet--name cwd)))
+    (let* ((remote (when machine
+                     (require 'agent-fleet-remote)
+                     (agent-fleet-remote-start-options machine cwd)))
+           (cwd (if machine cwd (file-truename cwd)))
+           (name (or name (agent-fleet--name (or (plist-get remote :name-base) cwd) machine)))
+           (labels (append (plist-get remote :labels) labels))
            (params (list :argv (vconcat argv (and task (list task))) :cwd cwd :name name
                          :no_parent t :wait :false :keep :false :rm :false
-                         :labels '(:fleet.role "agent"))))
+                         :labels (plist-put (copy-sequence labels) :fleet.role "agent"))))
+      (when remote (setq params (plist-put params :on (plist-get remote :on))))
       (when (or display (called-interactively-p 'interactive)) (agent-fleet))
       (message "Starting %s…" name)
       (herdr-core-request-async
@@ -160,7 +178,8 @@ a successfully started terminal."
                       (if (and first (not (eq (plist-get first :sent) t)))
                           (format "; first task NOT sent: %s" (plist-get first :reason)) "")))
            (when (fboundp 'agent-fleet-dashboard-focus)
-             (agent-fleet-dashboard-focus (plist-get record :address))))) 90))))
+             (agent-fleet-dashboard-focus (plist-get record :address))))
+         (when callback (funcall callback record err))) 90))))
 
 ;;;###autoload
 (defun agent-fleet-adopt (address)
@@ -348,7 +367,13 @@ a successfully started terminal."
                        ("c" . agent-fleet-cleanup) ("k" . agent-fleet-kill)
                        ("s" . agent-fleet-interrupt) ("m" . agent-fleet-magit-status)
                        ("d" . agent-fleet-magit-diff) ("+" . agent-fleet-adopt)))
-      (define-key map (kbd (car binding)) (cdr binding))) map))
+      (define-key map (kbd (car binding)) (cdr binding)))
+    (define-key map (kbd "w") #'agent-fleet-start-worktree)
+    (define-key map (kbd "b") #'agent-fleet-start-batch)
+    (define-key map (kbd "v") #'agent-fleet-observe)
+    (define-key map (kbd "r") #'agent-fleet-start-remote)
+    (define-key map (kbd "f") #'agent-fleet-send-file)
+    map))
 (fset 'agent-fleet-command-map agent-fleet-command-map)
 (provide 'agent-fleet)
 ;;; agent-fleet.el ends here
