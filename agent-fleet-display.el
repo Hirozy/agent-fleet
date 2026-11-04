@@ -30,13 +30,109 @@
 ;; Magit, worktree, attach, the dashboard buffer, or any Herdr RPC.
 ;; Feature modules call `agent-fleet-display--aux-run' for the selected
 ;; origin, or `agent-fleet-display-aux-run-at-origin' when an asynchronous
-;; workflow recorded an explicit origin.  The dashboard calls the capability
-;; and centering helpers for its own child-frame backend.
+;; workflow recorded an explicit origin.  Dashboard uses the per-window
+;; review return stack instead of a child frame.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'subr-x)
+
+;;; Same-window review navigation
+
+(defvar agent-fleet-display--window-calling nil)
+
+(defun agent-fleet-display-window-active-p (&optional window)
+  "Whether WINDOW displays the top of a Fleet review return stack."
+  (let* ((window (or window (selected-window)))
+         (entry (car (window-parameter window 'agent-fleet-return-stack))))
+    (and entry (eq (car entry) (window-buffer window)))))
+
+(defun agent-fleet-display--window-save (window)
+  "Save WINDOW's buffer and viewing position."
+  (with-current-buffer (window-buffer window)
+    (list (current-buffer) (copy-marker (window-point window))
+          (copy-marker (window-start window)) (window-hscroll window)
+          (window-vscroll window t))))
+
+(defun agent-fleet-display--window-restore (window saved)
+  "Restore SAVED in WINDOW without changing the window layout."
+  (let ((buffer (car saved)) (dedicated (window-dedicated-p window)))
+    (unwind-protect
+        (progn
+          (set-window-dedicated-p window nil)
+          (set-window-buffer window (if (buffer-live-p buffer) buffer
+                                      (other-buffer (window-buffer window) t)))
+          (when (buffer-live-p buffer)
+            (set-window-point window (nth 1 saved))
+            (set-window-start window (nth 2 saved) t)
+            (set-window-hscroll window (nth 3 saved))
+            (set-window-vscroll window (nth 4 saved) t)
+            (set-window-parameter window 'agent-fleet-restore-position saved))
+          (when (eq window (selected-window)) (set-buffer (window-buffer window))))
+      (set-window-dedicated-p window dedicated))))
+
+(defun agent-fleet-display-window-restoring-p (window)
+  "Whether WINDOW has a matching one-time position restoration pending."
+  (let ((saved (window-parameter window 'agent-fleet-restore-position)))
+    (and saved (eq (car saved) (window-buffer window)))))
+
+(defun agent-fleet-display--restore-after-change (frame)
+  "Finish position restoration in FRAME after buffer-change consumers run."
+  (dolist (window (window-list frame 'nomini))
+    (when-let* ((saved (window-parameter window 'agent-fleet-restore-position)))
+      (set-window-parameter window 'agent-fleet-restore-position nil)
+      (when (eq (car saved) (window-buffer window))
+        (set-window-point window (nth 1 saved))
+        (set-window-start window (nth 2 saved) t)
+        (set-window-hscroll window (nth 3 saved))
+        (set-window-vscroll window (nth 4 saved) t)))))
+
+(add-hook 'window-state-change-functions #'agent-fleet-display--restore-after-change t)
+
+(defun agent-fleet-display-window-open (buffer)
+  "Show BUFFER in the selected window, retaining its previous view."
+  (let ((window (selected-window)))
+    (unless (eq buffer (window-buffer window))
+      (unless (agent-fleet-display-window-active-p window)
+        (set-window-parameter window 'agent-fleet-return-stack nil))
+      (let ((saved (agent-fleet-display--window-save window)))
+        (agent-fleet-display--window-restore
+         window (list buffer (with-current-buffer buffer (point)) 1 0 0))
+        (set-window-parameter window 'agent-fleet-return-stack
+                              (cons (cons buffer saved)
+                                    (window-parameter window 'agent-fleet-return-stack)))))
+    buffer))
+
+(defun agent-fleet-display-window-quit (&optional window)
+  "Restore the preceding review in WINDOW, returning non-nil when handled."
+  (let ((window (or window (selected-window))))
+    (when (agent-fleet-display-window-active-p window)
+      (let ((stack (window-parameter window 'agent-fleet-return-stack)))
+        (set-window-parameter window 'agent-fleet-return-stack (cdr stack))
+        (agent-fleet-display--window-restore window (cdar stack)))
+      t)))
+
+(defun agent-fleet-display-window-call (function)
+  "Run presentation FUNCTION inside the active review window.
+Retain the previous view on success and restore it on failure."
+  (if agent-fleet-display--window-calling (funcall function)
+    (let* ((agent-fleet-display--window-calling t)
+           (window (selected-window))
+           (saved (agent-fleet-display--window-save window))
+           (stack (window-parameter window 'agent-fleet-return-stack)))
+      (condition-case err
+          (prog1 (funcall function)
+            (when (and (window-live-p window)
+                       (window-parameter window 'agent-fleet-return-stack)
+                       (not (eq (car saved) (window-buffer window))))
+              (set-window-parameter window 'agent-fleet-return-stack
+                                    (cons (cons (window-buffer window) saved) stack))))
+        ((error quit)
+         (when (window-live-p window)
+           (set-window-parameter window 'agent-fleet-return-stack stack)
+           (agent-fleet-display--window-restore window saved))
+         (signal (car err) (cdr err)))))))
 
 
 ;;; --- Capability checks ----------------------------------------------
@@ -312,7 +408,8 @@ display lands in it.  Signal a `user-error' when Emacs cannot create it."
 
 (defun agent-fleet-display--aux-quit-restore-window
     (orig &optional window bury-or-kill)
-  "Around advice on `quit-restore-window' for auxiliary child frames.
+  "Around advice on `quit-restore-window' for Fleet review views.
+An active same-window review returns to its preceding buffer and position.
 Quitting a window whose frame is an auxiliary child closes that child —
 delete it, forget the reuse entry, refocus its origin — instead of the
 default behavior.  The default would not match the frame-deletion branch
@@ -320,10 +417,16 @@ of `quit-restore-window' (the recorded buffer is the placeholder the
 child was created with, not the view buffer later swapped in) and would
 switch the window to an unrelated buffer, leaving the child behind.
 BURY-OR-KILL is still applied to the window's buffer afterwards.
-Windows on any other frame pass through unchanged."
+Other windows pass through unchanged."
   (let* ((win (if (window-live-p window) window (selected-window)))
          (frame (window-frame win)))
-    (if (frame-parameter frame 'agent-fleet-auxiliary-frame)
+    (if (and (windowp win) (agent-fleet-display-window-active-p win))
+        (let ((buffer (window-buffer win)))
+          (agent-fleet-display-window-quit win)
+          (when (buffer-live-p buffer)
+            (cond ((eq bury-or-kill 'kill) (kill-buffer buffer))
+                  ((memq bury-or-kill '(bury burying)) (bury-buffer-internal buffer)))))
+      (if (frame-parameter frame 'agent-fleet-auxiliary-frame)
         (let ((buffer (window-buffer win)))
           (agent-fleet-display--aux-close frame)
           (when (buffer-live-p buffer)
@@ -331,7 +434,7 @@ Windows on any other frame pass through unchanged."
                    (kill-buffer buffer))
                   ((memq bury-or-kill '(bury burying))
                    (bury-buffer-internal buffer)))))
-      (funcall orig window bury-or-kill))))
+        (funcall orig window bury-or-kill)))))
 
 ;;; --- View outcomes --------------------------------------------------
 

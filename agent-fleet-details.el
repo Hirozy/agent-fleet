@@ -56,6 +56,12 @@
              unless (eq key :state)
              do (agent-fleet-details--field (substring (symbol-name key) 1) value))
     (agent-fleet-details--section "Program and location")
+    (agent-fleet-details--field "Type" (agent-fleet-type record))
+    (let ((app (plist-get (plist-get record :status) :app)))
+      (agent-fleet-details--field "Type source"
+                                 (cond ((and (stringp app) (not (string-blank-p app))) "Reported app")
+                                       ((equal (agent-fleet-type record) "—") "Unavailable")
+                                       (t "Launch command"))))
     (agent-fleet-details--field "Command" (when-let* ((argv (plist-get record :argv)))
                                             (mapconcat #'shell-quote-argument argv " ")))
     (when-let* ((template (plist-get record :template)))

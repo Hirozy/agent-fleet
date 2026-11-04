@@ -5,9 +5,6 @@
 (require 'agent-fleet)
 (require 'agent-fleet-project)
 (require 'tabulated-list)
-(defcustom agent-fleet-dashboard-display 'buffer
-  "Dashboard presentation, with a buffer fallback on unsupported runtimes."
-  :type '(choice (const buffer) (const child-frame)) :group 'agent-fleet)
 (defcustom agent-fleet-notify-on '("blocked" "error" "done")
   "Reported states announced in the echo area."
   :type '(repeat string) :group 'agent-fleet)
@@ -15,9 +12,9 @@
 (defvar-local agent-fleet-dashboard--project nil)
 (defvar-local agent-fleet-dashboard--attention nil)
 (defvar-local agent-fleet-dashboard--pending-focus nil)
-(defvar agent-fleet-dashboard--child nil)
-(defvar agent-fleet-dashboard--origin nil)
-(defvar agent-fleet-dashboard--origin-window nil)
+(defconst agent-fleet-dashboard--columns
+  [("Agent" 22 t) ("Type" 12 t) ("Project" 16 t) ("Role" 7 t)
+   ("State" 22 t) ("Parent" 8 t) ("Address" 10 t)])
 
 (defun agent-fleet-dashboard--state-cell (r)
   "Return a styled state cell for R."
@@ -33,6 +30,9 @@
   (interactive)
   (when-let* ((buffer (get-buffer "*Agent Fleet*")))
     (with-current-buffer buffer
+      (unless (assoc "Type" (append tabulated-list-format nil))
+        (setq tabulated-list-format (copy-tree agent-fleet-dashboard--columns t))
+        (tabulated-list-init-header))
       (let ((id (tabulated-list-get-id))
             (pending agent-fleet-dashboard--pending-focus)
             (members (agent-fleet-agents agent-fleet-dashboard--history)))
@@ -41,6 +41,7 @@
                (lambda (r)
                  (list (plist-get r :address)
                        (vector (agent-fleet-name r)
+                               (agent-fleet-type r)
                                (agent-fleet-project-label r)
                                (if (equal (agent-fleet-label r "fleet.role") "agent") "agent" "helper")
                                (agent-fleet-dashboard--state-cell r)
@@ -103,25 +104,11 @@
     (agent-fleet-reference (agent-fleet-resolve id))))
 
 (defun agent-fleet-dashboard--visit (function &optional target)
-  "Run FUNCTION for TARGET at the origin; close the child only on success."
-  (let* ((child (and (eq (selected-frame) agent-fleet-dashboard--child)
-                     agent-fleet-dashboard--child))
-         (origin agent-fleet-dashboard--origin)
-         (window agent-fleet-dashboard--origin-window))
-    (when child
-      (unless (and (frame-live-p origin) (window-live-p window))
-        (user-error "Dashboard origin is no longer available"))
-      (select-frame-set-input-focus origin)
-      (select-window window))
-    (condition-case err
-        (let ((result (if target (funcall function target) (funcall function))))
-          (if (and child (agent-fleet-display--outcome-opened-p result))
-              (progn (delete-frame child) (setq agent-fleet-dashboard--child nil))
-            (when child (select-frame-set-input-focus child)))
-          result)
-      ((error quit)
-       (when (and child (frame-live-p child)) (select-frame-set-input-focus child))
-       (signal (car err) (cdr err))))))
+  "Open FUNCTION for TARGET in the current review window."
+  (let ((open (lambda () (if target (funcall function target) (funcall function)))))
+    (if (agent-fleet-display-window-active-p)
+        (agent-fleet-display-window-call open)
+      (funcall open))))
 
 (defun agent-fleet-dashboard-attach () "Attach to the current row."
   (interactive) (agent-fleet-dashboard--visit #'agent-fleet-attach (agent-fleet-dashboard--target)))
@@ -165,14 +152,9 @@
   (setq agent-fleet-dashboard--attention (not agent-fleet-dashboard--attention))
   (agent-fleet-dashboard-refresh))
 (defun agent-fleet-dashboard-quit ()
-  "Close the Dashboard, retaining its origin."
+  "Return to the buffer and position from before Dashboard opened."
   (interactive)
-  (if (eq (selected-frame) agent-fleet-dashboard--child)
-      (let ((origin agent-fleet-dashboard--origin))
-        (delete-frame agent-fleet-dashboard--child)
-        (setq agent-fleet-dashboard--child nil)
-        (when (frame-live-p origin) (select-frame-set-input-focus origin)))
-    (quit-window)))
+  (agent-fleet-view-quit))
 
 (defvar agent-fleet-mode-map
   (let ((map (make-sparse-keymap)))
@@ -192,49 +174,26 @@
   "Live agent overview."
   (setq-local agent-fleet-target-function #'agent-fleet-dashboard--target)
   (setq-local agent-fleet-presentation-function #'agent-fleet-dashboard--visit)
-  (setq tabulated-list-format [("Agent" 24 t) ("Project" 18 t) ("Role" 8 t)
-                              ("State" 24 t) ("Parent" 10 t) ("Address" 14 t)])
+  (setq tabulated-list-format (copy-tree agent-fleet-dashboard--columns t))
   (setq tabulated-list-padding 1)
   (tabulated-list-init-header))
 
 ;;;###autoload
 (defun agent-fleet ()
-  "Open the Core-backed Agent Fleet Dashboard."
+  "Open Dashboard in the current window, retaining its previous view."
   (interactive)
   (herdr-core-connect)
-  (let* ((origin (agent-fleet-display-origin-frame))
-         (window (cond
-                  ((eq (selected-frame) agent-fleet-dashboard--child)
-                   agent-fleet-dashboard--origin-window)
-                  ((eq (selected-frame) origin) (selected-window))
-                  (t (frame-selected-window origin))))
-         (buffer (get-buffer-create "*Agent Fleet*")))
+  (let ((buffer (get-buffer-create "*Agent Fleet*"))
+        (child (and (frame-parameter nil 'agent-fleet-auxiliary-frame) (selected-frame)))
+        (previous (current-buffer)))
     (with-current-buffer buffer
       (unless (derived-mode-p 'agent-fleet-mode) (agent-fleet-mode)))
     (agent-fleet-dashboard-refresh)
-    (if (and (eq agent-fleet-dashboard-display 'child-frame)
-             (agent-fleet-display-child-frame-available-p origin))
-        (progn
-          (unless (and (frame-live-p agent-fleet-dashboard--child)
-                       (eq (frame-parent agent-fleet-dashboard--child) origin))
-            (when (frame-live-p agent-fleet-dashboard--child)
-              (delete-frame agent-fleet-dashboard--child))
-            (setq agent-fleet-dashboard--child
-                  (make-frame `((parent-frame . ,origin) (minibuffer . nil)
-                                (width . 110) (height . 26) (undecorated . t)
-                                (menu-bar-lines . 0) (tool-bar-lines . 0)
-                                (agent-fleet-dashboard-display . child-frame)))))
-          (setq agent-fleet-dashboard--origin origin
-                agent-fleet-dashboard--origin-window window)
-          (set-window-buffer (frame-root-window agent-fleet-dashboard--child) buffer)
-          (agent-fleet-display--center-child-frame agent-fleet-dashboard--child origin)
-          (select-frame-set-input-focus agent-fleet-dashboard--child))
-      (when (eq agent-fleet-dashboard-display 'child-frame)
-        (message "Child frames unavailable; opening Dashboard buffer"))
-      (agent-fleet-present-buffer buffer))
-    ;; Selecting a frame need not update the current buffer until the next
-    ;; command loop iteration.  Immediate callers must see Dashboard context.
-    (set-buffer buffer)
+    (when child
+      (select-frame-set-input-focus (agent-fleet-display-origin-frame child))
+      (agent-fleet-display-window-open previous))
+    (agent-fleet-display-window-open buffer)
+    (when child (agent-fleet-display-close-auxiliary-frame child))
     buffer))
 
 (defun agent-fleet-dashboard--notify (event)

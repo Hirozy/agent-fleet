@@ -38,15 +38,13 @@ autoload file through your package manager or configuration:
 Fleet installs no global bindings. Its attach mode provides a buffer-local
 `C-c a` map whose commands use the current terminal.
 
-The default Dashboard opens in a buffer. To opt into a centered child frame:
-
-```elisp
-(setq agent-fleet-dashboard-display 'child-frame)
-```
-
-Unsupported graphical runtimes fall back to a buffer. Child views always use
-a non-child origin, and Dashboard navigation closes its child only after the
-destination opens successfully.
+Dashboard always opens in the selected Emacs window, without a new frame or
+split. The former `agent-fleet-dashboard-display` option is no longer used.
+`q` / `C-g` restores the preceding buffer, point and scroll position. Each
+window retains its own return path. Details, output and other Fleet views
+opened from Dashboard return one step at a time. Successful attachment replaces
+the review with the selected terminal; failed navigation keeps the review.
+Existing terminal clients remain alive while hidden, retaining their PTY size.
 
 ## Connect
 
@@ -122,7 +120,7 @@ Dashboard and review bindings also work with optional Evil enabled. Fleet's
 bindings take precedence over Evil's default bindings in these views; explicit
 user Evil bindings can still override them. Use the arrow keys or `C-n`/`C-p`
 to move between rows. In the Dashboard, `C-c a` commands use the current row
-and follow the same origin/child-close rules as the single-key actions.
+and follow the same return rules as the single-key actions.
 The header shows visible/total counts and active filters. Empty lists explain
 how to start an agent or adjust filters. When a selected record disappears,
 selection moves to a remaining row instead of an empty line.
@@ -148,6 +146,13 @@ The connection banner shows stale/disconnected state independently of program
 state. Project identity follows the canonical Git common root across linked
 worktrees. Non-project directories display an em dash. Remote paths are never
 resolved against the local filesystem.
+
+The `Type` column shows the program's reported `status.app`, falling back to
+the launch executable's name (for example, `claude`, `codex` or `pi`). It is
+separate from the `Role` column's agent/helper relationship. Details also shows
+whether the type came from a report or the launch command. Unknown types show
+an em dash; wrappers remain their literal command name until an app reports.
+This fallback never supplies or changes reported work status.
 
 Details (`i`) groups runtime and reported work status, program/location,
 relationships and recovery, and labels into readable sections. Each agent has

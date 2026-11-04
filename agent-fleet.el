@@ -45,9 +45,11 @@
 
 (defun agent-fleet-call-with-presentation (function)
   "Call presentation FUNCTION through the current view's origin handler."
-  (if agent-fleet-presentation-function
-      (funcall agent-fleet-presentation-function function)
-    (funcall function)))
+  (cond ((agent-fleet-display-window-active-p)
+         (agent-fleet-display-window-call function))
+        (agent-fleet-presentation-function
+         (funcall agent-fleet-presentation-function function))
+        (t (funcall function))))
 
 (defun agent-fleet-label (terminal key)
   "Read label KEY from TERMINAL."
@@ -76,6 +78,17 @@
 (defun agent-fleet-status (terminal)
   "Return TERMINAL's reported work status without guessing."
   (or (plist-get (plist-get terminal :status) :state) "unreported"))
+
+(defun agent-fleet-type (terminal)
+  "Return TERMINAL's reported app or launch executable name.
+This does not infer work status.
+Use only path text, including for remote commands; never resolve it locally."
+  (let ((app (plist-get (plist-get terminal :status) :app))
+        (command (car (append (plist-get terminal :argv) nil))))
+    (cond ((and (stringp app) (not (string-blank-p app))) app)
+          ((and (stringp command) (not (string-blank-p command)))
+           (or (car (last (split-string command "/" t))) "—"))
+          (t "—"))))
 
 (defun agent-fleet-reference (terminal)
   "Pin TERMINAL to its Core identity and creation time."
@@ -249,12 +262,15 @@ TARGET may be an address or a pinned identity; interactive selection pins it."
   (agent-fleet-call-with-presentation
    (lambda ()
      (let ((origin (agent-fleet-display-origin-frame)))
-       (if (and (bound-and-true-p agent-fleet-attach-mode)
-                (agent-fleet-display-child-frame-available-p origin))
+       (cond
+        ((agent-fleet-display-window-active-p)
+         (agent-fleet-display-window-open buffer))
+        ((and (bound-and-true-p agent-fleet-attach-mode)
+              (agent-fleet-display-child-frame-available-p origin))
            (agent-fleet-display-aux-run-at-origin
             origin (lambda () (switch-to-buffer buffer)
-                     (agent-fleet-display-make-outcome t buffer buffer)))
-         (switch-to-buffer buffer))
+                     (agent-fleet-display-make-outcome t buffer buffer))))
+        (t (switch-to-buffer buffer nil t)))
        buffer))))
 
 (defvar agent-fleet-review-mode-map
@@ -270,9 +286,10 @@ TARGET may be an address or a pinned identity; interactive selection pins it."
 (defun agent-fleet-view-quit ()
   "Close a view, preserving its origin and terminal client."
   (interactive)
-  (if (frame-parameter nil 'agent-fleet-auxiliary-frame)
-      (agent-fleet-display-close-auxiliary-frame (selected-frame))
-    (quit-window)))
+  (cond ((agent-fleet-display-window-quit))
+        ((frame-parameter nil 'agent-fleet-auxiliary-frame)
+         (agent-fleet-display-close-auxiliary-frame (selected-frame)))
+        (t (quit-window))))
 
 (defun agent-fleet-view-buffer (mode reference name)
   "Reuse a MODE view pinned to REFERENCE, or create a buffer named NAME."
