@@ -109,7 +109,11 @@ Local input errors detected before dispatch leave the fields editable so they
 can be corrected. For a definite Core rejection, **Edit request** (`C-c C-e`)
 unlocks the existing fields for correction and an explicit new submission.
 Uncertain results remain locked; inspect Dashboard before starting again.
-`agent-fleet-start-for-project` starts in the current Project.
+`agent-fleet-start-for-project` starts at the current checkout's project root.
+Inside a linked worktree it stays in that worktree, never switching to the
+primary checkout used for Project grouping. The ordinary start command also
+defaults to the current checkout root; Dashboard `N` retains the selected
+agent's exact working directory, including subdirectories.
 
 ```elisp
 (agent-fleet-start '("claude") :cwd "/path/to/code")
@@ -148,7 +152,7 @@ The compact table puts agent type, status and terminal address before helper
 metadata. Projects appear once as group headings instead of repeating per row.
 The header shows column titles; the mode line shows connection health,
 visible/total counts and active filters. Project filter labels are shortened;
-their full identity remains in the group heading and mode-line tooltip. Empty lists explain
+their full identity remains in heading tooltips, the mode-line tooltip and Details. Empty lists explain
 how to start an agent or adjust filters. When a selected record disappears,
 selection moves to a remaining row instead of an empty line.
 
@@ -168,11 +172,11 @@ selection moves to a remaining row instead of an empty line.
 | P | Toggle the current row's Project filter |
 | ! | Toggle blocked/error members |
 | c | Review finished-history cleanup |
-| g | Render the current event-driven cache |
+| g | Refresh the view and rediscover Projects |
 | q / C-g / Escape | Return to the preceding view |
 
-Agents are grouped by canonical Project, with full paths in group headings
-to distinguish codebases with the same directory name. Linked worktrees share
+Agents are grouped by canonical Project, with disambiguated short headings.
+Linked worktrees share
 one group; absent Projects have a separate `— No Project` group. The current
 Project is placed first when opening from code or an attached agent. Within
 groups, status priority and name determine row order. Row highlighting and
@@ -181,8 +185,31 @@ selected agent identity when opened, so later events cannot redirect its actions
 
 The connection banner shows stale/disconnected state independently of program
 state. Project identity follows the canonical Git common root across linked
-worktrees. Non-project directories display an em dash. Remote paths are never
+worktrees. Group headings use the project root's directory name; same-name
+projects gain enough parent path components to distinguish them. Filtering
+continues to use full canonical identity, never the displayed name. Independent
+clones and nested repositories remain separate Projects.
+
+Subdirectories and linked worktrees get a muted directory annotation beneath
+their agent row. Ordinary project-root rows need no annotation. Full working
+paths remain available in tooltips and Details (`I`); a linked worktree's
+checkout root is also shown in Details. `n` / `p` skips annotations, while
+actions invoked on an annotation still target its agent.
+
+Non-project agents stay together under `— No Project`, with their actual
+directory shown beneath each row. Missing or inaccessible directories get an
+explicit warning instead of silently looking like ordinary non-project folders.
+No historical project identity is fabricated for them. Remote paths are never
 resolved against the local filesystem.
+
+Local Project discovery is cached by canonical directory and project backend
+for up to 30 seconds, including results with no Project. Events reuse that
+discovery rather than running Git for every status change. A directory change
+uses a different entry; missing directories invalidate their entry immediately.
+`g` in Dashboard or Details forces rediscovery (use it after creating project
+markers or changing repository layout). Automatic refreshes rediscover expired
+entries on demand; this cache is not lifecycle state. Explicit project launches
+always rediscover the current checkout before starting.
 
 The `Type` column shows the program's reported `status.app`, falling back to
 the launch executable's name (for example, `claude`, `codex` or `pi`). It is

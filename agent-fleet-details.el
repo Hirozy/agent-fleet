@@ -34,6 +34,8 @@
   "Display RECORD without changing this view's identity or selection."
   ;; Resolve the optional Project backend before replacing a good snapshot.
   (let ((project (agent-fleet-project-for-agent record))
+        (location (unless (string-match-p "/" (plist-get record :address))
+                    (agent-fleet-project--context (plist-get record :cwd))))
         (status (agent-fleet-status record))
         (parent (plist-get record :parent))
         (position (point))
@@ -69,6 +71,12 @@
     (agent-fleet-details--field "Project" (if (or (null project) (stringp project)) project
                                             (format "%s (remote)" (nth 2 project))))
     (agent-fleet-details--field "Directory" (plist-get record :cwd))
+    (pcase (plist-get location :state)
+      ('unavailable (agent-fleet-details--field "Directory status" "Unavailable (missing or inaccessible)" 'warning))
+      ('unknown (agent-fleet-details--field "Directory status" "Not reported by Core" 'shadow)))
+    (when (and project (plist-get location :checkout)
+               (not (equal project (plist-get location :checkout))))
+      (agent-fleet-details--field "Checkout" (plist-get location :checkout)))
     (agent-fleet-details--section "Relationships and recovery")
     (agent-fleet-details--field "Parent" (or parent "— (independent)"))
     (when parent
@@ -91,6 +99,7 @@
 
 (defun agent-fleet-details--revert (&optional _ignore-auto _noconfirm)
   "Refresh this view's verified target, retaining the snapshot on failure."
+  (agent-fleet-project--clear-cache)
   (agent-fleet-details--render (agent-fleet-resolve agent-fleet-target t)))
 
 ;;;###autoload
