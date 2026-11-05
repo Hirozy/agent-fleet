@@ -291,4 +291,50 @@
             (should (eq observer (agent-fleet-attach--live-buffer '(:fleet-identity ("core" "t1" 1)) t)))))
       (kill-buffer viewer) (kill-buffer observer))))
 
+(ert-deftest fleet-observer-quit-restores-each-window-without-core-requests ()
+  (save-window-excursion
+    (let ((first (generate-new-buffer " *observer-origin-a*"))
+          (second (generate-new-buffer " *observer-origin-b*"))
+          (observer (generate-new-buffer " *observer-to-close*")))
+      (unwind-protect
+          (progn
+            (dolist (buffer (list first second))
+              (with-current-buffer buffer
+                (dotimes (_ 100) (insert "Original buffer content\n"))))
+            (with-current-buffer observer
+              (agent-fleet-attach-mode 1)
+              (setq agent-fleet-observe-p t))
+            (switch-to-buffer first)
+            (goto-char 80)
+            (set-window-start nil 24 t)
+            (let ((one (selected-window)) (two (split-window-below)))
+              (agent-fleet-display-window-open observer)
+              (agent-fleet-display-window-open observer)
+              (select-window two)
+              (switch-to-buffer second)
+              (goto-char 120)
+              (set-window-start nil 47 t)
+              (agent-fleet-display-window-open observer)
+              (cl-letf (((symbol-function 'herdr-core-request)
+                         (lambda (&rest _) (ert-fail "Observer close must not contact Core"))))
+                (agent-fleet-observe-quit))
+              (should-not (buffer-live-p observer))
+              (should (eq (window-buffer one) first))
+              (should (eq (window-buffer two) second))
+              (should (= (window-point one) 80))
+              (should (= (window-point two) 120))
+              (should (= (window-start one) 24))
+              (should (= (window-start two) 47))
+              (should-not (window-parameter one 'agent-fleet-return-stack))
+              (should-not (window-parameter two 'agent-fleet-return-stack))))
+        (dolist (buffer (list first second observer))
+          (when (buffer-live-p buffer) (kill-buffer buffer)))))))
+
+(ert-deftest fleet-observer-quit-refuses-interactive-attach ()
+  (with-temp-buffer
+    (agent-fleet-attach-mode 1)
+    (should-not (eq (key-binding (kbd "q")) #'agent-fleet-observe-quit))
+    (should-error (agent-fleet-observe-quit) :type 'user-error)
+    (should (buffer-live-p (current-buffer)))))
+
 (provide 'agent-fleet-launch-test)

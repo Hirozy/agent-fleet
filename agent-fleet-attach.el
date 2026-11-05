@@ -5,10 +5,29 @@
 (require 'agent-fleet)
 (declare-function ghostel-exec "ghostel" (buffer program &optional args))
 (declare-function agent-fleet-editor-arm-current-attach "agent-fleet-editor" ())
+(defvar ghostel-query-before-killing)
 (defcustom agent-fleet-attach-inhibit-evil-escape t
   "Inhibit Evil escape sequences in agent terminals."
   :type 'boolean :group 'agent-fleet)
 (defvar-local agent-fleet-observe-p nil "Non-nil for a read-only Core viewer.")
+(defvar agent-fleet-observe--keymaps
+  `((agent-fleet-observe-p
+     . ,(let ((map (make-sparse-keymap)))
+          (define-key map (kbd "q") #'agent-fleet-observe-quit)
+          map)))
+  "Observer-only commands taking precedence over terminal input maps.")
+
+;;;###autoload
+(defun agent-fleet-observe-quit ()
+  "Close this observer and restore preceding views without ending the agent."
+  (interactive)
+  (unless (and (bound-and-true-p agent-fleet-attach-mode) agent-fleet-observe-p)
+    (user-error "Not an Agent Fleet observer"))
+  (let ((buffer (current-buffer))
+        (ghostel-query-before-killing nil))
+    (dolist (window (get-buffer-window-list buffer nil t))
+      (agent-fleet-display-window-quit window))
+    (kill-buffer buffer)))
 
 (defun agent-fleet-attach--inhibit-return-anchor (window _force)
   "Preserve WINDOW's saved position during a Fleet review return."
@@ -115,7 +134,10 @@
             (with-current-buffer buffer
               (setq-local agent-fleet-target reference)
               (setq-local agent-fleet-observe-p observe)
-              (when observe (setq-local header-line-format "Read-only observer · input and resize disabled by Core"))
+              (when observe
+                (setq-local header-line-format "Read-only observer · q back / detach · agent keeps running")
+                (setq-local emulation-mode-map-alists
+                            (cons 'agent-fleet-observe--keymaps emulation-mode-map-alists)))
               (when (and (not (string-match-p "/" address))
                          (file-directory-p (plist-get record :cwd)))
                 (setq default-directory (file-name-as-directory (plist-get record :cwd))))
@@ -126,6 +148,8 @@
               (agent-fleet-attach-mode 1)))
         (error (when (buffer-live-p buffer) (kill-buffer buffer))
                (signal (car err) (cdr err)))))
-    (agent-fleet-attach--display buffer)))
+    (if observe
+        (agent-fleet-display-window-open buffer)
+      (agent-fleet-attach--display buffer))))
 (provide 'agent-fleet-attach)
 ;;; agent-fleet-attach.el ends here

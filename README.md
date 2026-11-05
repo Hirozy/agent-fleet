@@ -256,7 +256,10 @@ guarantee. Output is a finite snapshot; `g` refreshes the same pinned agent
 without moving focus or resizing its terminal. Failed refreshes preserve the
 previous snapshot. `C-c a v` / `agent-fleet-observe` instead
 opens a realtime `hc attach --observe` viewer. Interactive and observe viewers
-are reused separately. Core ignores observer input and resize; explicit Fleet
+are reused separately. In an observer, `q` closes the observer client and returns
+to the preceding buffer and position; the agent and any interactive attach
+client keep running. Ordinary interactive attach still sends `q` to the program.
+Core ignores observer input and resize; explicit Fleet
 commands such as Prompt remain available. The external-editor key is disabled
 in an observer. Its own viewport may crop/wrap output when its size differs
 from the agent's PTY; it does not take over the agent's dimensions.
