@@ -262,4 +262,23 @@ This exercises real routing without SSH."
                     (should (string-match-p "valid-form" (buffer-string)))))
               (kill-buffer form))))))))
 
+(ert-deftest hc-live-project-start-uses-linked-checkout ()
+  (hc-live-isolated
+    (let* ((repo (expand-file-name "repo" root))
+           (worktree (expand-file-name "feature" root))
+           (subdir (expand-file-name "frontend" worktree)))
+      (make-directory repo)
+      (agent-fleet-worktree--git repo "init" "-q")
+      (agent-fleet-worktree--git repo "-c" "user.name=Test" "-c" "user.email=test@example.invalid"
+                                "-c" "commit.gpgsign=false" "commit" "-q" "--allow-empty" "-m" "initial")
+      (agent-fleet-worktree-prepare repo worktree "feature")
+      (make-directory subdir)
+      (let ((default-directory (file-name-as-directory subdir)))
+        (cl-letf (((symbol-function 'agent-fleet--read-command) (lambda () '("sh" "-c" "sleep 60"))))
+          (agent-fleet-start-for-project)))
+      (hc-live-until (lambda () (agent-fleet-agents)))
+      (let ((record (car (agent-fleet-agents))))
+        (should (equal (directory-file-name (plist-get record :cwd)) (file-truename worktree)))
+        (should (equal (agent-fleet-project-for-agent record) (file-truename repo)))))))
+
 (provide 'herdr-core-live-test)

@@ -18,8 +18,10 @@
 (defvar-local agent-fleet-dashboard--projects nil)
 (defvar-local agent-fleet-dashboard--last-project nil)
 (defvar-local agent-fleet-dashboard--focus-project nil)
+(defvar-local agent-fleet-dashboard--project-labels nil)
+(defvar-local agent-fleet-dashboard--directory-notes nil)
 (defconst agent-fleet-dashboard--columns
-  [("Agent" 22 nil) ("Type" 10 nil) ("State" 22 nil) ("Address" 10 nil)
+  [("Agent" 22 nil) ("Type" 14 nil) ("State" 22 nil) ("Address" 10 nil)
    ("Role" 7 nil) ("Parent" 8 nil)])
 
 (defun agent-fleet-dashboard--state-cell (r)
@@ -33,9 +35,9 @@
 
 (defun agent-fleet-dashboard--group-label (project)
   "Return an unambiguous heading for canonical PROJECT."
-  (cond ((null project) "— No Project")
-        ((stringp project) project)
-        (t (format "%s (remote %s)" (nth 2 project) (nth 1 project)))))
+  (or (and agent-fleet-dashboard--project-labels
+           (gethash project agent-fleet-dashboard--project-labels))
+      (if project (agent-fleet-project--display-name project) "— No Project")))
 
 (defun agent-fleet-dashboard--priority (record)
   "Return a presentation priority for RECORD without changing its status."
@@ -63,13 +65,21 @@
   (let ((project (gethash id agent-fleet-dashboard--projects)))
     (unless (equal project agent-fleet-dashboard--last-project)
       (insert (propertize (concat "\n" (agent-fleet-dashboard--group-label project) "\n")
-                          'face 'font-lock-keyword-face))
+                          'face '(bold font-lock-keyword-face)
+                          'help-echo (agent-fleet-project--full-label project)))
       (setq agent-fleet-dashboard--last-project project))
-    (tabulated-list-print-entry id columns)))
+    (tabulated-list-print-entry id columns)
+    (when-let* ((note (and agent-fleet-dashboard--directory-notes
+                          (gethash id agent-fleet-dashboard--directory-notes))))
+      (let ((begin (point)))
+        (insert "   " note "\n")
+        (add-text-properties begin (point) (list 'tabulated-list-id id 'tabulated-list-entry columns))))))
 
-(defun agent-fleet-dashboard-refresh ()
-  "Render the current cache without polling Core."
-  (interactive)
+(defun agent-fleet-dashboard-refresh (&optional rediscover)
+  "Render the current cache without polling Core.
+REDISCOVER, set by interactive refresh, also refreshes Project discovery."
+  (interactive (list t))
+  (when rediscover (agent-fleet-project--clear-cache))
   (when-let* ((buffer (get-buffer "*Agent Fleet*")))
     (with-current-buffer buffer
       (unless (equal (mapcar #'car (append tabulated-list-format nil))
@@ -83,6 +93,19 @@
         (dolist (record members)
           (puthash (plist-get record :address) (agent-fleet-project-for-agent record)
                    agent-fleet-dashboard--projects))
+        (setq agent-fleet-dashboard--project-labels
+              (agent-fleet-project--short-labels (hash-table-values agent-fleet-dashboard--projects))
+              agent-fleet-dashboard--directory-notes (make-hash-table :test 'equal))
+        (let* ((checkouts (mapcar (lambda (r)
+                                    (unless (string-match-p "/" (plist-get r :address))
+                                      (agent-fleet-project-checkout-for-cwd (plist-get r :cwd)))) members))
+               (labels (agent-fleet-project--short-labels checkouts)))
+          (cl-loop for record in members for checkout in checkouts do
+                   (puthash (plist-get record :address)
+                            (agent-fleet-project--directory-note
+                             record (gethash (plist-get record :address) agent-fleet-dashboard--projects)
+                             (gethash checkout labels))
+                            agent-fleet-dashboard--directory-notes)))
         (setq members (sort members #'agent-fleet-dashboard--less-p))
         (setq tabulated-list-entries
               (mapcar
@@ -97,20 +120,21 @@
                (cl-remove-if-not
                 (lambda (r)
                   (and (or (not agent-fleet-dashboard--project)
-                           (equal agent-fleet-dashboard--project (agent-fleet-project-for-agent r)))
+                           (equal agent-fleet-dashboard--project
+                                  (gethash (plist-get r :address) agent-fleet-dashboard--projects)))
                        (or (not agent-fleet-dashboard--attention)
                            (member (agent-fleet-status r) '("blocked" "error")))))
                 members)))
         (setq agent-fleet-dashboard--summary
-              (format "Core: %s   %s %d/%d%s   h commands   Project: %s"
+              (format "Core %s  %s %d/%d%s  Project: %s  h help"
                       herdr-core--state (if agent-fleet-dashboard--history "All records" "Live")
                       (length tabulated-list-entries) (length members)
                       (if agent-fleet-dashboard--attention "   Attention only" "")
                       (if agent-fleet-dashboard--project
                           (propertize
                            (truncate-string-to-width
-                            (agent-fleet-project--display-name agent-fleet-dashboard--project) 20 nil nil "…")
-                           'help-echo (agent-fleet-dashboard--group-label agent-fleet-dashboard--project))
+                            (agent-fleet-dashboard--group-label agent-fleet-dashboard--project) 30 nil nil "…")
+                           'help-echo (agent-fleet-project--full-label agent-fleet-dashboard--project))
                         "All")))
         (setq agent-fleet-dashboard--last-project :unprinted
               tabulated-list-sort-key nil)
@@ -227,11 +251,12 @@ With CONFIGURE, also ask for optional launch settings."
   (agent-fleet-view-quit))
 
 (defun agent-fleet-dashboard--move (direction)
-  "Move DIRECTION rows, skipping Project headings and blank lines."
-  (let ((start (point)) found)
+  "Move DIRECTION agents, skipping headings and directory annotations."
+  (let ((start (point)) (id (tabulated-list-get-id)) found)
     (while (and (not found) (= 0 (forward-line direction)))
-      (when (tabulated-list-get-id) (setq found t)))
-    (unless found (goto-char start))))
+      (when (and (tabulated-list-get-id) (not (equal id (tabulated-list-get-id))))
+        (setq found (tabulated-list-get-id))))
+    (if found (agent-fleet-dashboard--goto found) (goto-char start))))
 
 ;;;###autoload
 (defun agent-fleet-dashboard-next ()

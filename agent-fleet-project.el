@@ -26,6 +26,13 @@ demand and signals a `user-error' if it is absent."
 ;; Projectile is optional: declare the entry point so the byte-compiler does
 ;; not warn, without forcing a top-level `require' (mirrors the magit idiom).
 (declare-function projectile-project-root "projectile" (&optional dir))
+(defvar agent-fleet-project--cache (make-hash-table :test 'equal))
+(defconst agent-fleet-project--cache-seconds 30
+  "Maximum age of a directory's project discovery result.")
+
+(defun agent-fleet-project--clear-cache ()
+  "Discard cached directory discovery, including negative results."
+  (clrhash agent-fleet-project--cache))
 
 (defun agent-fleet-project--ensure-projectile ()
   "Load Projectile or signal a `user-error' that it is not installed.
@@ -38,30 +45,26 @@ but Projectile is not installed")))
 
 ;;; --- Project root resolution ----------------------------------------
 
-(defun agent-fleet-project--git-common-root (dir)
-  "Return the primary checkout root shared by Git worktree DIR, or nil.
-For a normal checkout, `git rev-parse --git-common-dir' yields ROOT/.git;
-for a linked worktree it yields that same directory in the primary checkout.
-Mapping both to ROOT makes all worktrees of one repository share the project
-identity.  Non-standard separate git-dir layouts fall
-back to `project.el' rather than guessing."
-  (when (and (executable-find "git") (file-directory-p dir))
+(defun agent-fleet-project--git-context (dir)
+  "Discover the shared repository identity and actual checkout for DIR.
+Keep non-standard common-dir layouts unresolved rather than guessing."
+  (when (and (not (file-remote-p dir)) (executable-find "git") (file-directory-p dir))
     (let ((default-directory (file-name-as-directory (file-truename dir))))
       (with-temp-buffer
         (when (eq 0 (process-file "git" nil t nil
                                   "rev-parse" "--path-format=absolute"
-                                  "--git-common-dir"))
-          (let* ((raw (string-trim (buffer-string)))
-                 (common (and (not (string-empty-p raw))
-                              (file-truename
-                               (expand-file-name raw default-directory)))))
-            (when (and common
-                       (string= (file-name-nondirectory
-                                 (directory-file-name common))
-                                ".git"))
-              (directory-file-name
-               (file-truename (file-name-directory
-                               (directory-file-name common)))))))))))
+                                  "--git-common-dir" "--show-toplevel"))
+          (let ((lines (split-string (string-trim (buffer-string)) "\n" t)))
+            (when (= (length lines) 2)
+              (let ((common (directory-file-name (file-truename (car lines))))
+                    (checkout (directory-file-name (file-truename (cadr lines)))))
+                (list :root (when (equal (file-name-nondirectory common) ".git")
+                              (directory-file-name (file-name-directory common)))
+                      :checkout checkout)))))))))
+
+(defun agent-fleet-project--git-common-root (dir)
+  "Return the primary checkout root shared by Git worktree DIR, or nil."
+  (plist-get (agent-fleet-project--git-context dir) :root))
 
 (defun agent-fleet-project--backend-root-for-cwd (dir)
   "Return the project root for DIR per `agent-fleet-project-backend', or nil.
@@ -70,7 +73,7 @@ dirs the git pass left unresolved.  `project' (default) uses
 `project-current'/`project-root' with a `vc-root-dir' fallback;
 `projectile' uses `projectile-project-root', which does its own fallback.
 Returns a `file-truename'-canonicalized directory or nil."
-  (let ((default-directory (file-truename dir)))
+  (let ((default-directory (file-name-as-directory (file-truename dir))))
     (pcase agent-fleet-project-backend
       ('projectile
        (agent-fleet-project--ensure-projectile)
@@ -86,20 +89,46 @@ Returns a `file-truename'-canonicalized directory or nil."
              (and root (not (string-empty-p root))
                   (directory-file-name (file-truename root)))))))))))
 
+(defun agent-fleet-project--context (dir &optional refresh)
+  "Resolve local DIR into project identity, checkout and availability.
+Cache discovery for 30 seconds; REFRESH bypasses the cache.  Missing or
+remote directories never inherit the current buffer's project."
+  (cond
+   ((or (not (stringp dir)) (string-empty-p dir)) '(:state unknown))
+   ((file-remote-p dir) '(:state remote))
+   ((not (and (file-directory-p dir) (file-accessible-directory-p dir)))
+    (remhash (list agent-fleet-project-backend
+                   (directory-file-name (or (ignore-errors (file-truename dir)) (expand-file-name dir))))
+             agent-fleet-project--cache)
+    '(:state unavailable))
+   (t
+    (condition-case nil
+        (let* ((canonical (directory-file-name (file-truename dir)))
+               (key (list agent-fleet-project-backend canonical))
+               (cached (gethash key agent-fleet-project--cache))
+               (now (float-time)))
+          (if (and (not refresh) cached (< now (plist-get cached :expires))) cached
+            (let* ((git (agent-fleet-project--git-context canonical))
+                   (root (or (plist-get git :root)
+                             (agent-fleet-project--backend-root-for-cwd canonical)))
+                   (context (list :state (if root 'project 'none)
+                                  :root root :checkout (or (plist-get git :checkout) root)
+                                  :directory canonical :expires (+ now agent-fleet-project--cache-seconds))))
+              (when (>= (hash-table-count agent-fleet-project--cache) 512)
+                (agent-fleet-project--clear-cache))
+              (puthash key context agent-fleet-project--cache))))
+      (file-error '(:state unavailable))))))
+
 (defun agent-fleet-project-root-for-cwd (dir)
-  "Return the canonical project root for DIR, or nil.
-Resolves via the shared git-worktree normalization first
-(`agent-fleet-project--git-common-root'), then the configured
-`agent-fleet-project-backend' (`project' uses `project-current'/`project-root'
-with a `vc-root-dir' fallback; `projectile' uses `projectile-project-root').
-The result is `file-truename'-canonicalized so symlinked cwd variants of one
-repo all match.
-Nil-safe: nil, empty, or non-existent DIR returns nil — an empty cwd would
-otherwise expand to `default-directory' (via `file-directory-p') and leak the
-caller's project as the agent's."
-  (when (and (stringp dir) (not (string-empty-p dir)) (file-directory-p dir))
-    (or (agent-fleet-project--git-common-root (file-truename dir))
-        (agent-fleet-project--backend-root-for-cwd dir))))
+  "Return DIR's canonical Project identity, shared across linked worktrees.
+This identity is for grouping; use `agent-fleet-project-checkout-for-cwd'
+when choosing an execution directory."
+  (plist-get (agent-fleet-project--context dir) :root))
+
+(defun agent-fleet-project-checkout-for-cwd (dir &optional refresh)
+  "Return DIR's actual checkout or non-Git project root.
+REFRESH forces discovery before an explicit project launch."
+  (plist-get (agent-fleet-project--context dir refresh) :checkout))
 
 (defun agent-fleet-project--canonical-root (dir)
   "Return the canonical Project identity for explicit root DIR, or nil.
@@ -109,7 +138,7 @@ the shared Git common-root normalization so a `project.el' struct rooted at a
 linked worktree matches agents in the primary checkout and sibling worktrees.
 Non-Git roots retain their explicit `file-truename' identity."
   (when (and (stringp dir) (not (string-empty-p dir))
-             (file-directory-p dir))
+             (not (file-remote-p dir)) (file-directory-p dir))
     (let ((truename (file-truename dir)))
       (or (agent-fleet-project--git-common-root truename)
           (directory-file-name truename)))))
@@ -128,8 +157,66 @@ Non-Git roots retain their explicit `file-truename' identity."
 (defun agent-fleet-project--display-name (root)
   "Return a short label for canonical ROOT, without filesystem access."
   (if root
-      (if (stringp root) (file-name-nondirectory (directory-file-name root))
+      (if (stringp root)
+          (let ((name (file-name-nondirectory (directory-file-name root))))
+            (if (string-empty-p name) root name))
         (concat (file-name-nondirectory (directory-file-name (nth 2 root))) " (remote)")) "—"))
+
+(defun agent-fleet-project--full-label (root)
+  "Describe ROOT completely, without resolving paths."
+  (cond ((null root) "— No Project") ((stringp root) root)
+        (t (format "%s (remote %s)" (nth 2 root) (nth 1 root)))))
+
+(defun agent-fleet-project--short-labels (roots)
+  "Return distinct short labels for canonical ROOTS, without filesystem I/O."
+  (let ((roots (delete-dups (copy-sequence roots)))
+        (labels (make-hash-table :test 'equal)))
+    (dolist (root roots)
+      (let* ((path (if (stringp root) root (nth 2 root)))
+             (parts (and path (split-string path "/" t)))
+             (depth 1)
+             (label (if root (agent-fleet-project--display-name root) "— No Project")))
+        (while (and root
+                    (cl-some (lambda (other)
+                               (and (not (equal root other))
+                                    (equal label
+                                           (let* ((other-path (if (stringp other) other (nth 2 other)))
+                                                  (other-parts (and other-path (split-string other-path "/" t))))
+                                             (if (null other) "— No Project"
+                                               (concat (mapconcat #'identity (last other-parts depth) "/")
+                                                       (unless (stringp other) " (remote)"))))))) roots))
+          (if (>= depth (length parts))
+              (setq label (agent-fleet-project--full-label root) depth (1+ depth))
+            (setq depth (1+ depth)
+                  label (concat (mapconcat #'identity (last parts depth) "/")
+                                (unless (stringp root) " (remote)")))))
+        (puthash root label labels)))
+    labels))
+
+(defun agent-fleet-project--directory-note (record root &optional checkout-label)
+  "Return meaningful working-directory context for RECORD under ROOT.
+Return nil for the ordinary project root.  Keep full paths in tooltips.
+CHECKOUT-LABEL is a disambiguated short name for a linked worktree."
+  (let ((cwd (plist-get record :cwd)))
+    (unless (string-match-p "/" (plist-get record :address))
+      (let* ((context (agent-fleet-project--context cwd))
+             (directory (plist-get context :directory))
+             (checkout (plist-get context :checkout))
+             (text
+              (pcase (plist-get context :state)
+                ('unavailable (format "Directory unavailable: %s" cwd))
+                ('unknown "Directory not reported")
+                ('remote "Remote directory; not inspected locally")
+                (_ (cond
+                    ((null root) (concat "Directory: " (abbreviate-file-name cwd)))
+                    ((equal root directory) nil)
+                    ((and checkout (not (equal checkout root)))
+                     (concat "Worktree: " (or checkout-label (file-name-nondirectory checkout))
+                             (unless (equal directory checkout)
+                               (concat "  / " (file-relative-name directory (file-name-as-directory checkout))))))
+                    (t (concat "Directory: " (file-relative-name directory (file-name-as-directory root)))))))))
+        (when text (propertize text 'help-echo cwd
+                              'face (if (eq (plist-get context :state) 'unavailable) 'warning 'shadow)))))))
 
 (defun agent-fleet-project-agents (&optional root)
   "Return live members in canonical Project ROOT, defaulting to the current one."
@@ -143,8 +230,9 @@ Non-Git roots retain their explicit `file-truename' identity."
 (defun agent-fleet-start-for-project ()
   "Choose a command and start it in the current Project."
   (interactive)
-  (let ((root (agent-fleet-project-root-for-cwd default-directory)))
+  (let ((root (agent-fleet-project-checkout-for-cwd default-directory t)))
     (unless root (user-error "No Project in the current directory"))
+    (herdr-core-connect)
     (agent-fleet-start (agent-fleet--read-command)
                        :cwd root :display (called-interactively-p 'interactive))))
 

@@ -21,6 +21,7 @@
 (defvar-local agent-fleet-operation-state nil)
 (defvar-local agent-fleet-operation-result nil)
 (declare-function agent-fleet-project-root-for-cwd "agent-fleet-project" (cwd))
+(declare-function agent-fleet-project-checkout-for-cwd "agent-fleet-project" (cwd &optional refresh))
 (declare-function agent-fleet-dashboard-focus "agent-fleet-dashboard" (address))
 (autoload 'agent-fleet "agent-fleet-dashboard" nil t)
 (autoload 'agent-fleet-attach "agent-fleet-attach" nil t)
@@ -195,7 +196,7 @@ Use only path text, including for remote commands; never resolve it locally."
   (if current-prefix-arg (list nil :configure t)
     (let* ((argv (agent-fleet--read-command))
            (cwd (read-directory-name "Working directory: "
-                                     (or (agent-fleet-project-root-for-cwd default-directory)
+                                     (or (agent-fleet-project-checkout-for-cwd default-directory)
                                          default-directory) nil t)))
       (list argv :cwd cwd))))
 
