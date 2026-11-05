@@ -961,11 +961,67 @@
                 (tabulated-list-print)
                 (agent-fleet-dashboard--goto address)
                 (cl-letf (((symbol-function 'agent-fleet-dashboard--target) (lambda () address))
-                          ((symbol-function 'agent-fleet-start-form) (lambda () (setq opened default-directory)))
-                          ((symbol-function 'agent-fleet-dashboard--visit) #'funcall))
+                          ((symbol-function 'agent-fleet-start-minibuffer)
+                           (lambda (&optional _) (setq opened default-directory))))
                   (agent-fleet-dashboard-start)
                   (should (equal opened (if (equal address "t1") (file-name-as-directory root) "/tmp/"))))))))
       (delete-directory root))))
+
+(ert-deftest fleet-minibuffer-launch-cancel-never-dispatches ()
+  (dolist (cancel-at '(command directory))
+    (fleet-test-model nil
+      (with-temp-buffer
+        (cl-letf (((symbol-function 'agent-fleet--read-command)
+                   (lambda () (if (eq cancel-at 'command) (signal 'quit nil) '("sh"))))
+                  ((symbol-function 'read-directory-name) (lambda (&rest _) (signal 'quit nil)))
+                  ((symbol-function 'agent-fleet-start) (lambda (&rest _) (ert-fail "Started after cancellation"))))
+          (should (eq (condition-case nil (agent-fleet-start-minibuffer) (quit 'cancelled)) 'cancelled))
+          (should-not agent-fleet-start--pending))))))
+
+(ert-deftest fleet-minibuffer-launch-defaults-and-background-outcome ()
+  (fleet-test-model nil
+    (save-window-excursion
+      (let ((buffer (generate-new-buffer " *fleet-minibuffer*")) callback options attached
+            (agent-fleet--control-results nil))
+        (unwind-protect
+            (progn
+              (switch-to-buffer buffer)
+              (cl-letf (((symbol-function 'agent-fleet--read-command) (lambda () '("sh" "-c" "sleep 60")))
+                        ((symbol-function 'read-directory-name) (lambda (&rest _) "/tmp/"))
+                        ((symbol-function 'agent-fleet-start)
+                         (lambda (argv &rest args)
+                           (should (equal argv '("sh" "-c" "sleep 60")))
+                           (setq options args callback (plist-get args :callback))))
+                        ((symbol-function 'agent-fleet-attach) (lambda (&rest _) (setq attached t))))
+                (agent-fleet-start-minibuffer)
+                (should (eq (window-buffer) buffer))
+                (should agent-fleet-start--pending)
+                (should-error (agent-fleet-start-minibuffer) :type 'user-error)
+                (should-not (plist-get options :name))
+                (should-not (plist-get options :task))
+                (should (equal (plist-get options :cwd) "/tmp/"))
+                (switch-to-buffer (get-buffer-create " *fleet-away*"))
+                (funcall callback (fleet-test-agent "t1") nil)
+                (should-not attached)
+                (should-not (buffer-local-value 'agent-fleet-start--pending buffer))
+                (should (equal (plist-get (car agent-fleet--control-results) :response) (fleet-test-agent "t1")))))
+          (kill-buffer buffer)
+          (when (get-buffer " *fleet-away*") (kill-buffer " *fleet-away*")))))))
+
+(ert-deftest fleet-minibuffer-launch-prefix-options-stay-in-minibuffer ()
+  (fleet-test-model nil
+    (with-temp-buffer
+      (let ((agent-fleet--last-command "template: reviewer") options)
+        (cl-letf (((symbol-function 'agent-fleet--read-command) (lambda () '("reviewer")))
+                  ((symbol-function 'read-directory-name) (lambda (&rest _) "/tmp/"))
+                  ((symbol-function 'read-string)
+                   (lambda (prompt &rest _) (if (string-prefix-p "Agent name" prompt) "review" "Check tests")))
+                  ((symbol-function 'completing-read) (lambda (&rest _) "Background"))
+                  ((symbol-function 'agent-fleet-start)
+                   (lambda (_argv &rest args) (setq options args))))
+          (agent-fleet-start-minibuffer t)
+          (should (equal (plist-get options :name) "review"))
+          (should (equal (plist-get options :task) "Check tests")))))))
 
 (ert-deftest fleet-common-commands-resolve-the-dashboard-row-and-attach-target ()
   (fleet-test-model (list (fleet-test-agent "t1"))
@@ -1061,21 +1117,19 @@
               (should (equal (tabulated-list-get-id) "t2"))))
         (kill-buffer buffer)))))
 
-(ert-deftest fleet-dashboard-toolbar-keeps-the-row-selected-after-refresh ()
-  (fleet-test-model (list (fleet-test-agent "t1") (fleet-test-agent "t2"))
-    (let ((buffer (get-buffer-create "*Agent Fleet*")) target)
+(ert-deftest fleet-dashboard-empty-state-is-one-message-without-a-body-toolbar ()
+  (fleet-test-model nil
+    (let ((buffer (get-buffer-create "*Agent Fleet*")))
       (unwind-protect
           (with-current-buffer buffer
             (agent-fleet-mode)
             (agent-fleet-dashboard-refresh)
-            (agent-fleet-dashboard--goto "t2")
-            (run-hooks 'post-command-hook)
-            (goto-char (point-min))
-            (search-forward "New agent")
-            (cl-letf (((symbol-function 'agent-fleet-dashboard-start)
-                       (lambda () (interactive) (setq target (tabulated-list-get-id)))))
-              (button-activate (button-at (1- (point)))))
-            (should (equal target "t2"))
+            (agent-fleet-dashboard-refresh)
+            (should (equal (buffer-string)
+                           "No Fleet agents in this view. Press N to start an agent, or H to toggle history.\n"))
+            (should (string-match-p "Type" (format "%s" header-line-format)))
+            (should (eq (key-binding (kbd "N")) #'agent-fleet-dashboard-start))
+            (should (eq (key-binding (kbd "h")) #'agent-fleet-dashboard-help))
             (should-not (buffer-modified-p)))
         (kill-buffer buffer)))))
 

@@ -78,9 +78,21 @@ as `t7`. For example, `.emacs.d` becomes `emacs-d`; a directory with no usable
 characters falls back to `agent`. Conflict suffixes stay within Core's 32-character
 limit. Explicit names are checked by Core and its rejection is preserved.
 
-With a prefix argument, or `N` in Dashboard, open the launch form. Dashboard
-uses the selected local agent's working directory, falling back to the directory
-from which Dashboard was opened. Remote directories are never resolved locally.
+Dashboard's `N` starts entirely through the minibuffer: choose a command or
+template, confirm the working directory, then launch and attach. Both prompts
+offer defaults, so `N RET RET` repeats the last command in the current context.
+The name is generated automatically. Dashboard uses the selected local agent's
+working directory, falling back to the directory from which Dashboard was opened.
+Remote directories are never resolved locally. `C-g` at any prompt starts nothing.
+`C-u N` additionally asks for an optional name, an initial task when a template
+was selected, and whether to attach or stay in the background. No form buffer
+opens. A pending launch prevents accidental duplicate submission from that view.
+If you leave the initiating window while waiting, the agent starts without
+taking focus. Failed attachment never launches again; use `a` on the new agent.
+Launch outcomes and original errors are retained in `agent-fleet-control-results`.
+
+`agent-fleet-start-form`, or a prefix argument to `agent-fleet-start`, still
+provides an explicit editable form for callers who want it.
 Choose a configured agent with its button, use **Choose command / template**
 (`C-c C-p`) for completion, or edit the command directly. **Browse directory**
 (`C-c C-d`) opens directory completion. The form remembers the last command;
@@ -131,7 +143,7 @@ bindings take precedence over Evil's default bindings in these views; explicit
 user Evil bindings can still override them. Use the arrow keys or `C-n`/`C-p`
 to move between rows. In the Dashboard, `C-c a` commands use the current row
 and follow the same return rules as the single-key actions.
-Dashboard has clickable New agent and Commands actions and a short key guide.
+Dashboard keeps commands in the `h` menu; `N` starts through minibuffer prompts.
 The compact table puts agent type, status and terminal address before helper
 metadata. Projects appear once as group headings instead of repeating per row.
 The header shows column titles; the mode line shows connection health,

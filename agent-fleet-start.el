@@ -9,6 +9,68 @@
 (defvar-local agent-fleet-start--result-marker nil)
 (defvar-local agent-fleet-start--attach-after-start nil)
 (defvar-local agent-fleet-start--attach-error nil)
+(defvar-local agent-fleet-start--pending nil)
+
+(defun agent-fleet-start--minibuffer-finish (buffer window request attach record err)
+  "Retain the launch outcome and optionally ATTACH in its original WINDOW.
+BUFFER and REQUEST identify the initiating view and launch parameters."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq agent-fleet-start--pending nil)))
+  (let* ((first (plist-get record :first_message))
+         (unsent (and first (not (eq (plist-get first :sent) t))))
+         (summary (if err
+                      (format "Start %s: %s; inspect Dashboard before another launch"
+                              (if (eq (car-safe err) 'herdr-core-request-error) "rejected" "outcome unknown")
+                              (herdr-core-error-message err))
+                    (format "Started %s [%s]%s" (agent-fleet-name record) (plist-get record :address)
+                            (if unsent (format "; initial task NOT sent: %s" (plist-get first :reason)) "")))))
+    (agent-fleet--remember-control-result 'start request record err summary)
+    (message "%s" summary)
+    (when (and (null err) (not unsent) attach
+               (window-live-p window) (eq window (selected-window))
+               (eq (window-buffer window) buffer)
+               (equal (plist-get request :core) (herdr-core-id))
+               (or (not (display-graphic-p)) (frame-focus-state)))
+      (with-current-buffer buffer
+        (condition-case attach-error
+            (agent-fleet-attach (agent-fleet-reference record))
+          ((error quit)
+           (let ((detail (format "%s; attach failed: %s. Use a in Dashboard to attach."
+                                 summary (error-message-string attach-error))))
+             (agent-fleet--remember-control-result 'attach request record attach-error detail)
+             (message "%s" detail))))))))
+
+;;;###autoload
+(defun agent-fleet-start-minibuffer (&optional configure)
+  "Choose a command and directory in the minibuffer, then start and attach.
+With CONFIGURE, also read a name, optional template task and background option.
+Cancelling any prompt starts nothing.  Never retry an uncertain launch."
+  (interactive "P")
+  (when agent-fleet-start--pending (user-error "A launch is still pending in this view"))
+  (herdr-core-connect)
+  (let* ((buffer (current-buffer)) (window (selected-window))
+         (core (herdr-core-id))
+         (argv (agent-fleet--read-command))
+         (cwd (read-directory-name "Working directory: " default-directory nil t))
+         (name (when configure (read-string "Agent name (empty = automatic): ")))
+         (task (when (and configure (string-prefix-p "template: " agent-fleet--last-command))
+                 (read-string "Initial task (optional): ")))
+         (attach (if configure
+                     (equal (completing-read "After launch: " '("Attach" "Background") nil t nil nil "Attach") "Attach")
+                   t))
+         (request (list :core core :argv argv :cwd cwd :name name :task task)))
+    (unless (equal core (herdr-core-id)) (user-error "Core changed while choosing; start again"))
+    (setq agent-fleet-start--pending t)
+    (condition-case err
+        (agent-fleet-start argv :cwd cwd :name (unless (or (null name) (string-empty-p name)) name)
+                           :task (unless (or (null task) (string-empty-p task)) task)
+                           :callback (lambda (record error)
+                                       (agent-fleet-start--minibuffer-finish buffer window request attach record error)))
+      ((error quit)
+       (when (buffer-live-p buffer)
+         (with-current-buffer buffer (setq agent-fleet-start--pending nil)))
+       (signal (car err) (cdr err))))))
 
 (defface agent-fleet-start-heading
   '((t (:inherit bold :height 1.2)))

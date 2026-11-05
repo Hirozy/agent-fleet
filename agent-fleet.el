@@ -30,6 +30,7 @@
 (autoload 'agent-fleet-magit-status "agent-fleet-magit" nil t)
 (autoload 'agent-fleet-magit-diff "agent-fleet-magit" nil t)
 (autoload 'agent-fleet-start-form "agent-fleet-start" nil t)
+(autoload 'agent-fleet-start-minibuffer "agent-fleet-start" nil t)
 (autoload 'agent-fleet-start-worktree "agent-fleet-worktree" nil t)
 (autoload 'agent-fleet-start-batch "agent-fleet-batch" nil t)
 (autoload 'agent-fleet-observe "agent-fleet-attach" nil t)
@@ -180,7 +181,8 @@ Use only path text, including for remote commands; never resolve it locally."
     ;; Space normally requests word completion in this minibuffer map.
     (define-key minibuffer-local-completion-map (kbd "SPC") #'self-insert-command)
     (let* ((choice (completing-read "Template or command: " choices nil nil nil nil
-                                    agent-fleet--last-command))
+                                    (or agent-fleet--last-command (car agent-fleet-commands)
+                                        (caar choices))))
            (argv (or (cdr (assoc choice choices)) (split-string-and-unquote choice))))
       (unless argv (user-error "Provide a command"))
       (setq agent-fleet--last-command choice)
@@ -469,6 +471,14 @@ TARGET may be an address or a pinned identity; interactive selection pins it."
                  (if (stringp (plist-get result :status))
                      (format " (%s)" (plist-get result :status)) "")))))))
 
+(defun agent-fleet--remember-control-result (action reference result err summary)
+  "Retain ACTION's original RESULT and ERR with REFERENCE and SUMMARY."
+  (push (list :time (current-time-string) :action action :target reference
+              :summary summary :response result :error err)
+        agent-fleet--control-results)
+  (when (> (length agent-fleet--control-results) 30)
+    (setcdr (nthcdr 29 agent-fleet--control-results) nil)))
+
 (defun agent-fleet--control-finish (action record reference result err)
   "Report and retain a control outcome without moving focus or retrying."
   (let ((summary (and (null err) (agent-fleet--control-summary action record result))))
@@ -485,11 +495,7 @@ TARGET may be an address or a pinned identity; interactive selection pins it."
                       (herdr-core-error-message err)))))
     (setq summary (format "%s [%s] — %s" (agent-fleet-name record)
                           (plist-get record :address) summary))
-    (push (list :time (current-time-string) :action action :target reference
-                :summary summary :response result :error err)
-          agent-fleet--control-results)
-    (when (> (length agent-fleet--control-results) 30)
-      (setcdr (nthcdr 29 agent-fleet--control-results) nil))
+    (agent-fleet--remember-control-result action reference result err summary)
     (message "%s" summary)))
 
 (defun agent-fleet--control-request (action record &optional timeout)
@@ -514,7 +520,7 @@ TARGET may be an address or a pinned identity; interactive selection pins it."
 
 ;;;###autoload
 (defun agent-fleet-control-results ()
-  "Review recent end, interrupt and wait outcomes with original diagnostics."
+  "Review recent launch and control outcomes with original diagnostics."
   (interactive)
   (let ((buffer (get-buffer-create "*Fleet Control Results*")))
     (with-current-buffer buffer
