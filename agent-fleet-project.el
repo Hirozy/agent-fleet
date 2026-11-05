@@ -150,10 +150,6 @@ Non-Git roots retain their explicit `file-truename' identity."
       (progn (require 'agent-fleet-remote) (agent-fleet-remote-project record))
     (agent-fleet-project-root-for-cwd (plist-get record :cwd))))
 
-(defun agent-fleet-project-label (record)
-  "Return RECORD's Project label, or an em dash."
-  (agent-fleet-project--display-name (agent-fleet-project-for-agent record)))
-
 (defun agent-fleet-project--display-name (root)
   "Return a short label for canonical ROOT, without filesystem access."
   (if root

@@ -39,7 +39,7 @@ Fleet installs no global bindings. Its attach mode provides a buffer-local
 `C-c a` map whose commands use the current terminal.
 
 Dashboard always opens in the selected Emacs window, without a new frame or
-split. The former `agent-fleet-dashboard-display` option is no longer used.
+split.
 `q` / `C-g` restores the preceding buffer, point and scroll position. Each
 window retains its own return path. Details, output and other Fleet views
 opened from Dashboard return one step at a time. Successful attachment replaces
@@ -161,7 +161,7 @@ selection moves to a remaining row instead of an empty line.
 | a / RET | Attach |
 | v | Observe live without sending input or resizing the agent PTY |
 | n / p, j / k, arrows, C-n / C-p | Next / previous agent, skipping group headings |
-| N | Open the start form |
+| N | Start an agent through minibuffer prompts |
 | s | Compose a prompt |
 | o | Read an output snapshot |
 | I | Identity, state and parent details |
@@ -176,8 +176,8 @@ selection moves to a remaining row instead of an empty line.
 | q / C-g / Escape | Return to the preceding view |
 
 Agents are grouped by canonical Project, with disambiguated short headings.
-Linked worktrees share
-one group; absent Projects have a separate `— No Project` group. The current
+Linked worktrees share one group; absent Projects have a separate
+`— No Project` group. The current
 Project is placed first when opening from code or an attached agent. Within
 groups, status priority and name determine row order. Row highlighting and
 navigation always target agents, not headings. The Transient menu pins the
@@ -393,19 +393,6 @@ unattempted targets remain visible; uncertain outcomes stop further removals.
 Each result retains its reason and structured error, including the original
 response when a removal acknowledgement does not match the reviewed target.
 There is no automatic retry and no worktree cleanup.
-
-## Migration from the original Herdr backend
-
-This version uses herdr-core exclusively. Restart Emacs when switching from the
-old backend so old bytecode, hooks and loaded definitions are not retained.
-
-Removed: the original `herdr-*` connection commands, Workspace/Tab/Pane
-provisioning, `agent-fleet-parallel`, Task APIs and old worktree RPC commands.
-Configure `herdr-core-*` options and use literal argv lists for the Lisp start API.
-Consult now exposes the optional `consult-agent-fleet` command.
-
-Existing old-Herdr programs are not transferred to Core. The migration does not
-close them. Start new Core agents explicitly. Existing Git checkouts can be reused.
 
 ## Verification
 

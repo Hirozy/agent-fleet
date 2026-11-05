@@ -1,8 +1,5 @@
 *.elc
 *~
-*.md
-!ROADMAP.md
-!docs/PROVIDERS.md
 \#*\#
 .\#*
 *.#*
