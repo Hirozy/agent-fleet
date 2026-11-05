@@ -214,8 +214,7 @@ action function.  PARENT-FRAME defaults to the selected frame."
 (defun agent-fleet-display--parent-frame (&optional frame)
   "Return the native parent frame for FRAME, or FRAME itself.
 A native child frame (one with a `frame-parent') resolves to that
-parent; an ordinary or standalone frame is its own parent.  This is
-the parent resolver shared by Dashboard and auxiliary views."
+parent; an ordinary or standalone frame is its own parent."
   (let* ((frame (or frame (selected-frame)))
          (parent (frame-parent frame)))
     (if (frame-live-p parent) parent frame)))
@@ -256,9 +255,7 @@ explicitly so the child is reliably centered within its parent."
             (parent (cdr cell)))
         (when (and (eq parent frame)
                    (frame-live-p child)
-                   (or (eq (frame-parameter child 'agent-fleet-dashboard-display)
-                           'child-frame)
-                       (frame-parameter child 'agent-fleet-auxiliary-frame)))
+                   (frame-parameter child 'agent-fleet-auxiliary-frame))
           (agent-fleet-display--center-child-frame child parent))))))
 
 (defun agent-fleet-display--forget-centered-child (frame)
@@ -269,10 +266,9 @@ explicitly so the child is reliably centered within its parent."
 ;;; --- Auxiliary child frame -----------------------------------------
 
 ;; An auxiliary child frame floats over an attached terminal's parent
-;; frame so that opening output, worktree, or Magit views never resizes
-;; the terminal window.  It is a distinct presentation surface from the
-;; dashboard child frame: separate parameters and lifecycle metadata,
-;; reused per origin, and never used as the dashboard display backend.
+;; frame so that opening output, prompt, or Magit views never resizes
+;; the terminal window.  It is reused per origin; Dashboard uses the
+;; same-window return stack instead.
 
 (defvar agent-fleet-display--aux-frame-parameters
   '((width . 1.0)
@@ -290,8 +286,8 @@ explicitly so the child is reliably centered within its parent."
     (no-other-frame . t)
     (agent-fleet-auxiliary-frame . t))
   "Frame parameters for an auxiliary child frame.
-Unlike the compact dashboard, auxiliary interfaces fill their parent so
-full-screen interfaces such as Magit do not open in a half-size surface.
+Auxiliary interfaces fill their parent so full-screen interfaces such as
+Magit have room for their windows.
 `parent-frame' and the origin marker are merged on top at display time.")
 
 (defvar agent-fleet-display--aux-frames (make-hash-table :test 'eq)
@@ -346,14 +342,6 @@ feature modules that must record a destination before asynchronous work."
   "Return the live auxiliary child frame for ORIGIN, or nil."
   (let ((child (gethash origin agent-fleet-display--aux-frames)))
     (and (frame-live-p child) child)))
-
-(defun agent-fleet-display-auxiliary-frame-for-origin (&optional origin)
-  "Return the live auxiliary frame owned by ORIGIN, or nil.
-ORIGIN defaults to the non-child frame associated with the selected frame.
-This small query is intended for feature modules that need to inspect or
-reuse the one auxiliary frame owned by an origin."
-  (agent-fleet-display--aux-frame-for-origin
-   (agent-fleet-display--aux-origin-frame (or origin (selected-frame)))))
 
 (defun agent-fleet-display--refocus-frame (frame)
   "Select and raise FRAME after a child-frame deletion."
@@ -535,13 +523,9 @@ unsupported; callers choose whether to offer ordinary buffer presentation."
                 ;; child's window instead of replacing the placeholder; remove
                 ;; any placeholder windows so the child shows only real content.
                 (agent-fleet-display--aux-cleanup-placeholder child))
-              (cond
-               ((and (not opened) created-p)
-                (agent-fleet-display--aux-close child))
-               ((not opened)
+              (if (and (not opened) created-p)
+                  (agent-fleet-display--aux-close child)
                 (select-frame-set-input-focus child))
-               (t
-                (select-frame-set-input-focus child)))
               result)
           (error
            (if created-p

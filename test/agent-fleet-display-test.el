@@ -38,13 +38,18 @@
               ((symbol-function 'set-frame-position)
                (lambda (_f _l _t) (cl-incf calls)))
               ((symbol-function 'frame-parameter)
-               (lambda (f _p) (and (eq f 'child) 'child-frame))))
+               (lambda (f parameter)
+                 (and (eq f 'child) (eq parameter 'agent-fleet-auxiliary-frame)))))
       (let ((agent-fleet-display--centered-children (list (cons 'child 'parent))))
         (agent-fleet-display--recenter-on-parent-resize 'parent)
         (should (= 1 calls))
         ;; A resize of an unrelated frame does not touch the child.
         (agent-fleet-display--recenter-on-parent-resize 'other)
-        (should (= 1 calls))))))
+        (should (= 1 calls))
+        ;; A tracked frame without Fleet's auxiliary marker is left alone.
+        (cl-letf (((symbol-function 'frame-parameter) (lambda (&rest _) nil)))
+          (agent-fleet-display--recenter-on-parent-resize 'parent)
+          (should (= 1 calls)))))))
 
 (ert-deftest agent-fleet-display-frame-callbacks-use-real-hook-lists ()
   "Frame lifecycle callbacks are installed as hooks and dispatch safely.
@@ -143,8 +148,7 @@ its origin recorded, as `--aux-create' would stamp on a real frame."
 
 (ert-deftest agent-fleet-display-aux-run-errors-without-fallback ()
   "An unsupported runtime is a `user-error', never a buffer fallback.
-The thunk must not run at all: an explicit `-in-child-frame' command
-either opens a child frame or signals."
+The child-frame runner must not invoke the thunk on an unsupported display."
   (let (ran)
     (cl-letf (((symbol-function 'selected-frame) (lambda () 'origin))
               ((symbol-function 'frame-parameter) (lambda (&rest _) nil))
@@ -327,8 +331,8 @@ the placeholder; without cleanup the placeholder stays as an empty pane."
 
 (ert-deftest agent-fleet-display-aux-origin-frame-prevents-nesting ()
   "An auxiliary child never nests under another child frame.
-An aux child opened from an aux child reuses its recorded origin; a
-dashboard child-frame resolves to its native parent."
+An aux child opened from an aux child reuses its recorded origin; another
+native child frame resolves to its parent."
   (cl-letf (((symbol-function 'selected-frame) (lambda () 'aux-child))
             ((symbol-function 'frame-parameter)
              (lambda (frame parameter)
@@ -338,15 +342,13 @@ dashboard child-frame resolves to its native parent."
             ((symbol-function 'frame-live-p)
              (lambda (frame) (memq frame '(origin aux-child)))))
     (should (eq 'origin (agent-fleet-display--aux-origin-frame))))
-  (cl-letf (((symbol-function 'selected-frame) (lambda () 'dashboard-child))
+  (cl-letf (((symbol-function 'selected-frame) (lambda () 'native-child))
             ((symbol-function 'frame-parameter)
-             (lambda (_frame parameter)
-               (and (eq parameter 'agent-fleet-display-display)
-                    'child-frame)))
+             (lambda (&rest _) nil))
             ((symbol-function 'frame-parent)
-             (lambda (frame) (and (eq frame 'dashboard-child) 'parent)))
+             (lambda (frame) (and (eq frame 'native-child) 'parent)))
             ((symbol-function 'frame-live-p)
-             (lambda (frame) (memq frame '(parent dashboard-child)))))
+             (lambda (frame) (memq frame '(parent native-child)))))
     (should (eq 'parent (agent-fleet-display--aux-origin-frame)))))
 
 (ert-deftest agent-fleet-display-aux-forget-removes-from-reuse-table ()
