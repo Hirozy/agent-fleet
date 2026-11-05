@@ -123,7 +123,11 @@ Non-Git roots retain their explicit `file-truename' identity."
 
 (defun agent-fleet-project-label (record)
   "Return RECORD's Project label, or an em dash."
-  (if-let* ((root (agent-fleet-project-for-agent record)))
+  (agent-fleet-project--display-name (agent-fleet-project-for-agent record)))
+
+(defun agent-fleet-project--display-name (root)
+  "Return a short label for canonical ROOT, without filesystem access."
+  (if root
       (if (stringp root) (file-name-nondirectory (directory-file-name root))
         (concat (file-name-nondirectory (directory-file-name (nth 2 root))) " (remote)")) "—"))
 

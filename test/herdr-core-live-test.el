@@ -80,12 +80,38 @@
                                                  :parent address :outlive_parent t))))
       (should-error (herdr-core-request "terminal.rm" (list :terminal address))
                     :type 'herdr-core-request-error)
-      (herdr-core-request "terminal.kill" (list :terminal address))
+      (hc-live-until (lambda () (herdr-core-terminal address)))
+      (let ((agent-fleet--control-results nil))
+        (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+          (agent-fleet-kill address))
+        (hc-live-until (lambda () agent-fleet--control-results))
+        (should-not (plist-get (car agent-fleet--control-results) :error))
+        (should (string-match-p "Ended" (plist-get (car agent-fleet--control-results) :summary))))
       (hc-live-until (lambda () (equal "finished"
                                        (plist-get (herdr-core-terminal (plist-get child :address)) :state))))
       (should (equal "live" (plist-get (herdr-core-request
                                       "terminal.get" (list :terminal (plist-get independent :address))) :state)))
       (herdr-core-request "terminal.kill" (list :terminal (plist-get independent :address))))))
+
+(ert-deftest hc-live-fleet-control-feedback ()
+  (hc-live-isolated
+    (let* ((record (herdr-core-request "terminal.run"
+                                     '(:argv ["sh" "-c" "sleep 60"] :no_parent t
+                                       :labels (:fleet.role "agent"))))
+           (address (plist-get record :address))
+           (agent-fleet--control-results nil))
+      (hc-live-until (lambda () (herdr-core-terminal address)))
+      (agent-fleet-interrupt address)
+      (hc-live-until (lambda () agent-fleet--control-results) 15)
+      (should-not (plist-get (car agent-fleet--control-results) :error))
+      (should (string-match-p "Interrupt:" (plist-get (car agent-fleet--control-results) :summary)))
+      ;; Interrupt may leave this non-reporting shell live; end only if necessary.
+      (when (equal "live" (plist-get (herdr-core-request "terminal.get" (list :terminal address)) :state))
+        (cl-letf (((symbol-function 'yes-or-no-p) (lambda (&rest _) t)))
+          (agent-fleet-kill address))
+        (hc-live-until (lambda () (= 2 (length agent-fleet--control-results))))
+        (should-not (plist-get (car agent-fleet--control-results) :error))
+        (should (string-match-p "Ended" (plist-get (car agent-fleet--control-results) :summary)))))))
 
 (ert-deftest hc-live-subscription-loss-recovers-snapshot ()
   (hc-live-isolated

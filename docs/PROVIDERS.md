@@ -105,7 +105,7 @@ templates automatically. See the
 
 ## Check a specific agent
 
-1. Open Dashboard Details (`i`) and check runtime state separately from work
+1. Open Dashboard Details (`I`) and check runtime state separately from work
    status. `live` plus `done` is normal; it does not make the agent disposable.
 2. For the exact Core report, evaluate this against the active Fleet connection,
    replacing the address with the one shown in the Dashboard:

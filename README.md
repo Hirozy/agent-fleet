@@ -45,6 +45,8 @@ window retains its own return path. Details, output and other Fleet views
 opened from Dashboard return one step at a time. Successful attachment replaces
 the review with the selected terminal; failed navigation keeps the review.
 Existing terminal clients remain alive while hidden, retaining their PTY size.
+Returning to Dashboard preserves the selected agent across background refreshes
+and reordering. If that row disappears, selection moves to a remaining agent.
 
 ## Connect
 
@@ -121,26 +123,38 @@ bindings take precedence over Evil's default bindings in these views; explicit
 user Evil bindings can still override them. Use the arrow keys or `C-n`/`C-p`
 to move between rows. In the Dashboard, `C-c a` commands use the current row
 and follow the same return rules as the single-key actions.
-The header shows visible/total counts and active filters. Empty lists explain
+The header shows column titles; the mode line shows connection health,
+visible/total counts and active filters. Project filter labels are shortened;
+their full identity remains in the group heading and mode-line tooltip. Empty lists explain
 how to start an agent or adjust filters. When a selected record disappears,
 selection moves to a remaining row instead of an empty line.
 
 | Dashboard key | Action |
 |---|---|
-| RET | Attach |
+| a / RET | Attach |
 | v | Observe live without sending input or resizing the agent PTY |
-| n | Open the start form |
-| p | Compose a prompt |
+| n / p, j / k, arrows, C-n / C-p | Next / previous agent, skipping group headings |
+| N | Open the start form |
+| s | Compose a prompt |
 | o | Read an output snapshot |
-| i | Identity, state and parent details |
+| I | Identity, state and parent details |
 | m / d | Magit status / working-tree diff |
-| s / k | Interrupt / explicitly end a program |
-| h | Toggle finished history |
+| i / x | Interrupt / explicitly end a program |
+| h | Open the Transient command menu |
+| H | Toggle finished history |
 | P | Toggle the current row's Project filter |
 | ! | Toggle blocked/error members |
 | c | Review finished-history cleanup |
 | g | Render the current event-driven cache |
-| q | Close |
+| q / C-g / Escape | Return to the preceding view |
+
+Agents are grouped by canonical Project, with full paths in group headings
+to distinguish codebases with the same directory name. Linked worktrees share
+one group; absent Projects have a separate `— No Project` group. The current
+Project is placed first when opening from code or an attached agent. Within
+groups, status priority and name determine row order. Row highlighting and
+navigation always target agents, not headings. The Transient menu pins the
+selected agent identity when opened, so later events cannot redirect its actions.
 
 The connection banner shows stale/disconnected state independently of program
 state. Project identity follows the canonical Git common root across linked
@@ -154,7 +168,7 @@ whether the type came from a report or the launch command. Unknown types show
 an em dash; wrappers remain their literal command name until an app reports.
 This fallback never supplies or changes reported work status.
 
-Details (`i`) groups runtime and reported work status, program/location,
+Details (`I`) groups runtime and reported work status, program/location,
 relationships and recovery, and labels into readable sections. Each agent has
 its own view, pinned to its full identity. `g` refreshes that snapshot while
 preserving point; a failed refresh keeps the last successful record visible.
@@ -291,6 +305,12 @@ reported as incomplete failures. There is no automatic repository synchronizatio
 Interrupt asks the program to stop its current work. Kill explicitly ends its
 program and previews dependent descendants. Core may also end descendants
 created after that preview; Fleet cannot atomically freeze this relationship.
+End, interrupt and wait show concise results with the agent name and address.
+An interrupt that leaves the agent working, a wait timeout and an unknown
+outcome are reported explicitly; none is presented as successful completion.
+Responses are never retried automatically. `M-x agent-fleet-control-results`
+opens the latest 30 outcomes in this Emacs session, retaining pinned identities,
+original responses and structured diagnostics without interrupting navigation.
 
 Cleanup has one meaning: remove finished Fleet terminal records and their
 retained output history. It never kills programs and never deletes directories.

@@ -5,6 +5,8 @@
 (require 'agent-fleet)
 (require 'agent-fleet-project)
 (require 'tabulated-list)
+(require 'hl-line)
+(require 'transient)
 (defcustom agent-fleet-notify-on '("blocked" "error" "done")
   "Reported states announced in the echo area."
   :type '(repeat string) :group 'agent-fleet)
@@ -12,9 +14,13 @@
 (defvar-local agent-fleet-dashboard--project nil)
 (defvar-local agent-fleet-dashboard--attention nil)
 (defvar-local agent-fleet-dashboard--pending-focus nil)
+(defvar-local agent-fleet-dashboard--summary "")
+(defvar-local agent-fleet-dashboard--projects nil)
+(defvar-local agent-fleet-dashboard--last-project nil)
+(defvar-local agent-fleet-dashboard--focus-project nil)
 (defconst agent-fleet-dashboard--columns
-  [("Agent" 22 t) ("Type" 12 t) ("Project" 16 t) ("Role" 7 t)
-   ("State" 22 t) ("Parent" 8 t) ("Address" 10 t)])
+  [("Agent" 22 nil) ("Type" 12 nil) ("Project" 16 nil) ("Role" 7 nil)
+   ("State" 22 nil) ("Parent" 8 nil) ("Address" 10 nil)])
 
 (defun agent-fleet-dashboard--state-cell (r)
   "Return a styled state cell for R."
@@ -24,6 +30,42 @@
                  (if (plist-get r :reason) (format "recovering: %s" (plist-get r :reason)) work))))
     (propertize text 'face (cond ((member work '("blocked" "error")) 'warning)
                                  ((equal work "done") 'success) (t 'default)))))
+
+(defun agent-fleet-dashboard--group-label (project)
+  "Return an unambiguous heading for canonical PROJECT."
+  (cond ((null project) "— No Project")
+        ((stringp project) project)
+        (t (format "%s (remote %s)" (nth 2 project) (nth 1 project)))))
+
+(defun agent-fleet-dashboard--priority (record)
+  "Return a presentation priority for RECORD without changing its status."
+  (if (equal (plist-get record :state) "finished") 5
+    (or (cl-position (agent-fleet-status record) '("blocked" "error" "working" "idle" "done")
+                     :test #'equal) 6)))
+
+(defun agent-fleet-dashboard--less-p (a b)
+  "Sort records A and B by Project, work status, name and address."
+  (let ((pa (gethash (plist-get a :address) agent-fleet-dashboard--projects))
+        (pb (gethash (plist-get b :address) agent-fleet-dashboard--projects)))
+    (if (equal pa pb)
+        (let ((sa (agent-fleet-dashboard--priority a)) (sb (agent-fleet-dashboard--priority b)))
+          (if (/= sa sb) (< sa sb)
+            (if (equal (agent-fleet-name a) (agent-fleet-name b))
+                (string< (plist-get a :address) (plist-get b :address))
+              (string< (agent-fleet-name a) (agent-fleet-name b)))))
+      (cond ((and pa (equal pa agent-fleet-dashboard--focus-project)) t)
+            ((and pb (equal pb agent-fleet-dashboard--focus-project)) nil)
+            ((null pa) nil) ((null pb) t)
+            (t (string< (prin1-to-string pa) (prin1-to-string pb)))))))
+
+(defun agent-fleet-dashboard--print-entry (id columns)
+  "Print a Project heading when needed, then the agent ID and COLUMNS."
+  (let ((project (gethash id agent-fleet-dashboard--projects)))
+    (unless (equal project agent-fleet-dashboard--last-project)
+      (insert (propertize (concat "\n" (agent-fleet-dashboard--group-label project) "\n")
+                          'face 'font-lock-keyword-face))
+      (setq agent-fleet-dashboard--last-project project))
+    (tabulated-list-print-entry id columns)))
 
 (defun agent-fleet-dashboard-refresh ()
   "Render the current cache without polling Core."
@@ -36,6 +78,11 @@
       (let ((id (tabulated-list-get-id))
             (pending agent-fleet-dashboard--pending-focus)
             (members (agent-fleet-agents agent-fleet-dashboard--history)))
+        (setq agent-fleet-dashboard--projects (make-hash-table :test 'equal))
+        (dolist (record members)
+          (puthash (plist-get record :address) (agent-fleet-project-for-agent record)
+                   agent-fleet-dashboard--projects))
+        (setq members (sort members #'agent-fleet-dashboard--less-p))
         (setq tabulated-list-entries
               (mapcar
                (lambda (r)
@@ -54,18 +101,26 @@
                        (or (not agent-fleet-dashboard--attention)
                            (member (agent-fleet-status r) '("blocked" "error")))))
                 members)))
-        (setq header-line-format
-              (format "Core: %s   %s %d/%d   Project: %s%s   RET attach  p prompt  o output  c cleanup"
+        (setq agent-fleet-dashboard--summary
+              (format "Core: %s   %s %d/%d%s   h commands   Project: %s"
                       herdr-core--state (if agent-fleet-dashboard--history "All records" "Live")
                       (length tabulated-list-entries) (length members)
-                      (or agent-fleet-dashboard--project "All")
-                      (if agent-fleet-dashboard--attention "   Attention only" "")))
+                      (if agent-fleet-dashboard--attention "   Attention only" "")
+                      (if agent-fleet-dashboard--project
+                          (propertize
+                           (truncate-string-to-width
+                            (agent-fleet-project--display-name agent-fleet-dashboard--project) 20 nil nil "…")
+                           'help-echo (agent-fleet-dashboard--group-label agent-fleet-dashboard--project))
+                        "All")))
+        (setq agent-fleet-dashboard--last-project :unprinted
+              tabulated-list-sort-key nil)
         (tabulated-list-print t)
         (let ((focused (agent-fleet-dashboard--goto pending)))
           (when (or focused (and pending (herdr-core-terminal pending)))
             (setq agent-fleet-dashboard--pending-focus nil))
           (unless (or focused (agent-fleet-dashboard--goto id) (tabulated-list-get-id))
-            (goto-char (point-min))))
+            (unless (agent-fleet-dashboard--goto (caar tabulated-list-entries))
+              (goto-char (point-min)))))
         (unless tabulated-list-entries
           (let ((inhibit-read-only t))
             (insert (propertize
@@ -73,10 +128,11 @@
                          (concat "No agents match the current filters. "
                                  (when agent-fleet-dashboard--project "P clears the Project filter. ")
                                  (when agent-fleet-dashboard--attention "! clears the attention filter. ")
-                                 "h toggles history.\n")
-                       "No Fleet agents in this view. Press n to start an agent, or h to toggle history.\n")
+                                 "H toggles history.\n")
+                       "No Fleet agents in this view. Press N to start an agent, or H to toggle history.\n")
                      'face 'shadow))
-            (goto-char (point-min))))))))
+            (goto-char (point-min)))))
+      (when (bound-and-true-p hl-line-mode) (hl-line-highlight)))))
 
 (defun agent-fleet-dashboard--goto (address)
   "Select visible ADDRESS, returning non-nil; leave point alone if absent."
@@ -99,9 +155,13 @@
 
 (defun agent-fleet-dashboard--target ()
   "Return a pinned target for the current row."
-  (let ((id (tabulated-list-get-id)))
-    (unless id (user-error "No agent on this row"))
-    (agent-fleet-reference (agent-fleet-resolve id))))
+  (if (and (eq transient-current-command 'agent-fleet-dashboard-help)
+           transient-current-prefix)
+      (or (plist-get (oref transient-current-prefix scope) :target)
+          (user-error "No agent was selected when the menu opened"))
+    (let ((id (tabulated-list-get-id)))
+      (unless id (user-error "No agent on this row"))
+      (agent-fleet-reference (agent-fleet-resolve id)))))
 
 (defun agent-fleet-dashboard--visit (function &optional target)
   "Open FUNCTION for TARGET in the current review window."
@@ -156,27 +216,86 @@
   (interactive)
   (agent-fleet-view-quit))
 
+(defun agent-fleet-dashboard--move (direction)
+  "Move DIRECTION rows, skipping Project headings and blank lines."
+  (let ((start (point)) found)
+    (while (and (not found) (= 0 (forward-line direction)))
+      (when (tabulated-list-get-id) (setq found t)))
+    (unless found (goto-char start))))
+
+;;;###autoload
+(defun agent-fleet-dashboard-next ()
+  "Select the next agent row."
+  (interactive)
+  (agent-fleet-dashboard--move 1))
+
+;;;###autoload
+(defun agent-fleet-dashboard-previous ()
+  "Select the previous agent row."
+  (interactive)
+  (agent-fleet-dashboard--move -1))
+
+;;;###autoload (autoload 'agent-fleet-dashboard-help "agent-fleet-dashboard" nil t)
+(transient-define-prefix agent-fleet-dashboard-help ()
+  "Show commands for the current Dashboard."
+  [["Session"
+    ("N" "New agent" agent-fleet-dashboard-start)
+    ("a" "Attach" agent-fleet-dashboard-attach)
+    ("v" "Observe" agent-fleet-dashboard-observe)
+    ("q" "Return from Dashboard" agent-fleet-dashboard-quit)]
+   ["Agent"
+    ("s" "Prompt" agent-fleet-dashboard-prompt)
+    ("o" "Output" agent-fleet-dashboard-output)
+    ("I" "Details" agent-fleet-dashboard-details)
+    ("i" "Interrupt" agent-fleet-dashboard-interrupt)
+    ("x" "End program" agent-fleet-dashboard-kill)]
+   ["Review / View"
+    ("m" "Magit status" agent-fleet-dashboard-magit)
+    ("d" "Diff" agent-fleet-dashboard-diff)
+    ("c" "Cleanup review" agent-fleet-dashboard-cleanup)
+    ("P" "Project filter" agent-fleet-dashboard-project)
+    ("!" "Attention filter" agent-fleet-dashboard-attention)
+    ("H" "Finished history" agent-fleet-dashboard-history)
+    ("g" "Refresh" agent-fleet-dashboard-refresh)]]
+  (interactive)
+  (unless (derived-mode-p 'agent-fleet-mode) (user-error "Open Dashboard first"))
+  (transient-setup 'agent-fleet-dashboard-help nil nil
+                   :scope (list :target (when (tabulated-list-get-id)
+                                          (agent-fleet-dashboard--target)))))
+
 (defvar agent-fleet-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map tabulated-list-mode-map)
-    (dolist (pair '(("RET" . agent-fleet-dashboard-attach) ("v" . agent-fleet-dashboard-observe)
-                    ("p" . agent-fleet-dashboard-prompt)
-                    ("o" . agent-fleet-dashboard-output) ("i" . agent-fleet-dashboard-details)
-                    ("m" . agent-fleet-dashboard-magit) ("d" . agent-fleet-dashboard-diff)
-                    ("c" . agent-fleet-dashboard-cleanup) ("n" . agent-fleet-dashboard-start)
-                    ("k" . agent-fleet-dashboard-kill) ("s" . agent-fleet-dashboard-interrupt)
-                    ("h" . agent-fleet-dashboard-history) ("P" . agent-fleet-dashboard-project)
-                    ("!" . agent-fleet-dashboard-attention) ("g" . agent-fleet-dashboard-refresh)
-                    ("q" . agent-fleet-dashboard-quit) ("C-g" . agent-fleet-dashboard-quit)))
-      (define-key map (kbd (car pair)) (cdr pair))) map))
+    map))
+;; Reinstall on reload as well: older maps bound navigation keys to actions.
+(dolist (pair '(("a" . agent-fleet-dashboard-attach) ("RET" . agent-fleet-dashboard-attach)
+                ("v" . agent-fleet-dashboard-observe) ("s" . agent-fleet-dashboard-prompt)
+                ("o" . agent-fleet-dashboard-output) ("I" . agent-fleet-dashboard-details)
+                ("m" . agent-fleet-dashboard-magit) ("d" . agent-fleet-dashboard-diff)
+                ("c" . agent-fleet-dashboard-cleanup) ("N" . agent-fleet-dashboard-start)
+                ("x" . agent-fleet-dashboard-kill) ("i" . agent-fleet-dashboard-interrupt)
+                ("h" . agent-fleet-dashboard-help) ("H" . agent-fleet-dashboard-history)
+                ("P" . agent-fleet-dashboard-project) ("!" . agent-fleet-dashboard-attention)
+                ("g" . agent-fleet-dashboard-refresh) ("q" . agent-fleet-dashboard-quit)
+                ("C-g" . agent-fleet-dashboard-quit) ("<escape>" . agent-fleet-dashboard-quit)
+                ("n" . agent-fleet-dashboard-next) ("j" . agent-fleet-dashboard-next)
+                ("<down>" . agent-fleet-dashboard-next) ("C-n" . agent-fleet-dashboard-next)
+                ("p" . agent-fleet-dashboard-previous) ("k" . agent-fleet-dashboard-previous)
+                ("<up>" . agent-fleet-dashboard-previous) ("C-p" . agent-fleet-dashboard-previous)))
+  (define-key agent-fleet-mode-map (kbd (car pair)) (cdr pair)))
 (agent-fleet-protect-keymap agent-fleet-mode-map)
 (define-derived-mode agent-fleet-mode tabulated-list-mode "Agent Fleet"
   "Live agent overview."
   (setq-local agent-fleet-target-function #'agent-fleet-dashboard--target)
   (setq-local agent-fleet-presentation-function #'agent-fleet-dashboard--visit)
   (setq tabulated-list-format (copy-tree agent-fleet-dashboard--columns t))
-  (setq tabulated-list-padding 1)
-  (tabulated-list-init-header))
+  (setq tabulated-list-padding 1
+        agent-fleet-dashboard--projects (make-hash-table :test 'equal)
+        agent-fleet-dashboard--last-project :unprinted
+        tabulated-list-printer #'agent-fleet-dashboard--print-entry
+        mode-line-process '(:eval (concat "  " agent-fleet-dashboard--summary)))
+  (tabulated-list-init-header)
+  (hl-line-mode 1))
 
 ;;;###autoload
 (defun agent-fleet ()
@@ -185,9 +304,17 @@
   (herdr-core-connect)
   (let ((buffer (get-buffer-create "*Agent Fleet*"))
         (child (and (frame-parameter nil 'agent-fleet-auxiliary-frame) (selected-frame)))
-        (previous (current-buffer)))
+        (previous (current-buffer))
+        (project (unless (derived-mode-p 'agent-fleet-mode)
+                   (if agent-fleet-target
+                       (condition-case nil
+                           (agent-fleet-project-for-agent (agent-fleet-resolve agent-fleet-target))
+                         (error nil))
+                     (agent-fleet-project-root-for-cwd default-directory)))))
+
     (with-current-buffer buffer
-      (unless (derived-mode-p 'agent-fleet-mode) (agent-fleet-mode)))
+      (unless (derived-mode-p 'agent-fleet-mode) (agent-fleet-mode))
+      (unless (eq previous buffer) (setq agent-fleet-dashboard--focus-project project)))
     (agent-fleet-dashboard-refresh)
     (when child
       (select-frame-set-input-focus (agent-fleet-display-origin-frame child))

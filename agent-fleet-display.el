@@ -53,7 +53,34 @@
   (with-current-buffer (window-buffer window)
     (list (current-buffer) (copy-marker (window-point window))
           (copy-marker (window-start window)) (window-hscroll window)
-          (window-vscroll window t))))
+          (window-vscroll window t)
+          (agent-fleet-display--row-position (window-point window))
+          (agent-fleet-display--row-position (window-start window)))))
+
+(defun agent-fleet-display--row-position (position)
+  "Capture a tabulated row identity and column at POSITION, when present."
+  (when-let* ((id (get-text-property position 'tabulated-list-id)))
+    (save-excursion
+      (goto-char position)
+      (cons id (current-column)))))
+
+(defun agent-fleet-display--resolve-position (saved index)
+  "Resolve point or start INDEX in SAVED, surviving a tabulated view redraw."
+  (with-current-buffer (car saved)
+    (let ((row (nth (+ index 4) saved)))
+      (if (not row) (nth index saved)
+        (save-excursion
+          (goto-char (point-min))
+          (while (and (not (eobp))
+                      (not (equal (get-text-property (point) 'tabulated-list-id) (car row))))
+            (goto-char (next-single-property-change (point) 'tabulated-list-id nil (point-max))))
+          (if (eobp)
+              ;; A removed row returns to a remaining record, never a heading.
+              (or (and (= index 1)
+                       (text-property-not-all (point-min) (point-max) 'tabulated-list-id nil))
+                  (point-min))
+            (move-to-column (cdr row))
+            (point)))))))
 
 (defun agent-fleet-display--window-restore (window saved)
   "Restore SAVED in WINDOW without changing the window layout."
@@ -64,8 +91,8 @@
           (set-window-buffer window (if (buffer-live-p buffer) buffer
                                       (other-buffer (window-buffer window) t)))
           (when (buffer-live-p buffer)
-            (set-window-point window (nth 1 saved))
-            (set-window-start window (nth 2 saved) t)
+            (set-window-point window (agent-fleet-display--resolve-position saved 1))
+            (set-window-start window (agent-fleet-display--resolve-position saved 2) t)
             (set-window-hscroll window (nth 3 saved))
             (set-window-vscroll window (nth 4 saved) t)
             (set-window-parameter window 'agent-fleet-restore-position saved))
@@ -83,8 +110,8 @@
     (when-let* ((saved (window-parameter window 'agent-fleet-restore-position)))
       (set-window-parameter window 'agent-fleet-restore-position nil)
       (when (eq (car saved) (window-buffer window))
-        (set-window-point window (nth 1 saved))
-        (set-window-start window (nth 2 saved) t)
+        (set-window-point window (agent-fleet-display--resolve-position saved 1))
+        (set-window-start window (agent-fleet-display--resolve-position saved 2) t)
         (set-window-hscroll window (nth 3 saved))
         (set-window-vscroll window (nth 4 saved) t)))))
 
