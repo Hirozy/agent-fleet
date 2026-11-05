@@ -8,6 +8,7 @@
 (require 'agent-fleet-details)
 (require 'agent-fleet-batch)
 (declare-function ghostel-send-string "ghostel" (string))
+(declare-function ghostel-char-mode "ghostel" ())
 (declare-function evil-mode "evil-core" (&optional arg))
 (declare-function evil-set-initial-state "evil-core" (mode state))
 (defvar evil-want-keybinding)
@@ -321,6 +322,10 @@
                       (set-window-buffer (frame-selected-window observer-frame) origin-buffer)
                       (select-frame-set-input-focus origin)
                       (switch-to-buffer viewer)
+                      ;; Earlier prompts can leave a multi-line echo area.
+                      ;; Settle it before comparing the terminal viewport.
+                      (message nil)
+                      (redisplay t)
                       (sit-for 0.3)
                       (setq before (herdr-core-request "terminal.get" (list :terminal address)))
                       (select-frame-set-input-focus observer-frame)
@@ -340,12 +345,37 @@
                         (should (equal (plist-get before :rows) (plist-get after :rows))))
                       (should-not (string-match-p "OBSERVER-MUST-NOT-TYPE"
                                                   (plist-get (herdr-core-request "terminal.read"
-                                                                                (list :terminal address)) :text))))
+                                                                                (list :terminal address)) :text)))
+                      ;; q must win even over Ghostel's full character input map.
+                      (let ((inhibit-message t)) (ghostel-char-mode))
+                      (should (eq (key-binding (kbd "q")) #'agent-fleet-observe-quit))
+                      (call-interactively (key-binding (kbd "q")))
+                      (should-not (buffer-live-p observer))
+                      (should (eq (current-buffer) origin-buffer))
+                      ;; Opening from Dashboard retains its selected row and return path.
+                      (agent-fleet)
+                      (agent-fleet-dashboard-focus address)
+                      (call-interactively (key-binding (kbd "v")))
+                      (setq observer (current-buffer))
+                      (should agent-fleet-observe-p)
+                      (call-interactively (key-binding (kbd "q")))
+                      (should-not (buffer-live-p observer))
+                      (should (derived-mode-p 'agent-fleet-mode))
+                      (should (equal (tabulated-list-get-id) address))
+                      (agent-fleet-dashboard-quit)
+                      (should (eq (current-buffer) origin-buffer))
+                      (should (process-live-p process))
+                      (with-current-buffer viewer
+                        (should-not (eq (key-binding (kbd "q")) #'agent-fleet-observe-quit)))
+                      (let ((after (herdr-core-request "terminal.get" (list :terminal address))))
+                        (should (equal (plist-get after :state) "live"))
+                        (should (equal (plist-get before :cols) (plist-get after :cols)))
+                        (should (equal (plist-get before :rows) (plist-get after :rows)))))
                   (when (buffer-live-p observer)
                     (let ((kill-buffer-query-functions nil)) (kill-buffer observer)))
                   (delete-frame observer-frame)
                   (select-frame-set-input-focus origin)))
-              (setq report (concat report "Observer reuse, input isolation, focus and resize isolation passed.\n"))
+              (setq report (concat report "Observer reuse, input/resize isolation and q detach/return preserve the agent and interactive viewer.\n"))
               (let ((kill-buffer-query-functions nil)) (kill-buffer viewer))
               (sit-for 0.2)
               (should (equal "live" (plist-get (herdr-core-request
