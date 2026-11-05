@@ -78,17 +78,25 @@ as `t7`. For example, `.emacs.d` becomes `emacs-d`; a directory with no usable
 characters falls back to `agent`. Conflict suffixes stay within Core's 32-character
 limit. Explicit names are checked by Core and its rejection is preserved.
 
-With a prefix argument, use a single form to edit command, directory, optional
-name and initial template task. The form starts in the command field, using the
-last selected command or the first entry in `agent-fleet-commands`.
-`C-c C-c` requests launch once and `C-c C-k` closes from any field.
-The form stays open and retains the started, rejected or uncertain result with
-its submitted fields. After a successful launch, `C-c C-a` attaches directly in
-the origin window. A failed initial template message is reported separately
-from a successful launch. Closing the form does not cancel a pending request;
-no result triggers an automatic retry or a focus change.
+With a prefix argument, or `N` in Dashboard, open the launch form. Dashboard
+uses the selected local agent's working directory, falling back to the directory
+from which Dashboard was opened. Remote directories are never resolved locally.
+Choose a configured agent with its button, use **Choose command / template**
+(`C-c C-p`) for completion, or edit the command directly. **Browse directory**
+(`C-c C-d`) opens directory completion. The form remembers the last command;
+name and initial template task are optional.
+
+**Start & attach** (`C-c C-a`) launches once and enters the new terminal if the
+form is still selected in the focused Emacs frame when Core acknowledges it. **Start in background**
+(`C-c C-c`) keeps the result in the form. After success, the same `C-c C-a`
+attaches without launching again. If you leave the form while waiting, the
+result is retained without taking focus. A failed initial template message or
+failed attach stays visible; neither causes another launch. `C-c C-k` returns
+to the preceding view from any field. Closing does not cancel a pending request.
 Local input errors detected before dispatch leave the fields editable so they
-can be corrected. Submitted forms remain protected against duplicate launches.
+can be corrected. For a definite Core rejection, **Edit request** (`C-c C-e`)
+unlocks the existing fields for correction and an explicit new submission.
+Uncertain results remain locked; inspect Dashboard before starting again.
 `agent-fleet-start-for-project` starts in the current Project.
 
 ```elisp
@@ -123,6 +131,9 @@ bindings take precedence over Evil's default bindings in these views; explicit
 user Evil bindings can still override them. Use the arrow keys or `C-n`/`C-p`
 to move between rows. In the Dashboard, `C-c a` commands use the current row
 and follow the same return rules as the single-key actions.
+Dashboard has clickable New agent and Commands actions and a short key guide.
+The compact table puts agent type, status and terminal address before helper
+metadata. Projects appear once as group headings instead of repeating per row.
 The header shows column titles; the mode line shows connection health,
 visible/total counts and active filters. Project filter labels are shortened;
 their full identity remains in the group heading and mode-line tooltip. Empty lists explain
@@ -324,8 +335,13 @@ agent-fleet-cleanup
 ```
 
 The review starts on the first record. Use `n` / `p` to move between records;
-selection changes keep the current record in focus. The review shows the selected
-count, and the result shows counts for each outcome, including unattempted records.
+selection changes keep the current record in focus. Records are grouped by their
+reported directory, with aligned agent names and terminal IDs. Directory groups
+only affect presentation; removal still processes children before parents.
+The review shows the selected count and checkboxes. Results replace checkboxes
+with outcome labels and show only nonzero outcome counts, including unattempted
+records. Success, skipped and error outcomes use theme-aware faces; diagnostic
+text remains visible beneath the affected record.
 
 Dashboard filters do not restrict cleanup. Live agents, including those reporting
 done, are preserved. Records with remaining children are retained so relationships

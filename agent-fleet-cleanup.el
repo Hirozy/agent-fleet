@@ -3,7 +3,16 @@
 ;; Only terminal.rm is dispatched.  No process termination or filesystem deletion.
 ;;; Code:
 (require 'agent-fleet)
+(defface agent-fleet-cleanup-title
+  '((t (:inherit bold :height 1.2)))
+  "Heading for cleanup reviews and results."
+  :group 'agent-fleet)
+(defface agent-fleet-cleanup-directory
+  '((t (:inherit font-lock-keyword-face :weight bold)))
+  "Directory headings in cleanup reviews and results."
+  :group 'agent-fleet)
 (defvar-local agent-fleet-cleanup--items nil)
+(defvar-local agent-fleet-cleanup--display-items nil)
 (defvar-local agent-fleet-cleanup--core nil)
 (defvar-local agent-fleet-cleanup--state nil)
 (defvar agent-fleet-cleanup-mode-map
@@ -14,7 +23,8 @@
     (define-key map (kbd "p") #'agent-fleet-cleanup-previous)
     (define-key map (kbd "C-c C-c") #'agent-fleet-cleanup-execute) map))
 (define-derived-mode agent-fleet-cleanup-mode agent-fleet-review-mode "Fleet Cleanup"
-  "Review exact finished records before removing their retained history.")
+  "Review exact finished records before removing their retained history."
+  (hl-line-mode 1))
 
 (defun agent-fleet-cleanup--records ()
   "Read and validate a complete, fresh Core terminal inventory."
@@ -52,47 +62,96 @@
     (mapcar (lambda (r) (list :reference (agent-fleet-reference r)
                               :record r :selected t :status 'pending :reason nil :error nil)) candidates)))
 
+(defun agent-fleet-cleanup--face (status)
+  "Return the semantic face for STATUS."
+  (pcase status
+    ('removed 'success) ((or 'failed 'uncertain) 'error)
+    ((or 'skipped 'pending) 'warning) (_ 'default)))
+
+(defun agent-fleet-cleanup--groups ()
+  "Group items by literal directory without changing execution order."
+  (let (groups)
+    (dolist (item agent-fleet-cleanup--items)
+      (let* ((directory (plist-get (plist-get item :record) :cwd))
+             (group (assoc directory groups)))
+        (if group (setcdr group (cons item (cdr group)))
+          (push (list directory item) groups))))
+    (mapcar (lambda (group) (cons (car group) (nreverse (cdr group))))
+            (nreverse groups))))
+
+(defun agent-fleet-cleanup--insert-item (item review name-width)
+  "Insert ITEM as a REVIEW or result row with NAME-WIDTH columns."
+  (let* ((record (plist-get item :record))
+         (status (plist-get item :status))
+         (name (agent-fleet-name record))
+         (begin (point)))
+    (insert "  "
+            (propertize
+             (format "%-14s" (if review
+                                    (if (plist-get item :selected) "[x] Remove" "[ ] Keep")
+                                  (if (eq status 'pending) "Not attempted"
+                                    (capitalize (symbol-name status)))))
+             'face (if review
+                       (if (plist-get item :selected) 'font-lock-keyword-face 'shadow)
+                     (agent-fleet-cleanup--face status)))
+            (propertize name 'face 'bold)
+            (make-string (+ 2 (max 0 (- name-width (string-width name)))) ?\s)
+            (propertize (plist-get record :address) 'face 'shadow) "\n")
+    (when-let* ((reason (plist-get item :reason)))
+      (insert (propertize
+               (concat "    " (replace-regexp-in-string "\n" "\n    " reason t t) "\n")
+               'face (agent-fleet-cleanup--face status))))
+    (add-text-properties begin (point) (list 'fleet-cleanup-item item))))
+
 (defun agent-fleet-cleanup--render ()
   "Render this review and its retained per-record outcomes."
   (let ((inhibit-read-only t)
-        (current-item (get-text-property (point) 'fleet-cleanup-item)))
+        (current-item (get-text-property (point) 'fleet-cleanup-item))
+        (review (eq agent-fleet-cleanup--state 'review))
+        (groups (agent-fleet-cleanup--groups))
+        (name-width (apply #'max 5 (mapcar
+                                   (lambda (item)
+                                     (string-width (agent-fleet-name (plist-get item :record))))
+                                   agent-fleet-cleanup--items))))
     (erase-buffer)
-    (insert (propertize (if (eq agent-fleet-cleanup--state 'review)
-                           "Review finished history\n" "Cleanup results\n") 'face 'bold))
-    (insert "\nRemoves retained terminal records and their output history.\n"
-            "Live programs and code directories are preserved.\n\n")
+    (insert (propertize (if review "Review finished history\n" "Cleanup results\n")
+                        'face 'agent-fleet-cleanup-title) "\n")
     (insert
-     (if (eq agent-fleet-cleanup--state 'review)
-         (format "%d of %d records selected\n\n"
+     (if review
+         (propertize (format "%d of %d records selected\n"
                  (cl-count-if (lambda (item) (plist-get item :selected)) agent-fleet-cleanup--items)
-                 (length agent-fleet-cleanup--items))
+                 (length agent-fleet-cleanup--items)) 'face 'bold)
        (concat
-        (mapconcat (lambda (status)
-                     (format "%d %s"
-                             (cl-count status agent-fleet-cleanup--items
-                                       :key (lambda (item) (plist-get item :status)))
-                             (if (eq status 'pending) "not attempted" status)))
-                   '(removed skipped failed uncertain pending) "  ·  ")
-        "\n\n")))
-    (dolist (item agent-fleet-cleanup--items)
-      (let* ((record (plist-get item :record))
-             (status (plist-get item :status))
-             (begin (point)))
-        (insert (propertize
-                 (format "[%s] %-10s " (if (plist-get item :selected) "x" " ") status)
-                 'face (pcase status
-                         ('removed 'success) ((or 'failed 'uncertain) 'error)
-                         ('skipped 'warning) (_ 'font-lock-keyword-face)))
-                (format "%s [%s]\n    %s\n"
-                        (agent-fleet-name record) (plist-get record :address)
-                        (or (plist-get record :cwd) "—")))
-        (when-let* ((reason (plist-get item :reason)))
-          (insert (format "    %s\n" reason)))
-        (add-text-properties begin (point) (list 'fleet-cleanup-item item))))
+        (mapconcat
+         #'identity
+         (delq nil
+               (mapcar (lambda (status)
+                         (let ((count (cl-count status agent-fleet-cleanup--items
+                                                :key (lambda (item) (plist-get item :status)))))
+                           (when (> count 0)
+                             (propertize
+                              (format "%d %s" count (if (eq status 'pending) "not attempted" status))
+                              'face (list :inherit (agent-fleet-cleanup--face status) :weight 'bold)))))
+                       '(removed skipped failed uncertain pending))) "  ·  ")
+        "\n")))
+    (insert (propertize
+             (if review "Removes terminal records and output history.\n"
+               "Finished records and their output history only.\n") 'face 'shadow)
+            (propertize "Live programs and code directories are preserved.\n" 'face 'shadow))
+    (setq agent-fleet-cleanup--display-items (apply #'append (mapcar #'cdr groups)))
+    (dolist (group groups)
+      (insert "\n" (propertize (or (car group) "No directory reported")
+                                 'face 'agent-fleet-cleanup-directory)
+              (propertize (format "  (%d)\n" (length (cdr group))) 'face 'shadow)
+              (propertize (format (format "  %%-14s%%-%ds  ID\n" name-width)
+                                  (if review "Selection" "Result") "Agent")
+                          'face 'shadow))
+      (dolist (item (cdr group))
+        (agent-fleet-cleanup--insert-item item review name-width)))
     (setq header-line-format
           (if (eq agent-fleet-cleanup--state 'review)
               "n/p records   SPC include/exclude   C-c C-c execute   q / C-g cancel"
-            "n/p records   Completed once — run cleanup again for a fresh review.   q close"))
+            "n/p records   q close"))
     (goto-char (or (and current-item
                         (text-property-any (point-min) (point-max) 'fleet-cleanup-item current-item))
                    (text-property-not-all (point-min) (point-max) 'fleet-cleanup-item nil)
@@ -102,11 +161,11 @@
 (defun agent-fleet-cleanup--move (direction)
   "Move by DIRECTION between records, skipping paths and diagnostics."
   (let* ((item (get-text-property (point) 'fleet-cleanup-item))
-         (index (and item (cl-position item agent-fleet-cleanup--items :test #'eq)))
+         (index (and item (cl-position item agent-fleet-cleanup--display-items :test #'eq)))
          (next (if index (+ index direction)
-                 (if (> direction 0) 0 (1- (length agent-fleet-cleanup--items)))))
-         (target (nth (max 0 (min next (1- (length agent-fleet-cleanup--items))))
-                      agent-fleet-cleanup--items)))
+                 (if (> direction 0) 0 (1- (length agent-fleet-cleanup--display-items)))))
+         (target (nth (max 0 (min next (1- (length agent-fleet-cleanup--display-items))))
+                      agent-fleet-cleanup--display-items)))
     (when target
       (goto-char (text-property-any (point-min) (point-max) 'fleet-cleanup-item target)))))
 
