@@ -62,7 +62,7 @@ NAME, TASK and CALLBACK have the meanings used by `agent-fleet-start'."
          :display (called-interactively-p 'interactive)
          :callback (lambda (record error)
                      (when error (message "Launch failed; checkout retained at %s: %s"
-                                          cwd (error-message-string error)))
+                                          cwd (herdr-core-error-message error)))
                      (when callback (funcall callback record error))))
       (error (message "Checkout retained at %s" cwd) (signal (car err) (cdr err))))))
 

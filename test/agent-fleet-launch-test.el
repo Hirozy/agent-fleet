@@ -159,6 +159,20 @@
               (should-not (buffer-modified-p)))
           (kill-buffer buffer))))))
 
+(ert-deftest fleet-start-rejection-is-readable-and-retains-original-error ()
+  (fleet-test-model nil
+    (let ((problem '(herdr-core-request-error :error (:code -32602 :message "bad name")))
+          feedback failure)
+      (cl-letf (((symbol-function 'herdr-core-request-async)
+                 (lambda (_method _params callback &optional _timeout)
+                   (funcall callback nil problem)))
+                ((symbol-function 'message)
+                 (lambda (format &rest args) (setq feedback (apply #'format format args)))))
+        (agent-fleet-start '("true") :name "-invalid" :cwd temporary-file-directory
+                           :callback (lambda (_record err) (setq failure err))))
+      (should (equal feedback "Start -invalid: bad name (not retried)"))
+      (should (equal failure problem)))))
+
 (ert-deftest fleet-start-invalid-ack-is-not-reported-as-started ()
   (fleet-test-model nil
     (let (result failure)

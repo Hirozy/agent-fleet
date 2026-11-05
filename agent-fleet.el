@@ -6,6 +6,7 @@
 ;;; Code:
 (require 'cl-lib)
 (require 'subr-x)
+(require 'pp)
 (require 'herdr-core)
 (require 'agent-fleet-display)
 (defgroup agent-fleet nil "Coding agents in Emacs." :group 'tools)
@@ -237,7 +238,7 @@ a successfully started terminal."
        (lambda (record err)
          (when (and (null err) (not (herdr-core--valid-terminal-p record)))
            (setq err (list 'herdr-core-uncertain :reason 'invalid-launch-response :response record)))
-         (if err (message "Start %s: %s (not retried)" name (error-message-string err))
+         (if err (message "Start %s: %s (not retried)" name (herdr-core-error-message err))
            (let ((first (plist-get record :first_message)))
              (message "Started %s [%s]%s" name (plist-get record :address)
                       (if (and first (not (eq (plist-get first :sent) t)))
@@ -430,23 +431,120 @@ TARGET may be an address or a pinned identity; interactive selection pins it."
          (agent-fleet-prompt--finish buffer nil err))
        (signal (car err) (cdr err))))))
 
+(defvar agent-fleet--control-results nil
+  "The latest 30 control outcomes, including original responses and errors.")
+
+(defun agent-fleet--control-summary (action record result)
+  "Summarize ACTION's RESULT for RECORD, or return nil for an invalid reply."
+  (when (listp result)
+    (pcase action
+      ('end
+       (when (and (herdr-core--valid-terminal-p result)
+                  (equal (plist-get result :address) (plist-get record :address))
+                  (equal (plist-get result :created_ms) (plist-get record :created_ms)))
+         (if (equal (plist-get result :state) "finished")
+             (format "Ended%s"
+                     (if (integerp (plist-get result :exit_code))
+                         (format " (exit code %s)" (plist-get result :exit_code)) ""))
+           "End requested; Core still reports live")))
+      ('interrupt
+       (when (and (stringp (plist-get result :key))
+                  (stringp (plist-get result :outcome)))
+         (format "Interrupt: %s"
+                 (pcase (plist-get result :outcome)
+                   ("stopped" "work stopped") ("exited" "program exited")
+                   ("still_working" "still working")
+                   ("unknown" "stop key sent; effect unknown")
+                   (other (format "Core reported %s" other))))))
+      ('wait
+       (when (and (equal (plist-get result :terminal) (plist-get record :address))
+                  (memq (plist-get result :ended) '(t :false))
+                  (stringp (plist-get result :reason)))
+         (format "Wait: %s%s"
+                 (pcase (plist-get result :reason)
+                   ("timeout" "timed out") ("not_started" "work did not start")
+                   ("exit" "program exited") ("message" "message received")
+                   ("output" "output matched") ("status" "status reported")
+                   (other (format "Core reported %s" other)))
+                 (if (stringp (plist-get result :status))
+                     (format " (%s)" (plist-get result :status)) "")))))))
+
+(defun agent-fleet--control-finish (action record reference result err)
+  "Report and retain a control outcome without moving focus or retrying."
+  (let ((summary (and (null err) (agent-fleet--control-summary action record result))))
+    (unless (or err summary)
+      (setq err (list 'herdr-core-uncertain :reason 'invalid-control-response
+                      :response result)))
+    (when err
+      (setq summary
+            (format "%s %s: %s (not retried; M-x agent-fleet-control-results)"
+                    (capitalize (symbol-name action))
+                    (if (eq (car-safe err) 'herdr-core-request-error) "rejected" "outcome unknown")
+                    (if (eq (car-safe err) 'herdr-core-uncertain)
+                        (format "%s" (or (plist-get (cdr err) :reason) "connection lost"))
+                      (herdr-core-error-message err)))))
+    (setq summary (format "%s [%s] — %s" (agent-fleet-name record)
+                          (plist-get record :address) summary))
+    (push (list :time (current-time-string) :action action :target reference
+                :summary summary :response result :error err)
+          agent-fleet--control-results)
+    (when (> (length agent-fleet--control-results) 30)
+      (setcdr (nthcdr 29 agent-fleet--control-results) nil))
+    (message "%s" summary)))
+
+(defun agent-fleet--control-request (action record &optional timeout)
+  "Dispatch ACTION once for RECORD, retaining its result; use TIMEOUT seconds."
+  (let ((reference (agent-fleet-reference record))
+        (params (list :terminal (plist-get record :address))) completed)
+    (when (eq action 'wait) (setq params (append params '(:timeout 180))))
+    (condition-case err
+        (herdr-core-request-async
+         (pcase action ('end "terminal.kill") ('interrupt "terminal.interrupt")
+                ('wait "terminal.wait"))
+         params
+         (lambda (result err)
+           (unless completed
+             (setq completed t)
+             (agent-fleet--control-finish action record reference result err))) timeout)
+      ((error quit)
+       (unless completed
+         (setq completed t)
+         (agent-fleet--control-finish action record reference nil err))
+       (signal (car err) (cdr err))))))
+
+;;;###autoload
+(defun agent-fleet-control-results ()
+  "Review recent end, interrupt and wait outcomes with original diagnostics."
+  (interactive)
+  (let ((buffer (get-buffer-create "*Fleet Control Results*")))
+    (with-current-buffer buffer
+      (agent-fleet-review-mode)
+      (setq-local header-line-format "Recent control results   q / C-g return")
+      (let ((inhibit-read-only t))
+        (erase-buffer)
+        (insert (propertize "Recent control results\n\n" 'face 'bold))
+        (unless agent-fleet--control-results (insert "No control results in this Emacs session.\n"))
+        (dolist (entry agent-fleet--control-results)
+          (insert (propertize (concat (plist-get entry :summary) "\n")
+                              'face (if (plist-get entry :error) 'warning 'bold))
+                  (plist-get entry :time) "\n"
+                  (pp-to-string (list :target (plist-get entry :target)
+                                      :response (plist-get entry :response)
+                                      :error (plist-get entry :error))) "\n"))
+        (goto-char (point-min))))
+    (agent-fleet-present-buffer buffer)))
+
 ;;;###autoload
 (defun agent-fleet-wait (target)
   "Wait asynchronously for TARGET, reporting Core's actual reason."
   (interactive (list (agent-fleet-current-target)))
-  (let ((record (agent-fleet-resolve target t)))
-    (herdr-core-request-async
-     "terminal.wait" (list :terminal (plist-get record :address) :timeout 180)
-     (lambda (result err) (message "Agent wait: %s" (or err result))) 190)))
+  (agent-fleet--control-request 'wait (agent-fleet-resolve target t) 190))
 
 ;;;###autoload
 (defun agent-fleet-interrupt (target)
   "Request interruption of TARGET's current work."
   (interactive (list (agent-fleet-current-target)))
-  (let ((record (agent-fleet-resolve target t)))
-    (herdr-core-request-async
-     "terminal.interrupt" (list :terminal (plist-get record :address))
-     (lambda (result err) (message "Agent interrupt: %s" (or err result))))))
+  (agent-fleet--control-request 'interrupt (agent-fleet-resolve target t)))
 
 (defun agent-fleet-kill-impact (address terminals)
   "Return live descendants that die with ADDRESS in TERMINALS."
@@ -477,10 +575,7 @@ TARGET may be an address or a pinned identity; interactive selection pins it."
            (format "End %s [%s]%s? Core also ends dependent descendants, including any created meanwhile. "
                    (agent-fleet-name record) address
                    (if impact (format " and %s" (mapconcat #'agent-fleet-name impact ", ")) "")))
-      (agent-fleet-resolve reference t)
-      (herdr-core-request-async
-       "terminal.kill" (list :terminal address)
-       (lambda (result err) (message "Agent end: %s" (or err result)))))))
+      (agent-fleet--control-request 'end (agent-fleet-resolve reference t)))))
 
 ;;;###autoload (autoload 'agent-fleet-command-map "agent-fleet" nil t 'keymap)
 (defvar agent-fleet-command-map
