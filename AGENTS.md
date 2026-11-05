@@ -5,7 +5,7 @@
 Agent Fleet brings herdr-core coding agents into Emacs. Core owns programs,
 PTYs and status; Fleet owns Emacs interaction, attention and code review.
 Read README.md for behavior and docs/PROTOCOL.md for the verified contract.
-Follow the user's scope; ROADMAP.md is not implementation authorization.
+Follow the user's scope.
 
 Support Emacs 29.1+. Keep Ghostel, Magit, Consult and GUI optional.
 Public commands must be autoloadable. Keymaps are opt-in or buffer-local.
