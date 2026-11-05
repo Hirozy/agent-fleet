@@ -7,6 +7,7 @@
 (require 'tabulated-list)
 (require 'hl-line)
 (require 'transient)
+(require 'button)
 (defcustom agent-fleet-notify-on '("blocked" "error" "done")
   "Reported states announced in the echo area."
   :type '(repeat string) :group 'agent-fleet)
@@ -18,9 +19,10 @@
 (defvar-local agent-fleet-dashboard--projects nil)
 (defvar-local agent-fleet-dashboard--last-project nil)
 (defvar-local agent-fleet-dashboard--focus-project nil)
+(defvar-local agent-fleet-dashboard--selected-id nil)
 (defconst agent-fleet-dashboard--columns
-  [("Agent" 22 nil) ("Type" 12 nil) ("Project" 16 nil) ("Role" 7 nil)
-   ("State" 22 nil) ("Parent" 8 nil) ("Address" 10 nil)])
+  [("Agent" 22 nil) ("Type" 10 nil) ("State" 22 nil) ("Address" 10 nil)
+   ("Role" 7 nil) ("Parent" 8 nil)])
 
 (defun agent-fleet-dashboard--state-cell (r)
   "Return a styled state cell for R."
@@ -72,7 +74,8 @@
   (interactive)
   (when-let* ((buffer (get-buffer "*Agent Fleet*")))
     (with-current-buffer buffer
-      (unless (assoc "Type" (append tabulated-list-format nil))
+      (unless (equal (mapcar #'car (append tabulated-list-format nil))
+                     (mapcar #'car (append agent-fleet-dashboard--columns nil)))
         (setq tabulated-list-format (copy-tree agent-fleet-dashboard--columns t))
         (tabulated-list-init-header))
       (let ((id (tabulated-list-get-id))
@@ -89,11 +92,10 @@
                  (list (plist-get r :address)
                        (vector (agent-fleet-name r)
                                (agent-fleet-type r)
-                               (agent-fleet-project-label r)
-                               (if (equal (agent-fleet-label r "fleet.role") "agent") "agent" "helper")
                                (agent-fleet-dashboard--state-cell r)
-                               (or (plist-get r :parent) "—")
-                               (plist-get r :address))))
+                               (plist-get r :address)
+                               (if (equal (agent-fleet-label r "fleet.role") "agent") "agent" "helper")
+                               (or (plist-get r :parent) "—"))))
                (cl-remove-if-not
                 (lambda (r)
                   (and (or (not agent-fleet-dashboard--project)
@@ -115,6 +117,19 @@
         (setq agent-fleet-dashboard--last-project :unprinted
               tabulated-list-sort-key nil)
         (tabulated-list-print t)
+        (let ((inhibit-read-only t))
+          (save-excursion
+            (goto-char (point-min))
+            (insert (propertize "Agent Fleet" 'face 'bold) "    ")
+            (dolist (action '(("New agent [N]" . agent-fleet-dashboard-start)
+                              ("Commands [h]" . agent-fleet-dashboard-help)))
+              (let ((command (cdr action)))
+                (insert-text-button (car action) 'follow-link t
+                                    'action (lambda (_button)
+                                              (agent-fleet-dashboard--goto agent-fleet-dashboard--selected-id)
+                                              (call-interactively command)))
+                (insert "   ")))
+            (insert (propertize "\nRET / a attach   s prompt   n/p move   q back\n" 'face 'shadow))))
         (let ((focused (agent-fleet-dashboard--goto pending)))
           (when (or focused (and pending (herdr-core-terminal pending)))
             (setq agent-fleet-dashboard--pending-focus nil))
@@ -132,6 +147,8 @@
                        "No Fleet agents in this view. Press N to start an agent, or H to toggle history.\n")
                      'face 'shadow))
             (goto-char (point-min)))))
+      (agent-fleet-dashboard--remember-selection)
+      (set-buffer-modified-p nil)
       (when (bound-and-true-p hl-line-mode) (hl-line-highlight)))))
 
 (defun agent-fleet-dashboard--goto (address)
@@ -144,6 +161,11 @@
                            (and (not (eobp)) (point)))))
       (goto-char position)
       t)))
+
+(defun agent-fleet-dashboard--remember-selection ()
+  "Keep the last selected row available when clicking a toolbar action."
+  (when-let* ((id (tabulated-list-get-id)))
+    (setq agent-fleet-dashboard--selected-id id)))
 
 (defun agent-fleet-dashboard-focus (address)
   "Move an existing Dashboard to ADDRESS without stealing focus."
@@ -186,8 +208,16 @@
   (interactive) (agent-fleet-dashboard--visit #'agent-fleet-magit-diff (agent-fleet-dashboard--target)))
 (defun agent-fleet-dashboard-cleanup () "Review eligible history."
   (interactive) (agent-fleet-dashboard--visit #'agent-fleet-cleanup))
-(defun agent-fleet-dashboard-start () "Open the start form."
-  (interactive) (agent-fleet-dashboard--visit #'agent-fleet-start-form))
+(defun agent-fleet-dashboard-start ()
+  "Open a launch form using the selected local agent's working directory."
+  (interactive)
+  (let* ((record (when (tabulated-list-get-id)
+                   (agent-fleet-resolve (agent-fleet-dashboard--target))))
+         (cwd (and record (not (string-match-p "/" (plist-get record :address)))
+                   (plist-get record :cwd)))
+         (default-directory (if (and cwd (not (file-remote-p cwd)) (file-directory-p cwd))
+                                (file-name-as-directory cwd) default-directory)))
+    (agent-fleet-dashboard--visit #'agent-fleet-start-form)))
 (defun agent-fleet-dashboard-kill () "End the current row explicitly."
   (interactive) (agent-fleet-kill (agent-fleet-dashboard--target)))
 (defun agent-fleet-dashboard-interrupt () "Interrupt the current row."
@@ -295,6 +325,7 @@
         tabulated-list-printer #'agent-fleet-dashboard--print-entry
         mode-line-process '(:eval (concat "  " agent-fleet-dashboard--summary)))
   (tabulated-list-init-header)
+  (add-hook 'post-command-hook #'agent-fleet-dashboard--remember-selection nil t)
   (hl-line-mode 1))
 
 ;;;###autoload
@@ -305,6 +336,7 @@
   (let ((buffer (get-buffer-create "*Agent Fleet*"))
         (child (and (frame-parameter nil 'agent-fleet-auxiliary-frame) (selected-frame)))
         (previous (current-buffer))
+        (origin-directory default-directory)
         (project (unless (derived-mode-p 'agent-fleet-mode)
                    (if agent-fleet-target
                        (condition-case nil
@@ -314,7 +346,9 @@
 
     (with-current-buffer buffer
       (unless (derived-mode-p 'agent-fleet-mode) (agent-fleet-mode))
-      (unless (eq previous buffer) (setq agent-fleet-dashboard--focus-project project)))
+      (unless (eq previous buffer)
+        (setq agent-fleet-dashboard--focus-project project
+              default-directory origin-directory)))
     (agent-fleet-dashboard-refresh)
     (when child
       (select-frame-set-input-focus (agent-fleet-display-origin-frame child))
