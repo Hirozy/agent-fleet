@@ -5,6 +5,7 @@
 (require 'agent-fleet-remote)
 (require 'agent-fleet-worktree)
 (require 'agent-fleet-start)
+(require 'agent-fleet-attach)
 
 (defmacro hc-live-isolated (&rest body)
   "Run BODY against a fresh Core under a temporary directory."
@@ -280,5 +281,26 @@ This exercises real routing without SSH."
       (let ((record (car (agent-fleet-agents))))
         (should (equal (directory-file-name (plist-get record :cwd)) (file-truename worktree)))
         (should (equal (agent-fleet-project-for-agent record) (file-truename repo)))))))
+
+(ert-deftest hc-live-attach-ctrl-g-delivers-the-literal-key ()
+  (hc-live-isolated
+    (let* ((record (herdr-core-request
+                    "terminal.run"
+                    '(:argv ["sh" "-c" "stty raw -echo; printf ready; od -An -tu1 -N1; sleep 60"]
+                      :no_parent t :labels (:fleet.role "agent"))))
+           (address (plist-get record :address)))
+      (hc-live-until (lambda () (herdr-core-terminal address)))
+      (hc-live-until
+       (lambda () (string-match-p "ready" (plist-get (herdr-core-request
+                                                       "terminal.read" (list :terminal address)) :text))))
+      (with-temp-buffer
+        (agent-fleet-attach-mode 1)
+        (setq agent-fleet-target (agent-fleet-reference record))
+        (call-interactively (key-binding (kbd "C-c C-g"))))
+      (hc-live-until
+       (lambda () (string-match-p "ready[ \t]+7" (plist-get (herdr-core-request
+                                                              "terminal.read" (list :terminal address)) :text))))
+      (should (equal (plist-get (herdr-core-request "terminal.get" (list :terminal address)) :state)
+                     "live")))))
 
 (provide 'herdr-core-live-test)

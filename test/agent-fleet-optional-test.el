@@ -65,4 +65,13 @@
                 (should (eq (key-binding (kbd "C-c C-k")) #'agent-fleet-view-quit)))))
         (kill-buffer buffer)))))
 
+(ert-deftest fleet-evil-keeps-prompt-send-attach-and-back-accessible ()
+  (dolist (state '(emacs insert normal))
+    (with-temp-buffer
+      (agent-fleet-prompt-mode)
+      (evil-local-mode 1)
+      (evil-change-state state)
+      (dolist (key '("C-c C-c" "C-c C-a" "C-c C-k"))
+        (should (eq (key-binding (kbd key)) (lookup-key agent-fleet-prompt-mode-map (kbd key))))))))
+
 (provide 'agent-fleet-optional-test)

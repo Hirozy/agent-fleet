@@ -232,8 +232,16 @@ file and selected line range, including selected text up to 4000 characters.
 It prefers a same-Project agent and never saves files automatically.
 Unsaved text can differ from the file on disk; review the draft before sending.
 
-Prompt buffers use `C-c C-c` to submit once and `C-c C-k` to close. The recipient
-and a styled result appear above the draft; status text is separate from the
+Prompt buffers use `C-c C-c` to submit once and enter the agent's terminal after
+Core acknowledges submission. `C-c C-a` opens that agent directly without
+sending text; `C-c C-k` returns to the preceding view. Automatic attachment only
+happens while the submitting window still shows the prompt and has focus; it
+does not interrupt another window, application or active minibuffer. If attaching
+fails, the prompt retains its submission result and attachment error. Use
+`C-c C-a` to retry attachment without resending. Successful attachment hides the
+prompt but retains its text and result in the buffer.
+
+The recipient and a styled result appear above the draft; status text is separate from the
 editable prompt and is never sent. Rejections show Core's readable reason,
 while the original structured response is retained. Submission requires a valid
 Core acknowledgement with a turn number; it does not confirm work completion.
@@ -264,11 +272,22 @@ commands such as Prompt remain available. The external-editor key is disabled
 in an observer. Its own viewport may crop/wrap output when its size differs
 from the agent's PTY; it does not take over the agent's dimensions.
 
-The optional `agent-fleet-editor-bridge-mode` retains the external-editor
-workflow. In attach, `C-c C-g` arms it and sends exactly Ctrl-G; no Enter is
-injected. The editor opens separately and closing it preserves the attach client.
-Configure the provider's external editor to use `emacsclient` connected to this
-Emacs server. Fleet does not provision `EDITOR` or `VISUAL` for Core terminals.
+In attach, `C-c C-g` sends exactly Ctrl-G through Core, without Enter. The CLI
+decides what that key does. For CLIs that use it to edit their current prompt,
+configure their external editor to use `emacsclient --create-frame` connected
+to your Emacs server (start it with `M-x server-start`; use `--socket-name` for
+a named server). Do not use `--no-wait`: the CLI must wait for editing to finish.
+Use Emacs's `C-x #` (`server-edit`) to save and finish editing, then review the
+returned draft in the CLI before submitting according to that CLI's behavior.
+A separate editor frame leaves the attach window's size intact.
+
+Fleet does not route server requests, manage external-editor frames or configure
+`EDITOR` / `VISUAL`. Configure the editor where the agent actually runs; changing
+Emacs's environment does not reconfigure an existing Core program. Automatic
+focus restoration and editor cancellation follow Emacs and the CLI's behavior.
+For a new message composed and submitted entirely through Fleet, use `C-c a p`.
+When upgrading from the editor bridge, remove its require/mode settings and
+restart Emacs after finishing active external edits.
 
 Magit opens the agent's actual local checkout. When Fleet recorded a review
 base, the diff includes tracked changes since that commit, including commits
@@ -399,8 +418,8 @@ There is no automatic retry and no worktree cleanup.
 
 ## Verification
 
-- `make test`: strict byte compilation and isolated ERT, including retained
-  external-editor safety regressions.
+- `make test`: strict byte compilation and isolated ERT, including terminal-key
+  dispatch, lifecycle safety and presentation regressions.
 - `make test-live`: fresh temporary Core session/config/state; validates events,
   reconnect, history removal, parent/child termination, and a second Core reached
   through a local relay for remote launch, context transfer, review and rename.

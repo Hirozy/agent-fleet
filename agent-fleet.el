@@ -346,13 +346,15 @@ TARGET may be an address or a pinned identity; interactive selection pins it."
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map text-mode-map)
     (define-key map (kbd "C-c C-c") #'agent-fleet-prompt-submit)
+    (define-key map (kbd "C-c C-a") #'agent-fleet-prompt-attach)
     (define-key map (kbd "C-c C-k") #'agent-fleet-view-quit) map))
 (defvar-local agent-fleet-prompt--status-overlay nil)
 (defvar-local agent-fleet-prompt--recipient nil)
+(defvar-local agent-fleet-prompt--attach-error nil)
 (define-derived-mode agent-fleet-prompt-mode text-mode "Fleet Prompt"
   "Compose an explicit agent message."
   (setq-local truncate-lines nil
-              header-line-format "C-c C-c send   C-c C-k close"))
+              header-line-format "C-c C-c send & attach   C-c C-a attach   C-c C-k back"))
 
 (defun agent-fleet-prompt--render-status ()
   "Display status separately from the exact text of this draft."
@@ -372,19 +374,26 @@ TARGET may be an address or a pinned identity; interactive selection pins it."
             ('uncertain (concat (herdr-core-error-message result)
                                 "\nDelivery may have happened. Inspect the agent before sending again.")))))
     (setq header-line-format
-          (if (eq state 'draft) "C-c C-c send   C-c C-k close"
-            (concat title "   C-c C-k close")))
+          (concat (if (eq state 'draft) "C-c C-c send & attach" title)
+                  "   C-c C-a attach   C-c C-k back"))
     (unless (overlayp agent-fleet-prompt--status-overlay)
       (setq agent-fleet-prompt--status-overlay (make-overlay (point-min) (point-min))))
     (overlay-put agent-fleet-prompt--status-overlay 'before-string
                  (concat (propertize (concat "To: " (or agent-fleet-prompt--recipient "agent") "\n\n")
                                      'face 'bold)
                          (propertize (concat title "\n") 'face face)
-                         (when detail (concat detail "\n\nPrompt text\n"))
+                         (when detail (concat detail "\n"))
+                         (when agent-fleet-prompt--attach-error
+                           (propertize
+                            (concat "Attach failed: " (error-message-string agent-fleet-prompt--attach-error)
+                                    "\nC-c C-a retries attachment without sending again.\n")
+                            'face 'warning))
+                         (when (or detail agent-fleet-prompt--attach-error) "\nPrompt text\n")
                          "\n"))))
 
-(defun agent-fleet-prompt--finish (buffer result err)
-  "Retain RESULT or ERR in prompt BUFFER without changing its text or focus."
+(defun agent-fleet-prompt--finish (buffer result err &optional window)
+  "Retain RESULT or ERR in BUFFER; attach after acknowledgement in WINDOW.
+Only follow the agent while the submitting window remains selected and focused."
   (when (buffer-live-p buffer)
     (with-current-buffer buffer
       (when (and (null err) (not (herdr-core--valid-send-result-p result)))
@@ -395,7 +404,35 @@ TARGET may be an address or a pinned identity; interactive selection pins it."
                   ((eq (car err) 'herdr-core-request-error) 'rejected)
                   (t 'uncertain))
             buffer-read-only t)
-      (agent-fleet-prompt--render-status))))
+      (agent-fleet-prompt--render-status)
+      ;; Native child frames may report input focus only on their parent.
+      (when (and (null err) (window-live-p window) (eq window (selected-window))
+                 (eq (window-buffer window) buffer) (not (active-minibuffer-window))
+                 (or (not (display-graphic-p (window-frame window)))
+                     (frame-focus-state (window-frame window))
+                     (frame-focus-state (agent-fleet-display-origin-frame (window-frame window)))))
+        (condition-case attach-error
+            (agent-fleet-prompt-attach)
+          ((error quit)
+           (message "Prompt submitted; attach failed: %s" (error-message-string attach-error))))))))
+
+;;;###autoload
+(defun agent-fleet-prompt-attach ()
+  "Open this prompt's pinned agent without submitting or resending its text."
+  (interactive)
+  (unless (and (derived-mode-p 'agent-fleet-prompt-mode) agent-fleet-target)
+    (user-error "Not an Agent Fleet prompt"))
+  (let ((buffer (current-buffer)))
+    (setq agent-fleet-prompt--attach-error nil)
+    (agent-fleet-prompt--render-status)
+    (condition-case err
+        (agent-fleet-attach agent-fleet-target)
+      ((error quit)
+       (when (buffer-live-p buffer)
+         (with-current-buffer buffer
+           (setq agent-fleet-prompt--attach-error err)
+           (agent-fleet-prompt--render-status)))
+       (signal (car err) (cdr err))))))
 
 ;;;###autoload
 (defun agent-fleet-prompt (target &optional initial-text)
@@ -414,20 +451,22 @@ TARGET may be an address or a pinned identity; interactive selection pins it."
     (agent-fleet-present-buffer buffer)))
 
 (defun agent-fleet-prompt-submit ()
-  "Submit this draft once, retaining uncertain outcomes for inspection."
+  "Submit this draft once and attach after Core acknowledges submission.
+Retain failures and uncertain outcomes for inspection without changing views."
   (interactive)
   (unless (eq agent-fleet-operation-state 'draft)
     (user-error "Draft is %s; create a new prompt to send again" agent-fleet-operation-state))
   (let* ((record (agent-fleet-resolve agent-fleet-target t))
          (text (buffer-substring-no-properties (point-min) (point-max)))
-         (buffer (current-buffer)))
+         (buffer (current-buffer))
+         (window (and (eq (window-buffer (selected-window)) buffer) (selected-window))))
     (when (string-empty-p (string-trim text)) (user-error "Empty prompt"))
     (setq agent-fleet-operation-state 'sending buffer-read-only t)
     (agent-fleet-prompt--render-status)
     (condition-case err
         (herdr-core-request-async
          "terminal.send" (list :terminal (plist-get record :address) :text text :force :false)
-         (lambda (result err) (agent-fleet-prompt--finish buffer result err)) 210)
+         (lambda (result err) (agent-fleet-prompt--finish buffer result err window)) 210)
       ((error quit)
        (when (and (buffer-live-p buffer)
                   (eq (buffer-local-value 'agent-fleet-operation-state buffer) 'sending))

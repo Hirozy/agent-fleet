@@ -566,6 +566,81 @@
         ;; Closing a prompt must not make its late callback fail.
         (funcall callback '(:turn 0) nil)))))
 
+(ert-deftest fleet-prompt-acknowledgement-attaches-and-retry-never-resends ()
+  (dolist (fail-first '(nil t))
+    (fleet-test-model (list (fleet-test-agent "t1"))
+      (save-window-excursion
+        (let ((viewer (generate-new-buffer " *prompt-viewer*"))
+              (form (agent-fleet-prompt "t1" "Keep this draft"))
+              callback (sends 0) (attaches 0))
+          (unwind-protect
+              (let ((target agent-fleet-target))
+                (cl-letf (((symbol-function 'herdr-core-request)
+                           (lambda (&rest _) (herdr-core-terminal "t1")))
+                          ((symbol-function 'herdr-core-request-async)
+                           (lambda (_method _params cb &rest _) (cl-incf sends) (setq callback cb)))
+                          ((symbol-function 'display-graphic-p) (lambda (&rest _) nil))
+                          ((symbol-function 'agent-fleet-attach)
+                           (lambda (reference)
+                             (should (equal reference target))
+                             (cl-incf attaches)
+                             (when (and fail-first (= attaches 1)) (user-error "Attach unavailable"))
+                             (agent-fleet-attach--display viewer))))
+                  (call-interactively (key-binding (kbd "C-c C-c")))
+                  (should (eq (current-buffer) form))
+                  (should (= attaches 0))
+                  (funcall callback '(:turn 4) nil)
+                  (should (= attaches 1))
+                  (when fail-first
+                    (should (eq (current-buffer) form))
+                    (should (eq agent-fleet-operation-state 'sent))
+                    (should (equal agent-fleet-operation-result '(:turn 4)))
+                    (should (string-match-p "Attach unavailable"
+                                            (overlay-get agent-fleet-prompt--status-overlay 'before-string)))
+                    (should-error (agent-fleet-prompt-submit) :type 'user-error)
+                    (call-interactively (key-binding (kbd "C-c C-a"))))
+                  (should (eq (window-buffer) viewer))
+                  (should (= sends 1))
+                  (with-current-buffer form
+                    (should (eq agent-fleet-operation-state 'sent))
+                    (should (equal (buffer-string) "Keep this draft"))
+                    (should-not agent-fleet-prompt--attach-error))))
+            (kill-buffer form)
+            (kill-buffer viewer)))))))
+
+(ert-deftest fleet-prompt-no-auto-attach-after-navigation-or-unsuccessful-send ()
+  (dolist (scenario '(buffer window minibuffer unfocused rejected uncertain invalid))
+    (fleet-test-model (list (fleet-test-agent "t1"))
+      (save-window-excursion
+        (let ((form (agent-fleet-prompt "t1" "Draft stays"))
+              (other (generate-new-buffer " *prompt-other*")) callback)
+          (unwind-protect
+              (cl-letf (((symbol-function 'herdr-core-request)
+                         (lambda (&rest _) (herdr-core-terminal "t1")))
+                        ((symbol-function 'herdr-core-request-async)
+                         (lambda (_method _params cb &rest _) (setq callback cb)))
+                        ((symbol-function 'agent-fleet-attach)
+                         (lambda (&rest _) (ert-fail (format "Unexpected attach: %s" scenario))))
+                        ((symbol-function 'display-graphic-p) (lambda (&rest _) (eq scenario 'unfocused)))
+                        ((symbol-function 'frame-focus-state) (lambda (&rest _) nil))
+                        ((symbol-function 'active-minibuffer-window)
+                         (lambda () (and (eq scenario 'minibuffer) (selected-window)))))
+                (agent-fleet-prompt-submit)
+                (pcase scenario
+                  ('buffer (switch-to-buffer other))
+                  ('window (select-window (split-window-below))))
+                (funcall callback (unless (eq scenario 'invalid) '(:turn 1))
+                         (pcase scenario
+                           ('rejected '(herdr-core-request-error :error (:message "blocked")))
+                           ('uncertain '(herdr-core-uncertain :reason timeout))))
+                (with-current-buffer form
+                  (should (equal (buffer-string) "Draft stays"))
+                  (should (eq agent-fleet-operation-state
+                              (pcase scenario ('rejected 'rejected)
+                                     ((or 'uncertain 'invalid) 'uncertain) (_ 'sent))))))
+            (kill-buffer form)
+            (kill-buffer other)))))))
+
 (ert-deftest fleet-prompt-rejection-is-readable-and-retains-structured-error ()
   (with-temp-buffer
     (agent-fleet-prompt-mode)
@@ -580,7 +655,7 @@
       (let ((status (overlay-get agent-fleet-prompt--status-overlay 'before-string)))
         (should (string-match-p "Program is blocked; inspect its question" status))
         (should-not (string-match-p ":code" status)))
-      (should (equal header-line-format "Rejected   C-c C-k close")))))
+      (should (equal header-line-format "Rejected   C-c C-a attach   C-c C-k back")))))
 
 (ert-deftest fleet-prompt-invalid-acknowledgement-is-uncertain ()
   (dolist (response '(nil t (:sent t) (:turn -1) (:turn "1") (:turn 1.5)))
@@ -651,6 +726,24 @@
             (should (window-dedicated-p window)))
         (set-window-dedicated-p window nil)
         (kill-buffer buffer)))))
+
+(ert-deftest fleet-attach-ctrl-g-pins-target-and-never-submits-a-prompt ()
+  (fleet-test-model (list (fleet-test-agent "t1"))
+    (with-temp-buffer
+      (agent-fleet-attach-mode 1)
+      (setq agent-fleet-target (agent-fleet-reference (herdr-core-terminal "t1")))
+      (let (calls)
+        (cl-letf (((symbol-function 'herdr-core-request)
+                   (lambda (method params &rest _) (push (list method params) calls))))
+          (call-interactively (key-binding (kbd "C-c C-g")))
+          (should (equal calls '(("terminal.keys" (:terminal "t1" :keys ["ctrl+g"])))))
+          (setq agent-fleet-observe-p t)
+          (should-error (agent-fleet-attach--ctrl-g) :type 'user-error)
+          (setq agent-fleet-observe-p nil)
+          (puthash "t1" (plist-put (copy-sequence (herdr-core-terminal "t1")) :created_ms 99)
+                   herdr-core--terminals)
+          (should-error (agent-fleet-attach--ctrl-g) :type 'user-error)
+          (should (= 1 (length calls))))))))
 
 (ert-deftest fleet-dashboard-window-returns-through-views-and-preserves-position ()
   (fleet-test-model nil
@@ -1220,7 +1313,8 @@
                     "(unless (keymapp (symbol-function 'agent-fleet-command-map)) (error \"Missing map\"))\n"
                     "(require 'agent-fleet-attach)\n"
                     "(unless (eq (lookup-key agent-fleet-attach-mode-map (kbd \"C-c a\")) agent-fleet-command-map) (error \"Attach map diverged\"))\n"
-                    "(dolist (symbol '(herdr-connect consult-agent-fleet-mode agent-fleet-attach-command-map)) "
+                    "(when (locate-library \"agent-fleet-editor\") (error \"Stale editor bridge library\"))\n"
+                    "(dolist (symbol '(herdr-connect consult-agent-fleet-mode agent-fleet-attach-command-map agent-fleet-editor-bridge-mode)) "
                     "(when (fboundp symbol) (error \"Obsolete autoload: %s\" symbol)))"))
           (should (= 0 (call-process (expand-file-name invocation-name invocation-directory)
                                     nil nil nil "-Q" "--batch" "-L" directory "-l" script))))
