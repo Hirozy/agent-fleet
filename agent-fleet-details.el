@@ -78,6 +78,8 @@
                (not (equal project (plist-get location :checkout))))
       (agent-fleet-details--field "Checkout" (plist-get location :checkout)))
     (agent-fleet-details--section "Relationships and recovery")
+    (agent-fleet-details--field "Role" (if (equal (agent-fleet-label record "fleet.role") "agent")
+                                          "Agent" "Helper"))
     (agent-fleet-details--field "Parent" (or parent "— (independent)"))
     (when parent
       (agent-fleet-details--field "Ends with parent" (if (eq (plist-get record :die_with_parent) t) "Yes" "No")))

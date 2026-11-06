@@ -148,8 +148,13 @@ user Evil bindings can still override them. Use the arrow keys or `C-n`/`C-p`
 to move between rows. In the Dashboard, `C-c a` commands use the current row
 and follow the same return rules as the single-key actions.
 Dashboard keeps commands in the `h` menu; `N` starts through minibuffer prompts.
-The compact table puts agent type, status and terminal address before helper
-metadata. Projects appear once as group headings instead of repeating per row.
+The table shows Agent, Type, Status and ID. The name column uses up to the space
+available in the window, expanding for long names and shrinking in narrow views.
+Truncated names have an ellipsis; hover for the full text or open Details (`I`).
+Type retains room for names such as `claude-code`. Role and parent information
+are in Details; a member with a parent also has a muted relationship annotation.
+Projects appear once as emphasized group headings with visible member counts
+and a muted canonical root path (`~` abbreviates the local home directory).
 The header shows column titles; the mode line shows connection health,
 visible/total counts and active filters. Project filter labels are shortened;
 their full identity remains in heading tooltips, the mode-line tooltip and Details. Empty lists explain
@@ -190,17 +195,21 @@ projects gain enough parent path components to distinguish them. Filtering
 continues to use full canonical identity, never the displayed name. Independent
 clones and nested repositories remain separate Projects.
 
-Subdirectories and linked worktrees get a muted directory annotation beneath
-their agent row. Ordinary project-root rows need no annotation. Full working
-paths remain available in tooltips and Details (`I`); a linked worktree's
-checkout root is also shown in Details. `n` / `p` skips annotations, while
-actions invoked on an annotation still target its agent.
+Subdirectories get a muted relative location such as `./frontend/` beneath
+their agent row. Linked worktrees show `Worktree:` followed by the actual
+working directory, including any subdirectory. Ordinary project-root rows
+need no annotation because the path is already in the heading. Long paths
+retain their trailing components with a leading ellipsis; full paths remain
+available in tooltips and Details (`I`). A heading's path moves to its own line
+when little space remains beside the title. `n` / `p` skips annotations and
+heading paths, while actions on an agent's annotation still target that agent.
 
 Non-project agents stay together under `— No Project`, with their actual
-directory shown beneath each row. Missing or inaccessible directories get an
-explicit warning instead of silently looking like ordinary non-project folders.
-No historical project identity is fabricated for them. Remote paths are never
-resolved against the local filesystem.
+directory shown beneath each row without a redundant label. Missing or
+inaccessible directories get an explicit warning instead of silently looking
+like ordinary non-project folders.
+No historical project identity is fabricated for them. Remote working paths
+are marked `Remote:` and never resolved or home-abbreviated locally.
 
 Local Project discovery is cached by canonical directory and project backend
 for up to 30 seconds, including results with no Project. Events reuse that
@@ -213,7 +222,7 @@ always rediscover the current checkout before starting.
 
 The `Type` column shows the program's reported `status.app`, falling back to
 the launch executable's name (for example, `claude`, `codex` or `pi`). It is
-separate from the `Role` column's agent/helper relationship. Details also shows
+separate from the agent/helper role shown in Details. Details also shows
 whether the type came from a report or the launch command. Unknown types show
 an em dash; wrappers remain their literal command name until an app reports.
 This fallback never supplies or changes reported work status.
