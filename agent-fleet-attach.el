@@ -4,7 +4,6 @@
 ;;; Code:
 (require 'agent-fleet)
 (declare-function ghostel-exec "ghostel" (buffer program &optional args))
-(declare-function agent-fleet-editor-arm-current-attach "agent-fleet-editor" ())
 (defvar ghostel-query-before-killing)
 (defcustom agent-fleet-attach-inhibit-evil-escape t
   "Inhibit Evil escape sequences in agent terminals."
@@ -64,13 +63,11 @@
       (set-window-dedicated-p window dedicated))))
 
 (defun agent-fleet-attach--ctrl-g ()
-  "Route an external editor request when the bridge is enabled."
+  "Send exactly Ctrl-G to the current terminal, without submitting input."
   (interactive)
-  (when agent-fleet-observe-p (user-error "Read-only observer; attach to use the editor bridge"))
-  (if (bound-and-true-p agent-fleet-editor-bridge-mode)
-      (agent-fleet-editor-arm-current-attach)
-    (herdr-core-request "terminal.keys"
-                        (list :terminal (agent-fleet-attach--current-address) :keys ["ctrl+g"]))))
+  (when agent-fleet-observe-p (user-error "Read-only observer; attach to send terminal keys"))
+  (herdr-core-request "terminal.keys"
+                      (list :terminal (agent-fleet-attach--current-address) :keys ["ctrl+g"])))
 
 (defvar agent-fleet-attach-mode-map
   (let ((map (make-sparse-keymap)))
