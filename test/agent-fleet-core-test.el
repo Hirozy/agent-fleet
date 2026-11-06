@@ -1114,6 +1114,17 @@
                   (should (equal opened (if (equal address "t1") (file-name-as-directory root) "/tmp/"))))))))
       (delete-directory root))))
 
+(ert-deftest fleet-interactive-start-uses-the-attach-flow ()
+  (let (opened)
+    (cl-letf (((symbol-function 'agent-fleet-start-minibuffer) (lambda (&optional _) (setq opened 'minibuffer)))
+              ((symbol-function 'agent-fleet-start-form) (lambda () (setq opened 'form)))
+              ((symbol-function 'herdr-core-connect) (lambda () (ert-fail "Unexpected connection outside launch UI")))
+              ((symbol-function 'herdr-core-request-async) (lambda (&rest _) (ert-fail "Dispatched outside launch UI"))))
+      (let ((current-prefix-arg nil)) (call-interactively #'agent-fleet-start))
+      (should (eq opened 'minibuffer))
+      (let ((current-prefix-arg '(4))) (call-interactively #'agent-fleet-start))
+      (should (eq opened 'form)))))
+
 (ert-deftest fleet-minibuffer-launch-cancel-never-dispatches ()
   (dolist (cancel-at '(command directory))
     (fleet-test-model nil
@@ -1169,6 +1180,55 @@
           (agent-fleet-start-minibuffer t)
           (should (equal (plist-get options :name) "review"))
           (should (equal (plist-get options :task) "Check tests")))))))
+
+(ert-deftest fleet-keymaps-share-actions-without-leaking-into-code ()
+  (let ((global-map (make-sparse-keymap)) (previous-global (current-global-map)))
+    (unwind-protect
+        (progn
+          (use-global-map global-map)
+          (define-key global-map (kbd "C-c a") agent-fleet-command-map)
+          (define-key global-map (kbd "s-d") #'agent-fleet)
+          (with-temp-buffer
+            (emacs-lisp-mode)
+            (should (eq (key-binding (kbd "C-c a a")) #'agent-fleet))
+            (should (eq (key-binding (kbd "C-c a P")) #'agent-fleet-prompt-dwim))
+            (dolist (key '("s" "i" "x" "N" "RET"))
+              (should-not (key-binding (kbd (concat "C-c a " key))))))
+          (with-temp-buffer
+            (agent-fleet-mode)
+            (should (eq (key-binding (kbd "C-c a a")) #'agent-fleet))
+            (should (eq (key-binding (kbd "a")) #'agent-fleet-dashboard-attach))
+            (should (eq (key-binding (kbd "RET")) #'agent-fleet-dashboard-attach))
+            (should (equal (plist-get (cdr (transient-get-suffix 'agent-fleet-dashboard-help "a")) :description)
+                           "Attach")))
+          (with-temp-buffer
+            (agent-fleet-attach-mode 1)
+            (dolist (group agent-fleet--action-groups)
+              (dolist (action (cdr group))
+                (should (eq (key-binding (kbd (concat "C-c a " (car action)))) (nth 2 action)))
+                (should (eq (plist-get (cdr (transient-get-suffix 'agent-fleet-dashboard-help (car action))) :command)
+                            (or (nth 3 action) (nth 2 action))))))
+            (should (eq (key-binding (kbd "s-d")) #'agent-fleet))
+            (agent-fleet-attach-mode -1)
+            (should-not (key-binding (kbd "C-c a s"))))
+          (should (eq (plist-get (cdr (transient-get-suffix 'agent-fleet-dashboard-help "n")) :command)
+                      #'agent-fleet-dashboard-next))
+          (should (eq (plist-get (cdr (transient-get-suffix 'agent-fleet-dashboard-help "p")) :command)
+                      #'agent-fleet-dashboard-previous)))
+      (use-global-map previous-global))))
+
+(ert-deftest fleet-dwim-uses-the-view-target-without-selecting-again ()
+  (fleet-test-model (list (fleet-test-agent "t1"))
+    (dolist (view '(terminal dashboard))
+      (with-temp-buffer
+        (let ((reference (agent-fleet-reference (herdr-core-terminal "t1"))) prompted)
+          (if (eq view 'terminal) (setq agent-fleet-target reference)
+            (setq agent-fleet-target-function (lambda () reference)))
+          (cl-letf (((symbol-function 'agent-fleet-project-agents) (lambda (&rest _) (ert-fail "Unneeded Project lookup")))
+                    ((symbol-function 'agent-fleet-read-agent) (lambda (&rest _) (ert-fail "Asked again")))
+                    ((symbol-function 'agent-fleet-prompt) (lambda (target _context) (setq prompted target))))
+            (agent-fleet-prompt-dwim)
+            (should (equal prompted reference))))))))
 
 (ert-deftest fleet-common-commands-resolve-the-dashboard-row-and-attach-target ()
   (fleet-test-model (list (fleet-test-agent "t1"))
@@ -1273,9 +1333,9 @@
             (agent-fleet-dashboard-refresh)
             (agent-fleet-dashboard-refresh)
             (should (equal (buffer-string)
-                           "No Fleet agents in this view. Press N to start an agent, or H to toggle history.\n"))
+                           "No Fleet agents in this view. Press h N to start an agent, or h H to toggle history.\n"))
             (should (string-match-p "Type" (format "%s" header-line-format)))
-            (should (eq (key-binding (kbd "N")) #'agent-fleet-dashboard-start))
+            (should-not (lookup-key agent-fleet-mode-map (kbd "N")))
             (should (eq (key-binding (kbd "h")) #'agent-fleet-dashboard-help))
             (should-not (buffer-modified-p)))
         (kill-buffer buffer)))))
@@ -1297,13 +1357,11 @@
                    (clone (get 'agent-fleet-dashboard-help 'transient--prefix)
                           :scope (plist-get params :scope))))
               (should (equal (agent-fleet-dashboard--target)
-                             (agent-fleet-reference (herdr-core-terminal "t1")))))
-            (dolist (binding '(("a" . agent-fleet-dashboard-attach)
-                               ("s" . agent-fleet-dashboard-prompt)
-                               ("i" . agent-fleet-dashboard-interrupt)
-                               ("x" . agent-fleet-dashboard-kill)
-                               ("N" . agent-fleet-dashboard-start)))
-              (should (eq (key-binding (kbd (car binding))) (cdr binding)))))
+                             (agent-fleet-reference (herdr-core-terminal "t1"))))
+              (agent-fleet-dashboard-previous)
+              (agent-fleet-dashboard-next)
+              (should (equal (agent-fleet-dashboard--target)
+                             (agent-fleet-reference (herdr-core-terminal "t2"))))))
         (kill-buffer buffer)))))
 
 (ert-deftest fleet-dashboard-hiding-or-removing-selected-record-keeps-a-usable-row ()
@@ -1366,7 +1424,7 @@
                     "(autoload-do-load (symbol-function 'agent-fleet-command-map) 'agent-fleet-command-map)\n"
                     "(unless (keymapp (symbol-function 'agent-fleet-command-map)) (error \"Missing map\"))\n"
                     "(require 'agent-fleet-attach)\n"
-                    "(unless (eq (lookup-key agent-fleet-attach-mode-map (kbd \"C-c a\")) agent-fleet-command-map) (error \"Attach map diverged\"))\n"
+                    "(unless (eq (lookup-key agent-fleet-attach-mode-map (kbd \"C-c a\")) agent-fleet-terminal-command-map) (error \"Attach map diverged\"))\n"
                     "(when (locate-library \"agent-fleet-editor\") (error \"Stale editor bridge library\"))\n"
                     "(dolist (symbol '(herdr-connect consult-agent-fleet-mode agent-fleet-attach-command-map agent-fleet-editor-bridge-mode)) "
                     "(when (fboundp symbol) (error \"Obsolete autoload: %s\" symbol)))"))
