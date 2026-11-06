@@ -202,10 +202,10 @@ REDISCOVER, set by interactive refresh, also refreshes Project discovery."
             (insert (propertize
                      (if (or agent-fleet-dashboard--project agent-fleet-dashboard--attention)
                          (concat "No agents match the current filters. "
-                                 (when agent-fleet-dashboard--project "P clears the Project filter. ")
-                                 (when agent-fleet-dashboard--attention "! clears the attention filter. ")
-                                 "H toggles history.\n")
-                       "No Fleet agents in this view. Press N to start an agent, or H to toggle history.\n")
+                                 (when agent-fleet-dashboard--project "h / clears the Project filter. ")
+                                 (when agent-fleet-dashboard--attention "h ! clears the attention filter. ")
+                                 "h H toggles history.\n")
+                       "No Fleet agents in this view. Press h N to start an agent, or h H to toggle history.\n")
                      'face 'shadow))
             (goto-char (point-min)))))
       (set-buffer-modified-p nil)
@@ -308,7 +308,14 @@ With CONFIGURE, also ask for optional launch settings."
     (while (and (not found) (= 0 (forward-line direction)))
       (when (and (tabulated-list-get-id) (not (equal id (tabulated-list-get-id))))
         (setq found (tabulated-list-get-id))))
-    (if found (agent-fleet-dashboard--goto found) (goto-char start))))
+    (if found (agent-fleet-dashboard--goto found) (goto-char start))
+    ;; Only explicit navigation changes a menu's pinned target.  Cache refreshes
+    ;; may move the row but must never redirect the pending user action.
+    (when (and (eq transient-current-command 'agent-fleet-dashboard-help)
+               transient-current-prefix)
+      (oset transient-current-prefix scope
+            (list :target (when-let* ((address (tabulated-list-get-id)))
+                            (agent-fleet-reference (agent-fleet-resolve address))))))))
 
 ;;;###autoload
 (defun agent-fleet-dashboard-next ()
@@ -325,44 +332,38 @@ With CONFIGURE, also ask for optional launch settings."
 ;;;###autoload (autoload 'agent-fleet-dashboard-help "agent-fleet-dashboard" nil t)
 (transient-define-prefix agent-fleet-dashboard-help ()
   "Show commands for the current Dashboard."
-  [["Session"
-    ("N" "New agent" agent-fleet-dashboard-start)
-    ("a" "Attach" agent-fleet-dashboard-attach)
-    ("v" "Observe" agent-fleet-dashboard-observe)
-    ("q" "Return from Dashboard" agent-fleet-dashboard-quit)]
-   ["Agent"
-    ("s" "Prompt" agent-fleet-dashboard-prompt)
-    ("o" "Output" agent-fleet-dashboard-output)
-    ("I" "Details" agent-fleet-dashboard-details)
-    ("i" "Interrupt" agent-fleet-dashboard-interrupt)
-    ("x" "End program" agent-fleet-dashboard-kill)]
-   ["Review / View"
-    ("m" "Magit status" agent-fleet-dashboard-magit)
-    ("d" "Diff" agent-fleet-dashboard-diff)
-    ("c" "Cleanup review" agent-fleet-dashboard-cleanup)
-    ("P" "Project filter" agent-fleet-dashboard-project)
+  :transient-non-suffix 'transient--do-exit
+  [["View"
+    ("n" "Next agent" agent-fleet-dashboard-next :transient t)
+    ("p" "Previous agent" agent-fleet-dashboard-previous :transient t)
+    ("/" "Project filter" agent-fleet-dashboard-project)
     ("!" "Attention filter" agent-fleet-dashboard-attention)
     ("H" "Finished history" agent-fleet-dashboard-history)
-    ("g" "Refresh" agent-fleet-dashboard-refresh)]]
+    ("g" "Refresh" agent-fleet-dashboard-refresh)
+    ("q" "Return from Dashboard" agent-fleet-dashboard-quit)]]
   (interactive)
   (unless (derived-mode-p 'agent-fleet-mode) (user-error "Open Dashboard first"))
   (transient-setup 'agent-fleet-dashboard-help nil nil
                    :scope (list :target (when (tabulated-list-get-id)
                                           (agent-fleet-dashboard--target)))))
 
+(dolist (group (reverse agent-fleet--action-groups))
+  (transient-insert-suffix 'agent-fleet-dashboard-help '(0 0)
+    (vconcat (list (car group))
+             (mapcar (lambda (action)
+                       (list (car action) (or (nth 4 action) (cadr action))
+                             (or (nth 3 action) (nth 2 action))))
+                     (cdr group)))))
+
 (defvar agent-fleet-mode-map
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map tabulated-list-mode-map)
     map))
-;; Reinstall on reload as well: older maps bound navigation keys to actions.
+;; Retire the old action shortcuts when reloading an existing Dashboard.
+(dolist (key '("v" "s" "o" "I" "m" "d" "c" "N" "x" "i" "H" "P" "!"))
+  (define-key agent-fleet-mode-map (kbd key) nil))
 (dolist (pair '(("a" . agent-fleet-dashboard-attach) ("RET" . agent-fleet-dashboard-attach)
-                ("v" . agent-fleet-dashboard-observe) ("s" . agent-fleet-dashboard-prompt)
-                ("o" . agent-fleet-dashboard-output) ("I" . agent-fleet-dashboard-details)
-                ("m" . agent-fleet-dashboard-magit) ("d" . agent-fleet-dashboard-diff)
-                ("c" . agent-fleet-dashboard-cleanup) ("N" . agent-fleet-dashboard-start)
-                ("x" . agent-fleet-dashboard-kill) ("i" . agent-fleet-dashboard-interrupt)
-                ("h" . agent-fleet-dashboard-help) ("H" . agent-fleet-dashboard-history)
-                ("P" . agent-fleet-dashboard-project) ("!" . agent-fleet-dashboard-attention)
+                ("h" . agent-fleet-dashboard-help)
                 ("g" . agent-fleet-dashboard-refresh) ("q" . agent-fleet-dashboard-quit)
                 ("C-g" . agent-fleet-dashboard-quit) ("<escape>" . agent-fleet-dashboard-quit)
                 ("n" . agent-fleet-dashboard-next) ("j" . agent-fleet-dashboard-next)

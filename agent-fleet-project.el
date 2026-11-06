@@ -238,13 +238,16 @@ Fit the note within WIDTH columns when provided."
 
 ;;;###autoload
 (defun agent-fleet-start-for-project ()
-  "Choose a command and start it in the current Project."
+  "Choose a command and start it in the current Project.
+Interactive calls attach after a successful launch."
   (interactive)
   (let ((root (agent-fleet-project-checkout-for-cwd default-directory t)))
     (unless root (user-error "No Project in the current directory"))
     (herdr-core-connect)
-    (agent-fleet-start (agent-fleet--read-command)
-                       :cwd root :display (called-interactively-p 'interactive))))
+    (if (called-interactively-p 'any)
+        (let ((default-directory (file-name-as-directory root)))
+          (agent-fleet-start-minibuffer current-prefix-arg))
+      (agent-fleet-start (agent-fleet--read-command) :cwd root))))
 
 ;;;###autoload
 (defun agent-fleet-prompt-dwim ()
@@ -262,11 +265,13 @@ Fit the note within WIDTH columns when provided."
                    (if (and start (<= (- end start) 4000))
                        (concat "\n" (buffer-substring-no-properties start end) "\n") "")
                    "\n"))
-         (same (agent-fleet-project-agents))
-         (target (if same
-                     (agent-fleet--read-target same "Same-Project agent: ")
-                   (message "No same-Project agent; showing all Fleet agents")
-                   (agent-fleet-read-agent))))
+         (pinned (or agent-fleet-target
+                     (and agent-fleet-target-function (funcall agent-fleet-target-function))))
+         (same (unless pinned (agent-fleet-project-agents)))
+         (target (cond (pinned pinned)
+                       (same (agent-fleet--read-target same "Same-Project agent: "))
+                       (t (message "No same-Project agent; showing all Fleet agents")
+                          (agent-fleet-read-agent)))))
     (let ((record (agent-fleet-resolve target)))
       (when (and file (string-match-p "/" (plist-get record :address)))
         (require 'agent-fleet-remote)

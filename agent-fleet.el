@@ -190,7 +190,7 @@ Use only path text, including for remote commands; never resolve it locally."
       argv)))
 
 (defun agent-fleet--start-interactive ()
-  "Read ordinary start options."
+  "Read command and directory options for worktree and batch launches."
   (herdr-core-connect)
   (require 'agent-fleet-project)
   (if current-prefix-arg (list nil :configure t)
@@ -205,14 +205,20 @@ Use only path text, including for remote commands; never resolve it locally."
                                 labels callback machine)
   "Start agent ARGV in CWD, optionally named NAME.
 TASK is an initial task for a Core template; CONFIGURE opens a start form.
-DISPLAY opens the Dashboard, as interactive calls do.
+DISPLAY opens the Dashboard for programmatic calls.
+Interactive calls use minibuffer prompts and attach after a successful launch;
+a prefix argument opens the advanced form instead.
 LABELS adds string-valued Core labels; Fleet ownership cannot be overridden.
 CALLBACK receives (RECORD ERROR) once the launch request completes.
 MACHINE is a permanent remote Core ID; CWD then names a directory there.
 Return an asynchronous request ID.  An unsent first message never kills
 a successfully started terminal."
-  (interactive (agent-fleet--start-interactive))
-  (if configure (agent-fleet-start-form)
+  (interactive (list nil))
+  (cond
+   ((called-interactively-p 'any)
+    (if current-prefix-arg (agent-fleet-start-form) (agent-fleet-start-minibuffer)))
+   (configure (agent-fleet-start-form))
+   (t
     (herdr-core-connect)
     (unless (and argv (cl-every #'stringp argv)) (user-error "Provide a command"))
     (unless (or machine (and (not (file-remote-p cwd)) (file-directory-p cwd)))
@@ -234,7 +240,7 @@ a successfully started terminal."
                          :no_parent t :wait :false :keep :false :rm :false
                          :labels (plist-put (copy-sequence labels) :fleet.role "agent"))))
       (when remote (setq params (plist-put params :on (plist-get remote :on))))
-      (when (or display (called-interactively-p 'interactive)) (agent-fleet))
+      (when display (agent-fleet))
       (message "Starting %s…" name)
       (herdr-core-request-async
        "terminal.run" params
@@ -248,7 +254,7 @@ a successfully started terminal."
                           (format "; first task NOT sent: %s" (plist-get first :reason)) "")))
            (when (fboundp 'agent-fleet-dashboard-focus)
              (agent-fleet-dashboard-focus (plist-get record :address))))
-         (when callback (funcall callback record err))) 90))))
+         (when callback (funcall callback record err))) 90)))))
 
 ;;;###autoload
 (defun agent-fleet-adopt (target)
@@ -623,23 +629,48 @@ Retain failures and uncertain outcomes for inspection without changing views."
                    (if impact (format " and %s" (mapconcat #'agent-fleet-name impact ", ")) "")))
       (agent-fleet--control-request 'end (agent-fleet-resolve reference t)))))
 
+(defconst agent-fleet--action-groups
+  '(("Session"
+     ("a" "Dashboard" agent-fleet agent-fleet-attach "Attach")
+     ("N" "New agent" agent-fleet-start-minibuffer agent-fleet-dashboard-start)
+     ("J" "New in Project" agent-fleet-start-for-project)
+     ("RET" "Attach" agent-fleet-attach)
+     ("v" "Observe" agent-fleet-observe))
+    ("Agent"
+     ("s" "Prompt" agent-fleet-prompt)
+     ("P" "DWIM prompt" agent-fleet-prompt-dwim)
+     ("o" "Output" agent-fleet-show-output)
+     ("I" "Details" agent-fleet-details)
+     ("i" "Interrupt" agent-fleet-interrupt)
+     ("x" "End program" agent-fleet-kill))
+    ("Tools"
+     ("m" "Magit status" agent-fleet-magit-status)
+     ("d" "Diff" agent-fleet-magit-diff)
+     ("c" "Cleanup review" agent-fleet-cleanup)
+     ("w" "New worktree" agent-fleet-start-worktree)
+     ("b" "Batch launch" agent-fleet-start-batch)
+     ("r" "New remote agent" agent-fleet-start-remote)
+     ("f" "Send file" agent-fleet-send-file)
+     ("+" "Include terminal" agent-fleet-adopt)))
+  "Shared terminal and Dashboard actions.
+Each entry is (KEY LABEL COMMAND [DASHBOARD-COMMAND DASHBOARD-LABEL]).
+Dashboard overrides supply launch defaults and its explicit `a' attach shortcut.")
+
 ;;;###autoload (autoload 'agent-fleet-command-map "agent-fleet" nil t 'keymap)
 (defvar agent-fleet-command-map
   (let ((map (make-sparse-keymap)))
-    (dolist (binding '(("a" . agent-fleet) ("n" . agent-fleet-start)
-                       ("N" . agent-fleet-start-for-project) ("p" . agent-fleet-prompt)
-                       ("P" . agent-fleet-prompt-dwim) ("RET" . agent-fleet-attach)
-                       ("o" . agent-fleet-show-output) ("i" . agent-fleet-details)
-                       ("c" . agent-fleet-cleanup) ("k" . agent-fleet-kill)
-                       ("s" . agent-fleet-interrupt) ("m" . agent-fleet-magit-status)
-                       ("d" . agent-fleet-magit-diff) ("+" . agent-fleet-adopt)))
-      (define-key map (kbd (car binding)) (cdr binding)))
-    (define-key map (kbd "w") #'agent-fleet-start-worktree)
-    (define-key map (kbd "b") #'agent-fleet-start-batch)
-    (define-key map (kbd "v") #'agent-fleet-observe)
-    (define-key map (kbd "r") #'agent-fleet-start-remote)
-    (define-key map (kbd "f") #'agent-fleet-send-file)
-    map))
+    (define-key map (kbd "a") #'agent-fleet)
+    (define-key map (kbd "P") #'agent-fleet-prompt-dwim)
+    map)
+  "Opt-in global prefix: Dashboard and code-context prompt only.")
 (fset 'agent-fleet-command-map agent-fleet-command-map)
+(defvar agent-fleet-terminal-command-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map agent-fleet-command-map)
+    (dolist (group agent-fleet--action-groups)
+      (dolist (action (cdr group))
+        (define-key map (kbd (car action)) (nth 2 action))))
+    map)
+  "Complete buffer-local prefix for attached agents.")
 (provide 'agent-fleet)
 ;;; agent-fleet.el ends here

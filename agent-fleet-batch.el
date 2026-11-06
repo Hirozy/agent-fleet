@@ -12,7 +12,8 @@
     (set-keymap-parent map agent-fleet-review-mode-map)
     (dolist (binding '(("n" . agent-fleet-batch-next) ("p" . agent-fleet-batch-previous)
                        ("RET" . agent-fleet-attach) ("i" . agent-fleet-details)
-                       ("o" . agent-fleet-show-output) ("v" . agent-fleet-observe)))
+                       ("o" . agent-fleet-show-output) ("v" . agent-fleet-observe)
+                       ("s" . agent-fleet-prompt)))
       (define-key map (kbd (car binding)) (cdr binding)))
     (define-key map (kbd "C-c C-c") #'agent-fleet-batch-execute) map))
 (define-derived-mode agent-fleet-batch-mode agent-fleet-review-mode "Fleet Launches"
@@ -69,7 +70,7 @@
         (add-text-properties begin (point) (list 'fleet-batch-entry entry))))
     (setq header-line-format
           (if agent-fleet-batch--submitted
-              "n/p members   RET attach   i details   o output   C-c a p prompt   q close"
+              "n/p members   RET attach   i details   o output   s prompt   q close"
             "n/p members   C-c C-c launch once   q cancel"))
     (goto-char (or (and current-entry
                         (text-property-any (point-min) (point-max) 'fleet-batch-entry current-entry))

@@ -17,8 +17,7 @@
       (agent-fleet-mode)
       (evil-local-mode 1)
       (evil-change-state state)
-      (dolist (key '("a" "RET" "v" "n" "p" "j" "k" "o" "i" "I" "m" "d" "s" "x"
-                     "h" "H" "N" "P" "!" "c" "g" "q" "C-g" "<up>" "<down>"))
+      (dolist (key '("a" "RET" "n" "p" "j" "k" "h" "g" "q" "C-g" "<up>" "<down>"))
         (should (eq (key-binding (kbd key)) (lookup-key agent-fleet-mode-map (kbd key))))))
     (dolist (mode '(agent-fleet-cleanup-mode agent-fleet-batch-mode))
       (with-temp-buffer
@@ -34,7 +33,7 @@
           (should (eq (key-binding (kbd "n")) #'agent-fleet-cleanup-next))
           (should (eq (key-binding (kbd "p")) #'agent-fleet-cleanup-previous)))
         (when (eq mode 'agent-fleet-batch-mode)
-          (dolist (key '("n" "p" "RET" "i" "o" "v"))
+          (dolist (key '("n" "p" "RET" "i" "o" "v" "s"))
             (should (eq (key-binding (kbd key)) (lookup-key agent-fleet-batch-mode-map (kbd key))))))))
     (with-temp-buffer
       (agent-fleet-output-mode)

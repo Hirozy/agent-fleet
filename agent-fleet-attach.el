@@ -71,11 +71,25 @@
 
 (defvar agent-fleet-attach-mode-map
   (let ((map (make-sparse-keymap)))
-    (define-key map (kbd "C-c a") agent-fleet-command-map)
+    (define-key map (kbd "C-c a") agent-fleet-terminal-command-map)
     (define-key map (kbd "C-c C-g") #'agent-fleet-attach--ctrl-g) map))
+(defvar-local agent-fleet-attach--dashboard-key-p nil)
+(defvar agent-fleet-attach--keymaps
+  `((agent-fleet-attach-mode . ,agent-fleet-attach-mode-map)
+    (agent-fleet-attach--dashboard-key-p
+     . ,(let ((map (make-sparse-keymap)))
+          (define-key map (kbd "s-d") #'agent-fleet) map)))
+  "Keep Fleet prefixes and the opted-in Dashboard key above terminal input.")
 (define-minor-mode agent-fleet-attach-mode
   "Agent operations scoped to this attach buffer."
-  :lighter " Fleet")
+  :lighter " Fleet"
+  (setq-local agent-fleet-attach--dashboard-key-p
+              (and agent-fleet-attach-mode
+                   (eq (lookup-key (current-global-map) (kbd "s-d")) #'agent-fleet)))
+  (setq-local emulation-mode-map-alists
+              (delq 'agent-fleet-attach--keymaps (copy-sequence emulation-mode-map-alists)))
+  (when agent-fleet-attach-mode
+    (push 'agent-fleet-attach--keymaps emulation-mode-map-alists)))
 
 ;;;###autoload
 (defun agent-fleet-attach (target)
