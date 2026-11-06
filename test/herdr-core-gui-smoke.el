@@ -48,6 +48,7 @@
                  (record (herdr-core-request
                           "terminal.run"
                           (list :argv ["sh" "-c" "printf 'ready\n'; seq 1 100; sleep 60"] :cwd root
+                                :name "remote-dev-skill-20261105"
                                 :no_parent t :labels '(:fleet.role "agent"))))
                  (address (plist-get record :address)))
             (switch-to-buffer origin-buffer)
@@ -55,6 +56,24 @@
             (agent-fleet)
             (should (equal "Type" (car (aref tabulated-list-format 1))))
             (should (equal "sh" (aref (cadar tabulated-list-entries) 1)))
+            (let ((width (frame-width origin)))
+              (unwind-protect
+                  (progn
+                    (set-frame-width origin 60)
+                    (hc-live-until (lambda () (= agent-fleet-dashboard--layout-width
+                                                (window-body-width))))
+                    (should (or (string-match-p "remote-dev-skill-.*…" (buffer-string))
+                                (cl-loop for pos from (point-min) below (point-max)
+                                         thereis (equal (get-text-property pos 'display) "…"))))
+                    (should (equal (tabulated-list-get-id) address))
+                    (set-frame-width origin 110)
+                    (hc-live-until (lambda () (= agent-fleet-dashboard--layout-width
+                                                (window-body-width))))
+                    (should (string-match-p "remote-dev-skill-20261105" (buffer-string)))
+                    (should (equal (tabulated-list-get-id) address)))
+                (set-frame-width origin width)
+                (sit-for 0.2)))
+            (setq report (concat report "Dashboard columns refit real frame widths without losing row identity.\n"))
             (sit-for 0.2)
             (should (eq (selected-frame) origin))
             (agent-fleet)

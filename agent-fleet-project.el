@@ -189,30 +189,44 @@ Non-Git roots retain their explicit `file-truename' identity."
         (puthash root label labels)))
     labels))
 
-(defun agent-fleet-project--directory-note (record root &optional checkout-label)
+(defun agent-fleet-project--path-label (path &optional width remote)
+  "Display directory PATH within WIDTH columns, keeping its trailing components.
+Keep the full path in a tooltip.  REMOTE paths are never abbreviated locally."
+  (let* ((text (if remote path (abbreviate-file-name path)))
+         (text (if (string-suffix-p "/" text) text (concat text "/"))))
+    (when (and width (> (string-width text) width))
+      (let ((start 0) (remaining (string-width text)))
+        (while (and (< start (length text)) (> remaining (max 0 (1- width))))
+          (setq remaining (- remaining (char-width (aref text start)))
+                start (1+ start)))
+        (setq text (concat "…" (substring text start)))))
+    (propertize text 'face 'shadow 'help-echo path)))
+
+(defun agent-fleet-project--directory-note (record root &optional width)
   "Return meaningful working-directory context for RECORD under ROOT.
 Return nil for the ordinary project root.  Keep full paths in tooltips.
-CHECKOUT-LABEL is a disambiguated short name for a linked worktree."
-  (let ((cwd (plist-get record :cwd)))
-    (unless (string-match-p "/" (plist-get record :address))
-      (let* ((context (agent-fleet-project--context cwd))
-             (directory (plist-get context :directory))
-             (checkout (plist-get context :checkout))
-             (text
-              (pcase (plist-get context :state)
-                ('unavailable (format "Directory unavailable: %s" cwd))
-                ('unknown "Directory not reported")
-                ('remote "Remote directory; not inspected locally")
-                (_ (cond
-                    ((null root) (concat "Directory: " (abbreviate-file-name cwd)))
-                    ((equal root directory) nil)
-                    ((and checkout (not (equal checkout root)))
-                     (concat "Worktree: " (or checkout-label (file-name-nondirectory checkout))
-                             (unless (equal directory checkout)
-                               (concat "  / " (file-relative-name directory (file-name-as-directory checkout))))))
-                    (t (concat "Directory: " (file-relative-name directory (file-name-as-directory root)))))))))
-        (when text (propertize text 'help-echo cwd
-                              'face (if (eq (plist-get context :state) 'unavailable) 'warning 'shadow)))))))
+Fit the note within WIDTH columns when provided."
+  (let* ((cwd (plist-get record :cwd))
+         (remote (or (string-match-p "/" (plist-get record :address))
+                     (and cwd (file-remote-p cwd))))
+         (context (unless remote (agent-fleet-project--context cwd)))
+         (directory (plist-get context :directory))
+         (checkout (plist-get context :checkout))
+         (unavailable (eq (plist-get context :state) 'unavailable))
+         (prefix (cond (remote "Remote: ") (unavailable "Directory unavailable: ")
+                       ((and root checkout (not (equal checkout root))) "Worktree: ")
+                       (t ""))))
+    (cond
+     ((or (not (stringp cwd)) (string-empty-p cwd))
+      (propertize "Directory not reported" 'face 'shadow))
+     ((and (not remote) root (equal root directory)) nil)
+     (t
+      (let* ((path (if (and (not remote) root directory (string-empty-p prefix))
+                       (concat "./" (file-relative-name directory (file-name-as-directory root)))
+                     cwd))
+             (text (concat prefix (agent-fleet-project--path-label
+                                   path (and width (max 1 (- width (length prefix)))) remote))))
+        (propertize text 'help-echo cwd 'face (if unavailable 'warning 'shadow)))))))
 
 (defun agent-fleet-project-agents (&optional root)
   "Return live members in canonical Project ROOT, defaulting to the current one."
