@@ -202,10 +202,10 @@ REDISCOVER, set by interactive refresh, also refreshes Project discovery."
             (insert (propertize
                      (if (or agent-fleet-dashboard--project agent-fleet-dashboard--attention)
                          (concat "No agents match the current filters. "
-                                 (when agent-fleet-dashboard--project "h / clears the Project filter. ")
-                                 (when agent-fleet-dashboard--attention "h ! clears the attention filter. ")
-                                 "h H toggles history.\n")
-                       "No Fleet agents in this view. Press h N to start an agent, or h H to toggle history.\n")
+                                 (when agent-fleet-dashboard--project "/ clears the Project filter. ")
+                                 (when agent-fleet-dashboard--attention "! clears the attention filter. ")
+                                 "H toggles history.\n")
+                       "No Fleet agents in this view. Press N to start an agent, or H to toggle history.\n")
                      'face 'shadow))
             (goto-char (point-min)))))
       (set-buffer-modified-p nil)
@@ -359,9 +359,13 @@ With CONFIGURE, also ask for optional launch settings."
   (let ((map (make-sparse-keymap)))
     (set-keymap-parent map tabulated-list-mode-map)
     map))
-;; Retire the old action shortcuts when reloading an existing Dashboard.
-(dolist (key '("v" "s" "o" "I" "m" "d" "c" "N" "x" "i" "H" "P" "!"))
-  (define-key agent-fleet-mode-map (kbd key) nil))
+;; Direct actions and the menu share the same definitions and target semantics.
+(dolist (group agent-fleet--action-groups)
+  (dolist (action (cdr group))
+    (define-key agent-fleet-mode-map (kbd (car action)) (or (nth 3 action) (nth 2 action)))))
+(dolist (pair '(("/" . agent-fleet-dashboard-project) ("!" . agent-fleet-dashboard-attention)
+                ("H" . agent-fleet-dashboard-history)))
+  (define-key agent-fleet-mode-map (kbd (car pair)) (cdr pair)))
 (dolist (pair '(("a" . agent-fleet-dashboard-attach) ("RET" . agent-fleet-dashboard-attach)
                 ("h" . agent-fleet-dashboard-help)
                 ("g" . agent-fleet-dashboard-refresh) ("q" . agent-fleet-dashboard-quit)

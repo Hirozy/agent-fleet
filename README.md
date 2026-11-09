@@ -83,9 +83,9 @@ as `t7`. For example, `.emacs.d` becomes `emacs-d`; a directory with no usable
 characters falls back to `agent`. Conflict suffixes stay within Core's 32-character
 limit. Explicit names are checked by Core and its rejection is preserved.
 
-Dashboard's `h N`, or terminal `C-c a N`, starts entirely through the minibuffer: choose a command or
+Dashboard's `N` (also available in `h`), or terminal `C-c a N`, starts entirely through the minibuffer: choose a command or
 template, confirm the working directory, then launch and attach. Both prompts
-offer defaults, so `h N RET RET` repeats the last command in the Dashboard context.
+offer defaults, so `N RET RET` repeats the last command in the Dashboard context.
 The name is generated automatically. Dashboard uses the selected local agent's
 working directory, falling back to the directory from which Dashboard was opened.
 Remote directories are never resolved locally. `C-g` at any prompt starts nothing.
@@ -117,7 +117,7 @@ Uncertain results remain locked; inspect Dashboard before starting again.
 `agent-fleet-start-for-project` starts at the current checkout's project root.
 Inside a linked worktree it stays in that worktree, never switching to the
 primary checkout used for Project grouping. The ordinary start command defaults
-to the current buffer's working directory; Dashboard `h N` retains the selected
+to the current buffer's working directory; Dashboard `N` retains the selected
 agent's exact working directory, including subdirectories.
 
 ```elisp
@@ -150,14 +150,14 @@ Run `M-x agent-fleet` or `C-c a a`.
 Dashboard and review bindings also work with optional Evil enabled. Fleet's
 bindings take precedence over Evil's default bindings in these views; explicit
 user Evil bindings can still override them. Use the arrow keys or `C-n`/`C-p`
-to move between rows. Dashboard actions live in the `h` Transient menu.
+to move between rows. Dashboard actions work directly and in the `h` Transient menu.
 Its action keys match the terminal's `C-c a` suffixes, except `a`: Dashboard
 uses it to attach, while `C-c a a` always opens Dashboard. Both interfaces are
 generated from the same action definitions. Code buffers retain only the global Dashboard/DWIM entry
 points; prompt buffers retain their local submit, attach and return keys.
 The table shows Agent, Type, Status and ID. The name column uses up to the space
 available in the window, expanding for long names and shrinking in narrow views.
-Truncated names have an ellipsis; hover for the full text or open Details (`h I`).
+Truncated names have an ellipsis; hover for the full text or open Details (`I`).
 Type retains room for names such as `claude-code`. Role and parent information
 are in Details; a member with a parent also has a muted relationship annotation.
 Projects appear once as emphasized group headings with visible member counts
@@ -185,11 +185,12 @@ selection moves to a remaining row instead of an empty line.
 | w / b / r | Start in a worktree / batch / remote machine |
 | f / + | Send a file / include a terminal |
 
-Dashboard directly binds `h` (menu), `a/RET` (attach), `n/p`, `j/k`, arrows and
+All action keys in the table work directly in Dashboard, including `I` for
+Details and `N` for a new agent. Dashboard also binds `h` (menu), `n/p`, `j/k`, arrows and
 `C-n/C-p` (agent navigation), `g` (refresh), and `q/C-g/Escape` (return).
 Within the menu, `n/p` also navigate and keep the menu open. Only explicit
 navigation updates the pinned menu target; background events cannot redirect
-an action. Dashboard-only menu keys are `/` (Project filter), `!` (attention),
+an action. Dashboard-only keys (directly and in the menu) are `/` (Project filter), `!` (attention),
 `H` (history), `g` (refresh) and `q` (return). Project filtering moved from `P`
 to `/` so `P` always means DWIM. Terminal `n/p` suffixes are unbound.
 
@@ -218,7 +219,7 @@ their agent row. Linked worktrees show `Worktree:` followed by the actual
 working directory, including any subdirectory. Ordinary project-root rows
 need no annotation because the path is already in the heading. Long paths
 retain their trailing components with a leading ellipsis; full paths remain
-available in tooltips and Details (`h I`). A heading's path moves to its own line
+available in tooltips and Details (`I`). A heading's path moves to its own line
 when little space remains beside the title. `n` / `p` skips annotations and
 heading paths, while actions on an agent's annotation still target that agent.
 
@@ -245,7 +246,7 @@ whether the type came from a report or the launch command. Unknown types show
 an em dash; wrappers remain their literal command name until an app reports.
 This fallback never supplies or changes reported work status.
 
-Details (`h I` in Dashboard) groups runtime and reported work status, program/location,
+Details (`I` in Dashboard) groups runtime and reported work status, program/location,
 relationships and recovery, and labels into readable sections. Each agent has
 its own view, pinned to its full identity. `g` refreshes that snapshot while
 preserving point; a failed refresh keeps the last successful record visible.
@@ -261,7 +262,11 @@ selected or attached agent without another picker. It never saves files automati
 Unsaved text can differ from the file on disk; review the draft before sending.
 
 Prompt buffers use `C-c C-c` to submit once and enter the agent's terminal after
-Core acknowledges submission. `C-c C-a` opens that agent directly without
+Core acknowledges submission. If that agent already has an interactive viewer
+in another window of the same frame, Fleet selects that window and restores
+the prompt's preceding buffer, point and scrolling. Code and terminal windows
+keep their layout and terminal dimensions. Hidden viewers use the current
+window as before. `C-c C-a` follows the same rule without
 sending text; `C-c C-k` returns to the preceding view. Automatic attachment only
 happens while the submitting window still shows the prompt and has focus; it
 does not interrupt another window, application or active minibuffer. If attaching
@@ -296,18 +301,8 @@ are reused separately. In an observer, `q` closes the observer client and return
 to the preceding buffer and position; the agent and any interactive attach
 client keep running. Ordinary interactive attach still sends `q` to the program.
 Core ignores observer input and resize; explicit Fleet
-commands such as Prompt remain available. The external-editor key is disabled
-in an observer. Its own viewport may crop/wrap output when its size differs
+commands such as Prompt remain available. Its own viewport may crop/wrap output when its size differs
 from the agent's PTY; it does not take over the agent's dimensions.
-
-In attach, `C-c C-g` sends exactly Ctrl-G through Core, without Enter. The CLI
-decides what that key does. For CLIs that use it to edit their current prompt,
-configure their external editor to use `emacsclient --create-frame` connected
-to your Emacs server (start it with `M-x server-start`; use `--socket-name` for
-a named server). Do not use `--no-wait`: the CLI must wait for editing to finish.
-Use Emacs's `C-x #` (`server-edit`) to save and finish editing, then review the
-returned draft in the CLI before submitting according to that CLI's behavior.
-A separate editor frame leaves the attach window's size intact.
 
 Fleet does not route server requests, manage external-editor frames or configure
 `EDITOR` / `VISUAL`. Configure the editor where the agent actually runs; changing
