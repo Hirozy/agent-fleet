@@ -503,6 +503,8 @@ Retain failures and uncertain outcomes for inspection without changing views."
   "Summarize ACTION's RESULT for RECORD, or return nil for an invalid reply."
   (when (listp result)
     (pcase action
+      ('rename
+       (format "Renamed to %s" (agent-fleet-name result)))
       ('end
        (when (and (herdr-core--valid-terminal-p result)
                   (equal (plist-get result :address) (plist-get record :address))
@@ -604,6 +606,40 @@ Retain failures and uncertain outcomes for inspection without changing views."
     (agent-fleet-present-buffer buffer)))
 
 ;;;###autoload
+(defun agent-fleet-rename (target &optional name)
+  "Set TARGET's persistent Fleet display NAME through Core labels.
+Interactively read NAME in the minibuffer.  Core's terminal name and ID
+are unchanged.  Revalidate the pinned identity after reading input."
+  (interactive (list (agent-fleet-current-target t)))
+  (let* ((record (agent-fleet-resolve target))
+         (reference (agent-fleet-reference record))
+         (name (string-trim
+                (or name (read-string
+                          (format "Rename %s [%s]: " (agent-fleet-name record)
+                                  (plist-get record :address))
+                          (agent-fleet-name record))))))
+    (when (or (string-empty-p name) (string-match-p "[[:cntrl:]]" name))
+      (user-error "Use a non-empty, single-line name without control characters"))
+    (setq record (agent-fleet-resolve reference t))
+    (if (equal name (agent-fleet-name record))
+        (message "Name unchanged: %s" name)
+      (condition-case err
+          (let ((result (herdr-core-request
+                         "terminal.label"
+                         (list :terminal (plist-get record :address)
+                               :labels (list :fleet.name name)))))
+            (unless (and (herdr-core--valid-terminal-p result)
+                         (equal (herdr-core-identity result)
+                                (plist-get reference :fleet-identity))
+                         (equal (agent-fleet-label result "fleet.name") name))
+              (signal 'herdr-core-uncertain
+                      (list :reason 'invalid-rename-response :response result)))
+            (agent-fleet--control-finish 'rename record reference result nil))
+        ((error quit)
+         (agent-fleet--control-finish 'rename record reference nil err)
+         (signal (car err) (cdr err)))))))
+
+;;;###autoload
 (defun agent-fleet-wait (target)
   "Wait asynchronously for TARGET, reporting Core's actual reason."
   (interactive (list (agent-fleet-current-target)))
@@ -658,6 +694,7 @@ Retain failures and uncertain outcomes for inspection without changing views."
      ("P" "DWIM prompt" agent-fleet-prompt-dwim)
      ("o" "Output" agent-fleet-show-output)
      ("I" "Details" agent-fleet-details)
+     ("R" "Rename" agent-fleet-rename)
      ("i" "Interrupt" agent-fleet-interrupt)
      ("x" "End program" agent-fleet-kill))
     ("Tools"

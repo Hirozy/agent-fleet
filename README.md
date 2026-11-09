@@ -179,6 +179,7 @@ selection moves to a remaining row instead of an empty line.
 | P | DWIM prompt |
 | o | Read an output snapshot |
 | I | Identity, state and parent details |
+| R | Rename the agent's Fleet display name |
 | m / d | Magit status / working-tree diff |
 | i / x | Interrupt / explicitly end a program |
 | c | Review finished-history cleanup |
@@ -192,6 +193,13 @@ navigation updates the pinned menu target; background events cannot redirect
 an action. Dashboard-only keys (directly and in the menu) are `/` (Project filter), `!` (attention),
 `H` (history), `g` (refresh) and `q` (return). Project filtering moved from `P`
 to `/` so `P` always means DWIM. Terminal `n/p` suffixes are unbound.
+
+Renaming uses a minibuffer prefilled with the current display name; `RET` saves
+and `C-g` cancels. Names may contain spaces and Unicode, but cannot be blank or
+contain control characters. Core persists the display name as `fleet.name`;
+the original Core terminal name, ID and attached session remain unchanged.
+Dashboard refreshes from Core events and keeps the renamed agent selected.
+The same action is available through `h R` and terminal `C-c a R`.
 
 Existing terminal bindings change from `n` to `N` for a new agent, `N` to `J`
 for Project launch, `p` to `s` for prompt, `i` to `I` for Details, `s` to `i`

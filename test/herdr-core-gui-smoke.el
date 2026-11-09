@@ -74,6 +74,20 @@
                 (set-frame-width origin width)
                 (sit-for 0.2)))
             (setq report (concat report "Dashboard columns refit real frame widths without losing row identity.\n"))
+            ;; The isolated fixture suppresses consumer hooks; restore the
+            ;; production Dashboard subscription for this interaction.
+            (let ((herdr-core-changed-hook '(agent-fleet-dashboard-refresh))
+                  (minibuffer-setup-hook
+                   (list (lambda ()
+                           (delete-minibuffer-contents)
+                           (insert "GUI renamed agent")
+                           (setq unread-command-events (list ?\r))))))
+              (call-interactively (key-binding (kbd "R")))
+              (hc-live-until
+               (lambda () (equal (agent-fleet-name (herdr-core-terminal address)) "GUI renamed agent"))))
+            (should (equal (tabulated-list-get-id) address))
+            (should (string-match-p "GUI renamed agent" (buffer-string)))
+            (setq report (concat report "Dashboard R renames through the minibuffer and retains the selected terminal.\n"))
             (sit-for 0.2)
             (should (eq (selected-frame) origin))
             (agent-fleet)
