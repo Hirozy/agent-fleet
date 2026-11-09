@@ -2,7 +2,7 @@
 ;;; Commentary:
 ;; This buffer records launch outcomes, not an independent agent lifecycle.
 ;;; Code:
-(require 'agent-fleet-worktree)
+(require 'agent-fleet-project)
 (defvar-local agent-fleet-batch--entries nil)
 (defvar-local agent-fleet-batch--core nil)
 (defvar-local agent-fleet-batch--id nil)
@@ -38,7 +38,7 @@
     (erase-buffer)
     (insert (propertize "Agent launches\n\n" 'face 'bold))
     (insert (if agent-fleet-batch--submitted
-                "Requested once. Started programs and created checkouts are retained.\n\n"
+                "Requested once. Started programs are retained.\n\n"
               "C-c C-c launches these members once. q closes without launching.\n\n"))
     (insert (mapconcat
              (lambda (state)
@@ -59,12 +59,6 @@
         (when-let* ((task (plist-get spec :task)))
           (insert (propertize "  Initial task:\n" 'face 'font-lock-keyword-face)
                   (replace-regexp-in-string "^" "    " task) "\n"))
-        (when-let* ((worktree (plist-get spec :worktree)))
-          (insert (format "  New worktree: %s   branch: %s   base: %s\n"
-                          (plist-get worktree :directory) (plist-get worktree :branch)
-                          (or (plist-get worktree :base) "HEAD"))))
-        (when-let* ((checkout (plist-get entry :checkout)))
-          (insert (format "  Checkout retained: %s\n" checkout)))
         (when-let* ((detail (plist-get entry :detail))) (insert (format "  %s\n" detail)))
         (insert "\n")
         (add-text-properties begin (point) (list 'fleet-batch-entry entry))))
@@ -124,28 +118,25 @@
   (let* ((current-prefix-arg nil)
          (start (agent-fleet--start-interactive))
          (argv (car start)) (cwd (plist-get (cdr start) :cwd))
-         (count (read-number "Number of agents: " 2))
-         (worktrees (y-or-n-p "Create a separate Git worktree for each agent? ")) specs)
+         (count (read-number "Number of agents: " 2)) specs)
     (unless (and (integerp count) (> count 0) (<= count 100))
       (user-error "Choose between 1 and 100 agents"))
     (dotimes (i count)
-      (push (if worktrees
-                (list :argv argv :cwd cwd
-                      :worktree (list :branch (read-string (format "Agent %d new branch: " (1+ i)))
-                                      :directory (read-directory-name "New worktree directory: " cwd nil nil)))
-              (list :argv argv :cwd (read-directory-name
-                                     (format "Agent %d directory: " (1+ i)) cwd nil t))) specs))
+      (push (list :argv argv :cwd (read-directory-name
+                                   (format "Agent %d directory: " (1+ i)) cwd nil t)) specs))
     (list (nreverse specs))))
 
 ;;;###autoload
 (defun agent-fleet-start-batch (specs)
   "Review SPECS before launching with C-c C-c.
-Each spec has :argv, :cwd and optional :name, :task and :worktree.
-A :worktree plist has :directory, :branch and optional :base; :cwd is its
-source repository.  Core labels group members; there is no Task lifecycle."
+Each spec has :argv, an existing :cwd and optional :name and :task.
+Manage worktrees in Magit or Git before launching.  Core labels group
+members; there is no Task lifecycle."
   (interactive (agent-fleet-batch--interactive))
   (herdr-core-connect)
   (unless specs (user-error "Provide at least one launch"))
+  (when (cl-some (lambda (spec) (plist-member spec :worktree)) specs)
+    (user-error "Create worktrees in Magit or Git, then pass their existing directories as :cwd"))
   (let ((buffer (generate-new-buffer "*Fleet Launches*"))
         (id (substring (md5 (format "%s-%s-%s" (herdr-core-id) (float-time) (random))) 0 12)))
     (with-current-buffer buffer
@@ -157,7 +148,7 @@ source repository.  Core labels group members; there is no Task lifecycle."
                      collect (list :spec (plist-put (copy-tree spec) :name
                                                      (or (plist-get spec :name)
                                                          (format "batch-%s-%d" id i)))
-                                   :state 'pending :detail nil :record nil :error nil :checkout nil)))
+                                   :state 'pending :detail nil :record nil :error nil)))
       (agent-fleet-batch--render))
     (agent-fleet-present-buffer buffer)))
 
@@ -185,13 +176,6 @@ source repository.  Core labels group members; there is no Task lifecycle."
                     (unless (and (eq herdr-core--state 'connected) (equal core (herdr-core-id)))
                       (setq stop t)
                       (error "Connection changed; launch not dispatched"))
-                    (when-let* ((wt (plist-get spec :worktree)))
-                      (let ((options (agent-fleet-worktree-prepare
-                                      cwd (plist-get wt :directory) (plist-get wt :branch)
-                                      (plist-get wt :base))))
-                        (setq cwd (plist-get options :cwd)
-                              labels (append labels (plist-get options :labels)))
-                        (setf (plist-get entry :checkout) cwd)))
                     (setf (plist-get entry :state) 'starting)
                     (setq dispatching t)
                     (agent-fleet-start

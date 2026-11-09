@@ -182,7 +182,7 @@ selection moves to a remaining row instead of an empty line.
 | m / d | Magit status / working-tree diff |
 | i / x | Interrupt / explicitly end a program |
 | c | Review finished-history cleanup |
-| w / b / r | Start in a worktree / batch / remote machine |
+| b / r | Start a batch / remote agent |
 | f / + | Send a file / include a terminal |
 
 All action keys in the table work directly in Dashboard, including `I` for
@@ -318,20 +318,19 @@ made by the agent. Status also lists untracked files.
 
 ## Worktrees and batch launch
 
-`C-c a w` / `agent-fleet-start-worktree` asks for a command, source repository,
-new branch and new directory. It creates a local Git worktree, records the exact
-starting commit as `fleet.review-base`, and starts the agent there. Existing
-destinations and branches are not overwritten. The worktree and branch remain
-even if startup fails. Remove them explicitly through Git or Magit after review;
-Fleet cleanup never deletes them.
+Manage worktrees and branches through Magit or Git. Fleet does not create or
+remove them. Use New agent (`N`) to select an existing worktree directory, or
+start from a buffer in that checkout with `agent-fleet-start-for-project`.
+Agents in the primary checkout and its linked worktrees share one Project,
+including when the repository is a submodule. Each agent retains its actual
+working directory for attachment context, path display and Magit review.
 
 ```elisp
-(agent-fleet-start-worktree '("claude") "/code/repo" "/code/worker" "feature/x"
-                            :base "HEAD")
+(agent-fleet-start '("claude") :cwd "/code/worker")
 ```
 
-`C-c a b` / `agent-fleet-start-batch` collects a command and member directories,
-optionally creating a new worktree for each member. A review buffer lists the
+`C-c a b` / `agent-fleet-start-batch` collects a command and existing member
+directories, which can be worktrees prepared in Magit. A review buffer lists the
 launches. `C-c C-c` requests them once; the same buffer retains each member's
 started, failed or uncertain result. Closing the report does not cancel launches
 already requested. Successful members are preserved when another fails. An
@@ -340,15 +339,14 @@ The review includes each initial task and starts on the first member. Use `n` /
 `p` to move by member; asynchronous replies keep the current member selected.
 For an acknowledged launch, `RET` attaches, `i` opens Details, `o` opens output,
 and `s` composes a prompt. All actions use that member's original identity.
-Results include counts, readable errors and retained checkout paths. Original
+Results include counts, readable errors and each member's working directory. Original
 records and structured errors remain attached to each entry. Interruption or an
 uncertain outcome stops launches that have not yet been dispatched; previously
 dispatched requests still complete, and their later acknowledgements remain visible.
 
 ```elisp
 (agent-fleet-start-batch
- '((:argv ("claude") :cwd "/code/repo"
-    :worktree (:directory "/code/worker-a" :branch "feature/a"))
+ '((:argv ("claude") :cwd "/code/worker-a")
    (:argv ("codex") :cwd "/code/other")))
 ```
 

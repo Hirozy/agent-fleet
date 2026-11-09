@@ -2,6 +2,45 @@
 (require 'agent-fleet-launch-test)
 (require 'agent-fleet-details)
 
+(ert-deftest fleet-project-submodule-worktrees-share-one-dashboard-group ()
+  (fleet-test-git
+    (let* ((super (expand-file-name "super" dir))
+           (module (expand-file-name "lib/module" super))
+           (other (expand-file-name "other-worker" dir))
+           (nested (expand-file-name "src" other))
+           (first (fleet-test-agent "t1")) (second (fleet-test-agent "t2"))
+           (third (fleet-test-agent "t3")))
+      (make-directory super)
+      (fleet-test-git-command super "init" "-q")
+      (fleet-test-git-command super "-c" "protocol.file.allow=always"
+                              "submodule" "add" "--" repo "lib/module")
+      (fleet-test-git-command module "worktree" "add" "-b" "worker" wt)
+      (fleet-test-git-command module "worktree" "add" "-b" "other" other)
+      (make-directory nested)
+      (setf (plist-get first :cwd) module
+            (plist-get second :cwd) wt
+            (plist-get third :cwd) nested)
+      (dolist (agent-fleet-project-backend '(project projectile))
+        (let ((agent-fleet-project--cache (make-hash-table :test 'equal)))
+          (cl-letf (((symbol-function 'agent-fleet-project--backend-root-for-cwd)
+                     (lambda (_) (ert-fail "Git worktrees must not need a project backend"))))
+            (dolist (record (list first second third))
+              (should (equal (agent-fleet-project-for-agent record) (file-truename module))))
+            (should (equal (agent-fleet-project-checkout-for-cwd nested) (file-truename other)))
+            (fleet-test-model (list first second third)
+              (let ((buffer (get-buffer-create "*Agent Fleet*")))
+                (unwind-protect
+                    (with-current-buffer buffer
+                      (agent-fleet-mode)
+                      (agent-fleet-dashboard-refresh)
+                      (should (string-match-p "module · 3 agents" (buffer-string)))
+                      (should (string-match-p "Worktree:" (buffer-string)))
+                      (setq agent-fleet-dashboard--project (file-truename module))
+                      (agent-fleet-dashboard-refresh)
+                      (should (equal (sort (mapcar #'car tabulated-list-entries) #'string<)
+                                     '("t1" "t2" "t3"))))
+                  (kill-buffer buffer))))))))))
+
 (ert-deftest fleet-project-subdirs-worktrees-and-nested-repos ()
   (fleet-test-git
     (let ((frontend (expand-file-name "frontend" repo))
@@ -10,8 +49,8 @@
       (make-directory frontend)
       (make-directory backend)
       (make-directory nested)
-      (agent-fleet-worktree-prepare repo wt "worker")
-      (agent-fleet-worktree--git nested "init" "-q")
+      (fleet-test-git-command repo "worktree" "add" "-b" "worker" wt)
+      (fleet-test-git-command nested "init" "-q")
       (dolist (path (list frontend backend wt))
         (should (equal (agent-fleet-project-root-for-cwd path) (file-truename repo))))
       (should (equal (agent-fleet-project-root-for-cwd nested) (file-truename nested)))
@@ -19,7 +58,7 @@
 
 (ert-deftest fleet-project-launch-stays-in-linked-checkout ()
   (fleet-test-git
-    (agent-fleet-worktree-prepare repo wt "worker")
+    (fleet-test-git-command repo "worktree" "add" "-b" "worker" wt)
     (let ((subdir (expand-file-name "frontend" wt)) launched prompted)
       (make-directory subdir)
       (let ((default-directory (file-name-as-directory subdir)))
@@ -72,7 +111,7 @@
     (unwind-protect
         (progn
           (should-not (agent-fleet-project-root-for-cwd dir))
-          (agent-fleet-worktree--git dir "init" "-q")
+          (fleet-test-git-command dir "init" "-q")
           (should-not (agent-fleet-project-root-for-cwd dir))
           (should (equal (agent-fleet-project-checkout-for-cwd dir t) (file-truename dir)))
           (should (equal (agent-fleet-project-root-for-cwd dir) (file-truename dir))))
@@ -126,7 +165,7 @@
 
 (ert-deftest fleet-project-dashboard-context-and-navigation ()
   (fleet-test-git
-    (agent-fleet-worktree-prepare repo wt "worker")
+    (fleet-test-git-command repo "worktree" "add" "-b" "worker" wt)
     (let* ((front (expand-file-name "frontend" repo))
            (first (fleet-test-agent "t1")) (second (fleet-test-agent "t2"))
            (buffer (get-buffer-create "*Agent Fleet*"))

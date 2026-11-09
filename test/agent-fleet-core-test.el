@@ -1209,6 +1209,10 @@
           (should (equal (plist-get options :task) "Check tests")))))))
 
 (ert-deftest fleet-keymaps-share-actions-without-leaking-into-code ()
+  (should-not (fboundp 'agent-fleet-start-worktree))
+  (should-not (lookup-key agent-fleet-terminal-command-map (kbd "w")))
+  (should-not (lookup-key agent-fleet-mode-map (kbd "w")))
+  (should-error (transient-get-suffix 'agent-fleet-dashboard-help "w"))
   (let ((global-map (make-sparse-keymap)) (previous-global (current-global-map)))
     (unwind-protect
         (progn
@@ -1448,7 +1452,7 @@
                     "(dolist (command '(agent-fleet agent-fleet-start agent-fleet-start-for-project "
                     "agent-fleet-start-form agent-fleet-adopt agent-fleet-prompt "
                     "agent-fleet-show-output agent-fleet-attach agent-fleet-cleanup "
-                    "agent-fleet-start-worktree agent-fleet-start-batch agent-fleet-observe "
+                    "agent-fleet-start-batch agent-fleet-observe "
                     "agent-fleet-start-remote agent-fleet-send-file "
                     "agent-fleet-magit-status agent-fleet-details agent-fleet-dashboard-help "
                     "agent-fleet-dashboard-next agent-fleet-dashboard-previous herdr-core-connect)) "

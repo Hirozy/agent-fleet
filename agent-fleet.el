@@ -33,7 +33,6 @@
 (autoload 'agent-fleet-magit-diff "agent-fleet-magit" nil t)
 (autoload 'agent-fleet-start-form "agent-fleet-start" nil t)
 (autoload 'agent-fleet-start-minibuffer "agent-fleet-start" nil t)
-(autoload 'agent-fleet-start-worktree "agent-fleet-worktree" nil t)
 (autoload 'agent-fleet-start-batch "agent-fleet-batch" nil t)
 (autoload 'agent-fleet-observe "agent-fleet-attach" nil t)
 (autoload 'agent-fleet-details "agent-fleet-details" nil t)
@@ -191,7 +190,7 @@ Use only path text, including for remote commands; never resolve it locally."
       argv)))
 
 (defun agent-fleet--start-interactive ()
-  "Read command and directory options for worktree and batch launches."
+  "Read command and directory options for batch launches."
   (herdr-core-connect)
   (require 'agent-fleet-project)
   (if current-prefix-arg (list nil :configure t)
@@ -657,7 +656,6 @@ Retain failures and uncertain outcomes for inspection without changing views."
      ("m" "Magit status" agent-fleet-magit-status)
      ("d" "Diff" agent-fleet-magit-diff)
      ("c" "Cleanup review" agent-fleet-cleanup)
-     ("w" "New worktree" agent-fleet-start-worktree)
      ("b" "Batch launch" agent-fleet-start-batch)
      ("r" "New remote agent" agent-fleet-start-remote)
      ("f" "Send file" agent-fleet-send-file)
