@@ -33,7 +33,6 @@
 (autoload 'agent-fleet-magit-diff "agent-fleet-magit" nil t)
 (autoload 'agent-fleet-start-form "agent-fleet-start" nil t)
 (autoload 'agent-fleet-start-minibuffer "agent-fleet-start" nil t)
-(autoload 'agent-fleet-start-batch "agent-fleet-batch" nil t)
 (autoload 'agent-fleet-observe "agent-fleet-attach" nil t)
 (autoload 'agent-fleet-details "agent-fleet-details" nil t)
 (autoload 'agent-fleet-start-remote "agent-fleet-remote" nil t)
@@ -188,17 +187,6 @@ Use only path text, including for remote commands; never resolve it locally."
       (unless argv (user-error "Provide a command"))
       (setq agent-fleet--last-command choice)
       argv)))
-
-(defun agent-fleet--start-interactive ()
-  "Read command and directory options for batch launches."
-  (herdr-core-connect)
-  (require 'agent-fleet-project)
-  (if current-prefix-arg (list nil :configure t)
-    (let* ((argv (agent-fleet--read-command))
-           (cwd (read-directory-name "Working directory: "
-                                     (or (agent-fleet-project-checkout-for-cwd default-directory)
-                                         default-directory) nil t)))
-      (list argv :cwd cwd))))
 
 ;;;###autoload
 (cl-defun agent-fleet-start (argv &key (cwd default-directory) name task configure display
@@ -656,7 +644,6 @@ Retain failures and uncertain outcomes for inspection without changing views."
      ("m" "Magit status" agent-fleet-magit-status)
      ("d" "Diff" agent-fleet-magit-diff)
      ("c" "Cleanup review" agent-fleet-cleanup)
-     ("b" "Batch launch" agent-fleet-start-batch)
      ("r" "New remote agent" agent-fleet-start-remote)
      ("f" "Send file" agent-fleet-send-file)
      ("+" "Include terminal" agent-fleet-adopt)))

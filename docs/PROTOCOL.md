@@ -126,8 +126,7 @@ client identity checks cannot atomically prevent concurrent route rebinding.
 Local worktrees are managed outside Fleet with Git or Magit. Fleet discovers
 their shared Project from Git metadata, including submodule core.worktree
 configuration, while preserving each agent's actual checkout and cwd.
-Batch members use existing directories and carry fleet.batch but remain
-independent Core roots. Cleanup neither deletes worktrees nor kills batch members.
+Cleanup neither deletes worktrees nor ends programs.
 
 Observe delegates framing and input/resize isolation to the pinned hc CLI.
 The real GUI check opens interactive and observe viewers concurrently, sends
