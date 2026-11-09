@@ -182,7 +182,7 @@ selection moves to a remaining row instead of an empty line.
 | m / d | Magit status / working-tree diff |
 | i / x | Interrupt / explicitly end a program |
 | c | Review finished-history cleanup |
-| b / r | Start a batch / remote agent |
+| r | Start a remote agent |
 | f / + | Send a file / include a terminal |
 
 All action keys in the table work directly in Dashboard, including `I` for
@@ -316,7 +316,7 @@ Magit opens the agent's actual local checkout. When Fleet recorded a review
 base, the diff includes tracked changes since that commit, including commits
 made by the agent. Status also lists untracked files.
 
-## Worktrees and batch launch
+## Existing worktrees
 
 Manage worktrees and branches through Magit or Git. Fleet does not create or
 remove them. Use New agent (`N`) to select an existing worktree directory, or
@@ -328,30 +328,6 @@ working directory for attachment context, path display and Magit review.
 ```elisp
 (agent-fleet-start '("claude") :cwd "/code/worker")
 ```
-
-`C-c a b` / `agent-fleet-start-batch` collects a command and existing member
-directories, which can be worktrees prepared in Magit. A review buffer lists the
-launches. `C-c C-c` requests them once; the same buffer retains each member's
-started, failed or uncertain result. Closing the report does not cancel launches
-already requested. Successful members are preserved when another fails. An
-uncertain launch is not retried; inspect the Dashboard before starting again.
-The review includes each initial task and starts on the first member. Use `n` /
-`p` to move by member; asynchronous replies keep the current member selected.
-For an acknowledged launch, `RET` attaches, `i` opens Details, `o` opens output,
-and `s` composes a prompt. All actions use that member's original identity.
-Results include counts, readable errors and each member's working directory. Original
-records and structured errors remain attached to each entry. Interruption or an
-uncertain outcome stops launches that have not yet been dispatched; previously
-dispatched requests still complete, and their later acknowledgements remain visible.
-
-```elisp
-(agent-fleet-start-batch
- '((:argv ("claude") :cwd "/code/worker-a")
-   (:argv ("codex") :cwd "/code/other")))
-```
-
-Members carry a shared `fleet.batch` label visible in Details. The report tracks
-launch acknowledgements only; program and work status continue to come from Core.
 
 ## Remote agents and context
 
