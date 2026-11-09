@@ -149,7 +149,8 @@ until the caller can close it after successful attachment."
                 (setq-local header-line-format "Read-only observer · q back / detach · agent keeps running")
                 (setq-local emulation-mode-map-alists
                             (cons 'agent-fleet-observe--keymaps emulation-mode-map-alists)))
-              (when (and (not (string-match-p "/" address))
+              (when (and (stringp (plist-get record :cwd))
+                         (not (file-remote-p (plist-get record :cwd)))
                          (file-directory-p (plist-get record :cwd)))
                 (setq default-directory (file-name-as-directory (plist-get record :cwd))))
               (setq-local evil-escape-inhibit agent-fleet-attach-inhibit-evil-escape)

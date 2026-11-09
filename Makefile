@@ -1,6 +1,6 @@
 EMACS ?= emacs
 LOAD_PATH = -L . -L test
-SOURCES = herdr-core.el agent-fleet.el agent-fleet-display.el agent-fleet-project.el agent-fleet-start.el agent-fleet-remote.el agent-fleet-attach.el agent-fleet-dashboard.el agent-fleet-details.el agent-fleet-cleanup.el agent-fleet-magit.el consult-agent-fleet.el
+SOURCES = herdr-core.el agent-fleet.el agent-fleet-display.el agent-fleet-project.el agent-fleet-start.el agent-fleet-attach.el agent-fleet-dashboard.el agent-fleet-details.el agent-fleet-cleanup.el agent-fleet-magit.el consult-agent-fleet.el
 TESTS = test/agent-fleet-test-git.el test/herdr-core-test.el test/agent-fleet-core-test.el test/agent-fleet-launch-test.el test/agent-fleet-project-test.el test/agent-fleet-display-test.el
 GUI_LOAD_PATH ?=
 OPTIONAL_LOAD_PATH ?=

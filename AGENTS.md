@@ -2,7 +2,7 @@
 
 ## Scope
 
-Agent Fleet brings herdr-core coding agents into Emacs. Core owns programs,
+Agent Fleet brings local herdr-core coding agents into Emacs. Core owns programs,
 PTYs and status; Fleet owns Emacs interaction, attention and code review.
 Read README.md for behavior and docs/PROTOCOL.md for the verified contract.
 Follow the user's scope.
@@ -26,7 +26,8 @@ Write Markdown in English.
   pin operations and buffers. Preserve structured errors and partial outcomes.
 - Parent relationships come from Core; do not maintain a Fleet Task lifecycle.
 - Project is a canonical codebase identity. Unify linked Git worktrees and
-  retain absent Projects. Never interpret a remote path on the local machine.
+  retain absent Projects. Reject routed terminal operations and exclude remote
+  records from selection and cleanup. Never resolve remote paths locally.
 - Git/Magit owns worktree creation and removal. Fleet starts agents in existing
   directories and groups linked worktrees under the same Project.
 

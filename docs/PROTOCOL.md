@@ -35,11 +35,10 @@ cancel server execution.
 Terminal records retain raw fields. Important fields include address,
 created_ms, state, status, cwd, labels, parent, die_with_parent, first_message
 and exit information. Addresses are scoped to a Core; UI references also pin
-the persistent gateway Core id and creation timestamp. For routed terminals,
-the address component is (remote permanent Core id, terminal id). `machine.list`
-resolves the current route before an operation; it must be connected. Renaming
-a route preserves identity, replacing its machine does not. Identity creation
-may query machines and must not run inside the event process filter.
+the persistent Core id and creation timestamp. Only local terminal addresses
+can be pinned or operated on. Routed records may arrive in Core snapshots and
+events, but Fleet excludes them from Dashboard, adoption and cleanup. Legacy
+routed identities are rejected rather than reinterpreted as local addresses.
 
 Runtime state is live or finished. Reported work status can be absent or any
 program-provided word. done is not finished. A kept terminal lost during
@@ -72,8 +71,6 @@ event state.
 | Output snapshot | terminal.read |
 | Attach | hc attach subprocess |
 | Observe | hc attach --observe subprocess |
-| Remote launch | terminal.run, on=current route for pinned machine ID |
-| Remote Git review | machine.exec, literal argv and cwd, decoded base64 output |
 | Transfer context file | terminal.put, base64 bytes, acknowledged artifact path |
 
 Initial template tasks are appended to the template argv. Inspect first_message:
@@ -114,14 +111,6 @@ source and installed binary, without starting an interactive session.
 See [provider status setup](PROVIDERS.md) for configuration and validation limits.
 Fleet does not install hooks, claim status support from a command name, or
 silently use output quietness as readiness/completion.
-
-Remote addresses are present in the subscription snapshot and events. Renaming
-a machine removes old addresses and adds the new routes. Remote Git discovery
-uses machine.exec; remote paths never enter local Git/file APIs. Fleet records
-fleet.machine, fleet.project, fleet.checkout-root and fleet.review-base labels
-at launch. Explicit path mappings associate remote codebases with local Projects.
-Routed RPCs accept a mutable route name, not a permanent-ID precondition;
-client identity checks cannot atomically prevent concurrent route rebinding.
 
 Local worktrees are managed outside Fleet with Git or Magit. Fleet discovers
 their shared Project from Git metadata, including submodule core.worktree

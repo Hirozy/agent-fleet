@@ -1,6 +1,6 @@
 # Agent Fleet
 
-Agent Fleet brings herdr-core coding agents into Emacs. Core owns terminals,
+Agent Fleet brings local herdr-core coding agents into Emacs. Core owns terminals,
 processes and reported status. Emacs provides launch, prompts, attention,
 terminal attachment, code review and finished-history cleanup.
 
@@ -88,7 +88,7 @@ template, confirm the working directory, then launch and attach. Both prompts
 offer defaults, so `N RET RET` repeats the last command in the Dashboard context.
 The name is generated automatically. Dashboard uses the selected local agent's
 working directory, falling back to the directory from which Dashboard was opened.
-Remote directories are never resolved locally. `C-g` at any prompt starts nothing.
+Only existing local directories are accepted. `C-g` at any prompt starts nothing.
 Using a prefix argument with `N` additionally asks for an optional name, an initial task when a template
 was selected, and whether to attach or stay in the background. No form buffer
 opens. A pending launch prevents accidental duplicate submission from that view.
@@ -182,7 +182,6 @@ selection moves to a remaining row instead of an empty line.
 | m / d | Magit status / working-tree diff |
 | i / x | Interrupt / explicitly end a program |
 | c | Review finished-history cleanup |
-| r | Start a remote agent |
 | f / + | Send a file / include a terminal |
 
 All action keys in the table work directly in Dashboard, including `I` for
@@ -227,8 +226,8 @@ Non-project agents stay together under `— No Project`, with their actual
 directory shown beneath each row without a redundant label. Missing or
 inaccessible directories get an explicit warning instead of silently looking
 like ordinary non-project folders.
-No historical project identity is fabricated for them. Remote working paths
-are marked `Remote:` and never resolved or home-abbreviated locally.
+No historical project identity is fabricated for them. Routed remote terminals
+are excluded from Dashboard, selection and cleanup; direct operations reject them.
 
 Local Project discovery is cached by canonical directory and project backend
 for up to 30 seconds, including results with no Project. Events reuse that
@@ -329,45 +328,16 @@ working directory for attachment context, path display and Magit review.
 (agent-fleet-start '("claude") :cwd "/code/worker")
 ```
 
-## Remote agents and context
+## Local file attachments
 
-Configure machines through `hc machine add`; Fleet does not manage machine
-provisioning. `C-c a r` / `agent-fleet-start-remote` chooses a connected machine,
-remote command or template, and absolute POSIX cwd. Git on the remote machine
-discovers the Project and review base; a non-Git directory remains a valid cwd
-without a Project. Remote template arguments can include an initial task.
-
-References pin the machine's permanent Core ID, terminal ID and creation time.
-Route names can change without redirecting a pinned operation to a different
-machine. Offline or replaced machines fail closed. Identity checks precede RPCs;
-Core 0.1.17 does not offer an atomic identity precondition on routed mutations,
-so avoid concurrently rebinding machine routes while issuing operations.
-
-Remote Projects are separate by default. Explicitly associate one with a local
-codebase for same-Project selection and context path mapping:
-
-```elisp
-(setq agent-fleet-remote-projects
-      '((:machine "PERMANENT-CORE-ID"
-         :remote "/srv/code/repo" :local "/Users/me/code/repo")))
-```
-
-Find the permanent ID with `hc machine ls --json`. This mapping does not sync
-files. Prompt context maps relative paths into the agent's actual remote
-checkout, including linked worktrees. Without a mapping the draft explicitly
-identifies a local reference. Externally adopted agents have no inferred remote
-Project metadata; their Project stays absent until explicitly supplied.
-
-`C-c a f` / `agent-fleet-send-file` transfers a local file of at most 8 MiB through
-`terminal.put`, then opens an unsent prompt containing the acknowledged remote
+`C-c a f` / `agent-fleet-send-file` attaches a local file of at most 8 MiB through
+`terminal.put`, then opens an unsent prompt containing the acknowledged artifact
 path. It writes a Core-owned artifact, not a checkout file. Submit explicitly
 with `C-c C-c`; history removal also removes these artifacts.
 
-For remote targets, the status/diff commands show a read-only status and tracked
-diff snapshot via `machine.exec`, without requiring Magit or interpreting remote
-paths locally. The recorded review base includes agent commits; untracked files
-are listed without reading their contents. Timed-out or truncated responses are
-reported as incomplete failures. There is no automatic repository synchronization.
+Fleet supports local terminals only. Remote creation, machine management,
+remote Project mapping and remote code review are not supported. Use Core's
+own tools for remote sessions. Include terminal only lists local Core terminals.
 
 ## End programs and clean history
 
@@ -418,9 +388,7 @@ There is no automatic retry and no worktree cleanup.
 - `make test`: strict byte compilation and isolated ERT, including terminal-key
   dispatch, lifecycle safety and presentation regressions.
 - `make test-live`: fresh temporary Core session/config/state; validates events,
-  reconnect, history removal, parent/child termination, and a second Core reached
-  through a local relay for remote launch, context transfer, review and rename.
-  This tests real Core routing but does not test SSH authentication or a WAN.
+  reconnect, history removal, parent/child termination and local file attachments.
   Set `FLEET_TEST_HC`
   when hc is outside PATH.
 - `make test-optional OPTIONAL_LOAD_PATH='-L /path/to/evil -L /path/to/goto-chg'`:

@@ -35,9 +35,6 @@
 (autoload 'agent-fleet-start-minibuffer "agent-fleet-start" nil t)
 (autoload 'agent-fleet-observe "agent-fleet-attach" nil t)
 (autoload 'agent-fleet-details "agent-fleet-details" nil t)
-(autoload 'agent-fleet-start-remote "agent-fleet-remote" nil t)
-(autoload 'agent-fleet-send-file "agent-fleet-remote" nil t)
-(declare-function agent-fleet-remote-start-options "agent-fleet-remote" (machine cwd))
 (declare-function evil-make-overriding-map "evil-core" (keymap &optional state copy))
 
 (defun agent-fleet-protect-keymap (map)
@@ -60,7 +57,7 @@
 (defun agent-fleet-managed-p (terminal &optional seen)
   "Return whether TERMINAL belongs to Fleet, following parents through SEEN."
   (let ((address (plist-get terminal :address)))
-    (unless (member address seen)
+    (when (and (herdr-core-local-address-p address) (not (member address seen)))
       (or (equal (agent-fleet-label terminal "fleet.role") "agent")
           (when-let* ((parent (herdr-core-terminal (plist-get terminal :parent))))
             (agent-fleet-managed-p parent (cons address seen)))))))
@@ -84,7 +81,7 @@
 (defun agent-fleet-type (terminal)
   "Return TERMINAL's reported app or launch executable name.
 This does not infer work status.
-Use only path text, including for remote commands; never resolve it locally."
+Use only path text; do not inspect the executable on disk."
   (let ((app (plist-get (plist-get terminal :status) :app))
         (command (car (append (plist-get terminal :argv) nil))))
     (cond ((and (stringp app) (not (string-blank-p app))) app)
@@ -102,6 +99,8 @@ Use only path text, including for remote commands; never resolve it locally."
   (let* ((identity (and (listp target) (plist-get target :fleet-identity)))
          (address (if identity (herdr-core-identity-address identity) target))
          (cached (and (stringp address) (herdr-core-terminal address))))
+    (unless (herdr-core-local-address-p address)
+      (user-error "Fleet supports local terminals only"))
     (unless cached (user-error "Terminal unavailable: %s" address))
     (when (and identity (not (equal identity (herdr-core-identity cached))))
       (user-error "Terminal identity changed; reopen this view"))
@@ -124,7 +123,8 @@ Use only path text, including for remote commands; never resolve it locally."
                             (agent-fleet-name r) (plist-get r :address)
                             (plist-get r :state) (agent-fleet-status r)
                             (if (plist-get pinned :error) " (unavailable)" ""))
-                    pinned))) records)))
+                    pinned)))
+          (cl-remove-if-not (lambda (r) (herdr-core-local-address-p (plist-get r :address))) records))))
     (unless choices (user-error "No terminals available"))
     (let ((selected (cdr (assoc (completing-read prompt choices nil t) choices))))
       (unless selected (user-error "Select a terminal"))
@@ -144,11 +144,11 @@ Use only path text, including for remote commands; never resolve it locally."
       (and agent-fleet-target-function (funcall agent-fleet-target-function))
       (agent-fleet-read-agent nil all)))
 
-(defun agent-fleet--name (cwd &optional remote)
+(defun agent-fleet--name (cwd)
   "Generate a Core-compatible unique name from CWD."
   (require 'agent-fleet-project)
   (let* ((case-fold-search nil)
-         (root (or (and (not remote) (agent-fleet-project-root-for-cwd cwd)) cwd))
+         (root (or (agent-fleet-project-root-for-cwd cwd) cwd))
          (base (replace-regexp-in-string
                 "[^a-z0-9_-]+" "-"
                 (downcase (file-name-nondirectory (directory-file-name root)))))
@@ -157,7 +157,9 @@ Use only path text, including for remote commands; never resolve it locally."
          ;; Guard after truncation, which can itself leave an ID-shaped name.
          (base (if (string-match-p "\\`t[0-9][a-z0-9]*\\'" base)
                    (concat "agent-" (substring base 0 (min 18 (length base)))) base))
-         (names (mapcar (lambda (r) (plist-get r :name)) (herdr-core-terminals)))
+         (names (cl-loop for r in (herdr-core-terminals)
+                         when (herdr-core-local-address-p (plist-get r :address))
+                         collect (plist-get r :name)))
          (name base) (n 1))
     (while (member name names)
       (let ((suffix (format "-%d" (cl-incf n))))
@@ -190,7 +192,7 @@ Use only path text, including for remote commands; never resolve it locally."
 
 ;;;###autoload
 (cl-defun agent-fleet-start (argv &key (cwd default-directory) name task configure display
-                                labels callback machine)
+                                labels callback)
   "Start agent ARGV in CWD, optionally named NAME.
 TASK is an initial task for a Core template; CONFIGURE opens a start form.
 DISPLAY opens the Dashboard for programmatic calls.
@@ -198,7 +200,6 @@ Interactive calls use minibuffer prompts and attach after a successful launch;
 a prefix argument opens the advanced form instead.
 LABELS adds string-valued Core labels; Fleet ownership cannot be overridden.
 CALLBACK receives (RECORD ERROR) once the launch request completes.
-MACHINE is a permanent remote Core ID; CWD then names a directory there.
 Return an asynchronous request ID.  An unsent first message never kills
 a successfully started terminal."
   (interactive (list nil))
@@ -209,25 +210,18 @@ a successfully started terminal."
    (t
     (herdr-core-connect)
     (unless (and argv (cl-every #'stringp argv)) (user-error "Provide a command"))
-    (unless (or machine (and (not (file-remote-p cwd)) (file-directory-p cwd)))
+    (unless (and (not (file-remote-p cwd)) (file-directory-p cwd))
       (user-error "Select an existing local working directory"))
-    (when (and task machine)
-      (user-error "Remote template tasks must be explicit template argv"))
     (when (and task
                (not (member (car argv)
                             (mapcar (lambda (r) (plist-get r :name))
                                     (plist-get (herdr-core-request "templates.list") :templates)))))
       (user-error "Initial task requires a Core template"))
-    (let* ((remote (when machine
-                     (require 'agent-fleet-remote)
-                     (agent-fleet-remote-start-options machine cwd)))
-           (cwd (if machine cwd (file-truename cwd)))
-           (name (or name (agent-fleet--name (or (plist-get remote :name-base) cwd) machine)))
-           (labels (append (plist-get remote :labels) labels))
+    (let* ((cwd (file-truename cwd))
+           (name (or name (agent-fleet--name cwd)))
            (params (list :argv (vconcat argv (and task (list task))) :cwd cwd :name name
                          :no_parent t :wait :false :keep :false :rm :false
                          :labels (plist-put (copy-sequence labels) :fleet.role "agent"))))
-      (when remote (setq params (plist-put params :on (plist-get remote :on))))
       (when display (agent-fleet))
       (message "Starting %s…" name)
       (herdr-core-request-async
@@ -254,6 +248,32 @@ TARGET may be an address or a pinned identity; interactive selection pins it."
   (let ((record (agent-fleet-resolve target t)))
     (herdr-core-request "terminal.label"
                        (list :terminal (plist-get record :address) :labels '(:fleet.role "agent")))))
+
+;;;###autoload
+(defun agent-fleet-send-file (target file)
+  "Attach local FILE to live TARGET and open an unsent prompt with its path.
+The Core artifact is removed with its terminal history; no checkout is written."
+  (interactive (list (agent-fleet-current-target) (read-file-name "Send file: " nil nil t)))
+  (let* ((record (agent-fleet-resolve target t))
+         (reference (agent-fleet-reference record)) data bytes)
+    (unless (equal (plist-get record :state) "live") (user-error "Choose a live agent"))
+    (unless (and (not (file-remote-p file)) (file-regular-p file)
+                 (<= (file-attribute-size (file-attributes file)) (* 8 1024 1024)))
+      (user-error "Choose a local regular file of at most 8 MiB"))
+    (with-temp-buffer
+      (set-buffer-multibyte nil)
+      (insert-file-contents-literally file nil 0 (1+ (* 8 1024 1024)))
+      (when (> (buffer-size) (* 8 1024 1024)) (user-error "File grew beyond 8 MiB"))
+      (setq bytes (buffer-size) data (base64-encode-string (buffer-string) t)))
+    (setq record (agent-fleet-resolve reference t))
+    (let* ((result (herdr-core-request "terminal.put"
+                                     (list :terminal (plist-get record :address)
+                                           :name (file-name-nondirectory file) :data data)))
+           (path (plist-get result :path)))
+      (unless (and (stringp path) (not (string-empty-p path))
+                   (equal bytes (plist-get result :bytes)))
+        (signal 'herdr-core-uncertain '(:reason invalid-file-acknowledgement)))
+      (agent-fleet-prompt reference (format "Attached file: %s\n\n" path)))))
 
 (defun agent-fleet-present-buffer (buffer &optional retain-origin)
   "Present BUFFER without resizing an attached terminal.
@@ -644,7 +664,6 @@ Retain failures and uncertain outcomes for inspection without changing views."
      ("m" "Magit status" agent-fleet-magit-status)
      ("d" "Diff" agent-fleet-magit-diff)
      ("c" "Cleanup review" agent-fleet-cleanup)
-     ("r" "New remote agent" agent-fleet-start-remote)
      ("f" "Send file" agent-fleet-send-file)
      ("+" "Include terminal" agent-fleet-adopt)))
   "Shared terminal and Dashboard actions.

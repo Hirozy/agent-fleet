@@ -30,14 +30,13 @@ or completion behavior for a real model turn.
 (agent-fleet-start '("pi") :cwd "/path/to/repo" :display t)
 ```
 
-Alternatively use `C-c a n`. These commands must be available on the machine
+Alternatively use `C-c a N`. These commands must be available on the machine
 where Core starts the process. Fleet offers command names, not provider
 installation, authentication, or automatic hook configuration.
 
 Use the interactive CLI, with stdout attached to the Core PTY. Print/JSON/RPC
 modes and wrappers that redirect stdout are different interfaces and are not
-covered by this setup. A remote launch needs the provider and any template on
-the remote machine; a local installation does not configure its remote copy.
+covered by this setup. Fleet starts local agents only.
 
 ## Claude Code
 
@@ -116,7 +115,7 @@ templates automatically. See the
 
    `reported` records whether status has been reported; `status` is the current
    root record and can be absent. Read `status.state`, `status.app`, and any
-   `status.kind` as the provider reported them. Use `machine/t7` for remote agents.
+   `status.kind` as the provider reported them.
 3. If no status appears, attach and inspect setup/authentication or command
    failure. Check the actual provider version and launch command on that machine.
    An installed executable or a configured template alone does not prove status
