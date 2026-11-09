@@ -28,6 +28,71 @@
     (should (= (length (agent-fleet-agents)) 1))
     (should (equal (agent-fleet-status (car (agent-fleet-agents))) "unreported"))))
 
+(ert-deftest fleet-rename-persists-only-the-display-label ()
+  (fleet-test-model (list (fleet-test-agent "t1"))
+    (let* ((record (herdr-core-terminal "t1"))
+           (reference (agent-fleet-reference record))
+           (agent-fleet--control-results nil) calls)
+      (cl-letf (((symbol-function 'herdr-core-request)
+                 (lambda (method params &rest _)
+                   (push (list method params) calls)
+                   (if (equal method "terminal.get") record
+                     (let ((result (copy-tree record)))
+                       (setf (plist-get result :labels)
+                             '(:fleet.role "agent" :fleet.name "代码 Review"))
+                       result)))))
+        (agent-fleet-rename reference " 代码 Review ")
+        (should (equal (car calls)
+                       '("terminal.label" (:terminal "t1" :labels (:fleet.name "代码 Review")))))
+        (should (= (length calls) 2))
+        ;; Only events update the cache, not the mutation response.
+        (should-not (agent-fleet-label (herdr-core-terminal "t1") "fleet.name"))
+        (should-not (plist-get (car agent-fleet--control-results) :error))
+        (herdr-core--event '(:seq 2 :type "labels" :terminal "t1"
+                            :data (:labels (:fleet.role "agent" :fleet.name "代码 Review"))))
+        (should (equal (agent-fleet-name (agent-fleet-resolve reference)) "代码 Review"))))))
+
+(ert-deftest fleet-rename-cancel-invalid-and-unchanged-do-not-mutate ()
+  (fleet-test-model (list (fleet-test-agent "t1"))
+    (cl-letf (((symbol-function 'herdr-core-request)
+               (lambda (method &rest _)
+                 (should (equal method "terminal.get"))
+                 (herdr-core-terminal "t1"))))
+      (dolist (name '("" "   " "a\nb" "a\tb"))
+        (should-error (agent-fleet-rename "t1" name) :type 'user-error))
+      (agent-fleet-rename "t1" (agent-fleet-name (herdr-core-terminal "t1")))
+      (cl-letf (((symbol-function 'read-string) (lambda (&rest _) (signal 'quit nil))))
+        (should (eq (condition-case nil (agent-fleet-rename "t1") (quit 'cancelled))
+                    'cancelled))))))
+
+(ert-deftest fleet-rename-revalidates-identity-after-minibuffer ()
+  (fleet-test-model (list (fleet-test-agent "t1"))
+    (cl-letf (((symbol-function 'read-string)
+               (lambda (&rest _)
+                 (setf (plist-get (gethash "t1" herdr-core--terminals) :created_ms) 99)
+                 "new name"))
+              ((symbol-function 'herdr-core-request)
+               (lambda (&rest _) (ert-fail "No request for replaced terminal"))))
+      (should-error (agent-fleet-rename "t1") :type 'user-error))))
+
+(ert-deftest fleet-rename-errors-retain-diagnostics-without-retry ()
+  (dolist (failure '((herdr-core-request-error :error (:code -32602 :message "rejected"))
+                     (herdr-core-uncertain :reason disconnected)
+                     malformed))
+    (fleet-test-model (list (fleet-test-agent "t1"))
+      (let ((agent-fleet--control-results nil) (mutations 0))
+        (cl-letf (((symbol-function 'herdr-core-request)
+                   (lambda (method &rest _)
+                     (if (equal method "terminal.get") (herdr-core-terminal "t1")
+                       (cl-incf mutations)
+                       (if (eq failure 'malformed) '(:name "unexpected")
+                         (signal (car failure) (cdr failure)))))))
+          (should-error (agent-fleet-rename "t1" "new name")
+                        :type (if (eq failure 'malformed) 'herdr-core-uncertain (car failure)))
+          (should (= mutations 1))
+          (should (plist-get (car agent-fleet--control-results) :error))
+          (should-not (agent-fleet-label (herdr-core-terminal "t1") "fleet.name")))))))
+
 (ert-deftest fleet-type-prefers-reported-app-without-inventing-status ()
   (dolist (case '(((:argv ["/opt/bin/claude"]) . "claude")
                   ((:argv ("codex" "--model" "x")) . "codex")
@@ -1442,7 +1507,7 @@
           (with-temp-file script
             (insert "(load \"agent-fleet-autoloads\")\n"
                     "(dolist (command '(agent-fleet agent-fleet-start agent-fleet-start-for-project "
-                    "agent-fleet-start-form agent-fleet-adopt agent-fleet-prompt "
+                    "agent-fleet-start-form agent-fleet-adopt agent-fleet-rename agent-fleet-prompt "
                     "agent-fleet-show-output agent-fleet-attach agent-fleet-cleanup "
                     "agent-fleet-observe "
                     "agent-fleet-send-file "

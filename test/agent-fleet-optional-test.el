@@ -17,7 +17,7 @@
       (evil-local-mode 1)
       (evil-change-state state)
       (dolist (key '("a" "RET" "n" "p" "j" "k" "h" "g" "q" "C-g" "<up>" "<down>"
-                     "I" "s" "o" "v" "N" "P" "i" "x" "m" "d" "c" "H" "/" "!"))
+                     "I" "R" "s" "o" "v" "N" "P" "i" "x" "m" "d" "c" "H" "/" "!"))
         (should (eq (key-binding (kbd key)) (lookup-key agent-fleet-mode-map (kbd key))))))
     (with-temp-buffer
       (agent-fleet-cleanup-mode)

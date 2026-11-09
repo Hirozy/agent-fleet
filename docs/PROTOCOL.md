@@ -61,6 +61,7 @@ event state.
 | Start root agent | terminal.run, no_parent=true, keep=false, rm=false |
 | Templates | templates.list |
 | Explicitly include external agent | terminal.label, fleet.role=agent |
+| Rename Fleet display name | terminal.label, fleet.name; original Core name unchanged |
 | Fresh terminal query | terminal.get |
 | Inventory including finished | terminal.list, all=true |
 | Submit prompt | terminal.send, force=false |

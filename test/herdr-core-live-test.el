@@ -67,6 +67,27 @@
         (should (eq (plist-get (car agent-fleet-cleanup--items) :status) 'removed)))
       (hc-live-until (lambda () (not (herdr-core-terminal address)))))))
 
+(ert-deftest hc-live-rename-persists-and-preserves-terminal-identity ()
+  (hc-live-isolated
+    (let* ((record (herdr-core-request "terminal.run"
+                    '(:argv ["sh" "-c" "sleep 60"] :name "original"
+                      :no_parent t :labels (:fleet.role "agent"))))
+           (address (plist-get record :address))
+           (reference (agent-fleet-reference record))
+           (agent-fleet--control-results nil))
+      (hc-live-until (lambda () (herdr-core-terminal address)))
+      (agent-fleet-rename reference "代码 Review")
+      (hc-live-until (lambda () (equal (agent-fleet-name (herdr-core-terminal address)) "代码 Review")))
+      (should-not (plist-get (car agent-fleet--control-results) :error))
+      (herdr-core-disconnect)
+      (herdr-core-connect)
+      (let ((renamed (agent-fleet-resolve reference t)))
+        (should (equal (agent-fleet-name renamed) "代码 Review"))
+        (should (equal (plist-get renamed :name) "original"))
+        (should (equal (plist-get renamed :pid) (plist-get record :pid)))
+        (should (equal (plist-get renamed :state) "live"))
+        (should (agent-fleet-managed-p renamed))))))
+
 (ert-deftest hc-live-rm-rejects-live-and-kill-cascades-only-dependent-child ()
   (hc-live-isolated
     (let* ((parent (herdr-core-request "terminal.run"
