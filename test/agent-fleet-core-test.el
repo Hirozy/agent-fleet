@@ -152,22 +152,6 @@
                (lambda (&rest _) (ert-fail "Acted on replacement terminal"))))
       (should-error (call-interactively #'agent-fleet-adopt) :type 'user-error))))
 
-(ert-deftest fleet-unavailable-member-does-not-block-local-selection ()
-  (fleet-test-model (list (fleet-test-agent "offline/t2") (fleet-test-agent "t1"))
-    (let ((expected (agent-fleet-reference (herdr-core-terminal "t1")))
-          (problem '(user-error "Machine offline is unavailable")) choose-offline)
-      (cl-letf (((symbol-function 'herdr-core-machines)
-                 (lambda () (signal (car problem) (cdr problem))))
-                ((symbol-function 'completing-read)
-                 (lambda (_prompt choices &rest _)
-                   (should (= 2 (length choices)))
-                   (if choose-offline
-                       (car (cl-find-if (lambda (item) (string-match-p "(unavailable)" (car item))) choices))
-                     (car (cl-find-if (lambda (item) (string-match-p "\\[t1\\]" (car item))) choices))))))
-        (should (equal expected (agent-fleet-read-agent)))
-        (setq choose-offline t)
-        (should (equal problem (should-error (agent-fleet-read-agent) :type 'user-error)))))))
-
 (ert-deftest fleet-project-prompt-refuses-a-terminal-replaced-during-selection ()
   (fleet-test-model (list (fleet-test-agent "t1"))
     (cl-letf (((symbol-function 'agent-fleet-project-agents) (lambda (&rest _) (agent-fleet-agents)))
@@ -562,15 +546,14 @@
         (should (equal (agent-fleet--name (concat "/tmp/" (car entry))) (cdr entry)))))
     (cl-letf (((symbol-function 'agent-fleet-project-root-for-cwd)
                (lambda (_) "/project/.emacs.d")))
-      (should (equal (agent-fleet--name "/project/.emacs.d/lisp") "emacs-d"))
-      (should (equal (agent-fleet--name "/remote/t7" t) "agent-t7")))))
+      (should (equal (agent-fleet--name "/project/.emacs.d/lisp") "emacs-d")))))
 
 (ert-deftest fleet-default-name-truncation-and-collisions-stay-valid ()
   (let* ((path (concat "/tmp/t7" (make-string 22 ?a) "-tail"))
          (base (concat "agent-t7" (make-string 16 ?a))))
     (fleet-test-model (list (append (fleet-test-agent "t1") (list :name base))
                             (append (fleet-test-agent "t2") (list :name (concat base "-2"))))
-      (let ((name (agent-fleet--name path t)))
+      (let ((name (agent-fleet--name path)))
         (should (equal name (concat base "-3")))
         (should (<= (length name) 32))))))
 
@@ -1137,8 +1120,11 @@
                 (cl-letf (((symbol-function 'agent-fleet-dashboard--target) (lambda () address))
                           ((symbol-function 'agent-fleet-start-minibuffer)
                            (lambda (&optional _) (setq opened default-directory))))
-                  (agent-fleet-dashboard-start)
-                  (should (equal opened (if (equal address "t1") (file-name-as-directory root) "/tmp/"))))))))
+                  (if (equal address "t1")
+                      (progn (agent-fleet-dashboard-start)
+                             (should (equal opened (file-name-as-directory root))))
+                    (should-error (agent-fleet-dashboard-start) :type 'user-error)
+                    (should-not opened)))))))
       (delete-directory root))))
 
 (ert-deftest fleet-interactive-start-uses-the-attach-flow ()
@@ -1211,6 +1197,9 @@
 (ert-deftest fleet-keymaps-share-actions-without-leaking-into-code ()
   (should-not (fboundp 'agent-fleet-start-worktree))
   (should-not (fboundp 'agent-fleet-start-batch))
+  (should-not (fboundp 'agent-fleet-start-remote))
+  (should-not (lookup-key agent-fleet-terminal-command-map (kbd "r")))
+  (should-error (transient-get-suffix 'agent-fleet-dashboard-help "r"))
   (should-not (lookup-key agent-fleet-terminal-command-map (kbd "b")))
   (should-error (transient-get-suffix 'agent-fleet-dashboard-help "b"))
   (should-not (lookup-key agent-fleet-terminal-command-map (kbd "w")))
@@ -1456,7 +1445,7 @@
                     "agent-fleet-start-form agent-fleet-adopt agent-fleet-prompt "
                     "agent-fleet-show-output agent-fleet-attach agent-fleet-cleanup "
                     "agent-fleet-observe "
-                    "agent-fleet-start-remote agent-fleet-send-file "
+                    "agent-fleet-send-file "
                     "agent-fleet-magit-status agent-fleet-details agent-fleet-dashboard-help "
                     "agent-fleet-dashboard-next agent-fleet-dashboard-previous herdr-core-connect)) "
                     "(unless (commandp command) (error \"Missing autoload: %s\" command)))\n"

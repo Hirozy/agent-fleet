@@ -1,7 +1,59 @@
-;;; agent-fleet-launch-test.el --- Launch and remote identity regressions -*- lexical-binding: t; -*-
+;;; agent-fleet-launch-test.el --- Launch and local attachment regressions -*- lexical-binding: t; -*-
 (require 'agent-fleet-core-test)
 (require 'agent-fleet-test-git)
-(require 'agent-fleet-remote)
+
+(ert-deftest fleet-local-only-selection-dashboard-and-adoption ()
+  (fleet-test-model (list (fleet-test-agent "remote/t1") (fleet-test-agent "t1"))
+    (should (equal (mapcar (lambda (r) (plist-get r :address)) (agent-fleet-agents t)) '("t1")))
+    (let ((reference (agent-fleet-reference (herdr-core-terminal "t1"))) calls
+          (buffer (get-buffer-create "*Agent Fleet*")))
+      (unwind-protect
+          (cl-letf (((symbol-function 'completing-read)
+                     (lambda (_prompt choices &rest _)
+                       (should (= (length choices) 1))
+                       (should (string-match-p "\\[t1\\]" (caar choices)))
+                       (caar choices)))
+                    ((symbol-function 'herdr-core-request)
+                     (lambda (method params &rest _)
+                       (push method calls)
+                       (should (equal (plist-get params :terminal) "t1"))
+                       (herdr-core-terminal "t1"))))
+            (should (equal (agent-fleet-read-agent) reference))
+            (call-interactively #'agent-fleet-adopt)
+            (should (equal calls '("terminal.label" "terminal.get")))
+            (with-current-buffer buffer
+              (agent-fleet-mode)
+              (agent-fleet-dashboard-refresh)
+              (should (equal (mapcar #'car tabulated-list-entries) '("t1")))))
+        (kill-buffer buffer)))))
+
+(ert-deftest fleet-local-only-operations-reject-routes-and-legacy-identities ()
+  ;; Load TRAMP before trapping filesystem access; its initialization reads
+  ;; local directories but must not be mistaken for resolving the target cwd.
+  (file-remote-p "/ssh:host:/repo")
+  (fleet-test-model (list (fleet-test-agent "remote/t1"))
+    (cl-letf (((symbol-function 'herdr-core-request) (lambda (&rest _) (ert-fail "Dispatched remote request")))
+              ((symbol-function 'herdr-core-request-async) (lambda (&rest _) (ert-fail "Dispatched remote request")))
+              ((symbol-function 'file-directory-p) (lambda (&rest _) (ert-fail "Interpreted remote path locally"))))
+      (should-error (agent-fleet-reference (herdr-core-terminal "remote/t1")) :type 'user-error)
+      (should-error (herdr-core-identity-address (list (herdr-core-id) '("machine-id" "t1") 1)) :type 'user-error)
+      (should-error (agent-fleet-resolve "remote/t1") :type 'user-error)
+      (dolist (command '(agent-fleet-adopt agent-fleet-attach agent-fleet-observe
+                         agent-fleet-prompt agent-fleet-details agent-fleet-interrupt
+                         agent-fleet-kill agent-fleet-magit-status agent-fleet-magit-diff))
+        (should-error (funcall command "remote/t1") :type 'user-error))
+      (should-error (agent-fleet-send-file "remote/t1" "/tmp/context") :type 'user-error)
+      (should-error (agent-fleet-start '("sh") :machine "machine-id" :cwd "/remote/repo"))
+      (should-error (agent-fleet-start '("sh") :cwd "/ssh:host:/repo") :type 'user-error)
+      (should-not (agent-fleet-project-for-agent (herdr-core-terminal "remote/t1"))))))
+
+(ert-deftest fleet-local-only-cleanup-preserves-routed-records ()
+  (fleet-test-cleanup (list (fleet-test-agent "remote/t1" "finished")
+                            (fleet-test-agent "t1" "finished"))
+    (should (= (length agent-fleet-cleanup--items) 1))
+    (agent-fleet-cleanup-execute)
+    (should (equal (mapcar (lambda (r) (plist-get r :address)) inventory) '("remote/t1")))
+    (should (= (cl-count "terminal.rm" calls :test #'equal) 1))))
 
 (ert-deftest fleet-command-input-keeps-spaces-and-template-choices ()
   (let ((agent-fleet--last-command nil)
@@ -49,31 +101,6 @@
       (should (equal result '(:address "t1")))
       (should (eq (car failure) 'herdr-core-uncertain)))))
 
-(ert-deftest fleet-remote-reference-survives-route-rename-but-not-replacement ()
-  (fleet-test-model (list (fleet-test-agent "old/t1"))
-    (let ((machines '((:name "old" :id "remote-id" :state "connected"))))
-      (cl-letf (((symbol-function 'herdr-core-machines) (lambda () machines)))
-        (let ((ref (agent-fleet-reference (herdr-core-terminal "old/t1"))))
-          (setq machines '((:name "new" :id "remote-id" :state "connected")))
-          (herdr-core--snapshot (list :seq 2 :terminals (list (fleet-test-agent "new/t1"))))
-          (should (equal "new/t1" (plist-get (agent-fleet-resolve ref) :address)))
-          (setq machines '((:name "new" :id "replacement" :state "connected")))
-          (should-error (agent-fleet-resolve ref) :type 'user-error))))))
-
-(ert-deftest fleet-remote-reference-rejects-disconnected-machine ()
-  (cl-letf (((symbol-function 'herdr-core-machines)
-             (lambda () '((:id "r" :name "remote" :state "unreachable")))))
-    (should-error (herdr-core-machine "r") :type 'user-error)))
-
-(ert-deftest fleet-cleanup-remote-route-rebinding-never-removes-replacement ()
-  (let ((machines '((:name "remote" :id "original" :state "connected"))))
-    (cl-letf (((symbol-function 'herdr-core-machines) (lambda () machines)))
-      (fleet-test-cleanup (list (fleet-test-agent "remote/t1" "finished"))
-        (setq machines '((:name "remote" :id "replacement" :state "connected")))
-        (agent-fleet-cleanup-execute)
-        (should-not (member "terminal.rm" calls))
-        (should (eq 'failed (plist-get (car agent-fleet-cleanup--items) :status)))))))
-
 (ert-deftest fleet-file-transfer-rechecks-identity-before-writing ()
   (fleet-test-model (list (fleet-test-agent "t1"))
     (let ((file (make-temp-file "fleet-transfer-" nil nil "bytes")) (calls 0))
@@ -96,41 +123,6 @@
                     ((symbol-function 'agent-fleet-prompt) (lambda (&rest _) (ert-fail "Claimed transfer"))))
             (should-error (agent-fleet-send-file "t1" file) :type 'herdr-core-uncertain))
         (delete-file file)))))
-
-(ert-deftest fleet-remote-review-refuses-truncated-output ()
-  (cl-letf (((symbol-function 'herdr-core-machine) (lambda (&rest _) '(:name "remote")))
-            ((symbol-function 'herdr-core-request)
-             (lambda (&rest _) '(:code 0 :stdout "" :stderr "" :truncated t))))
-    (should-error (agent-fleet-remote-exec "id" "/repo" '("git" "diff")))))
-
-(ert-deftest fleet-remote-project-mapping-is-explicit-and-checkout-relative ()
-  (fleet-test-git
-    (let* ((file (expand-file-name "src/file.el" repo))
-           (record '(:address "remote/t1" :cwd "/remote/worktree/src"
-                     :labels (:fleet.machine "r" :fleet.project "/remote/repo"
-                              :fleet.checkout-root "/remote/worktree")))
-           (agent-fleet-remote-projects (list (list :machine "r" :remote "/remote/repo" :local repo))))
-      (make-directory (file-name-directory file))
-      (with-temp-file file (insert "context"))
-      (should (equal (file-truename repo) (agent-fleet-project-for-agent record)))
-      (should (equal "/remote/worktree/src/file.el" (agent-fleet-remote-context-path record file)))
-      (should-not (agent-fleet-remote-context-path record "/tmp/outside"))
-      (let ((agent-fleet-remote-projects nil))
-        (should (equal '(remote "r" "/remote/repo") (agent-fleet-project-for-agent record)))
-        (should-not (agent-fleet-remote-context-path record file))))))
-
-(ert-deftest fleet-remote-start-never-stats-remote-cwd-locally ()
-  (fleet-test-model nil
-    (let (params)
-      (cl-letf (((symbol-function 'agent-fleet-remote-start-options)
-                 (lambda (_machine _cwd) '(:on "remote" :labels (:fleet.machine "r"))))
-                ((symbol-function 'file-directory-p) (lambda (_) (ert-fail "Local stat")))
-                ((symbol-function 'file-truename) (lambda (_) (ert-fail "Local truename")))
-                ((symbol-function 'herdr-core-request-async)
-                 (lambda (_method p _callback &optional _timeout) (setq params p))))
-        (agent-fleet-start '("sh") :cwd "/remote/absent" :machine "r")
-        (should (equal "remote" (plist-get params :on)))
-        (should (equal "/remote/absent" (plist-get params :cwd)))))))
 
 (ert-deftest fleet-observe-and-interactive-viewers-are-separate ()
   (let ((viewer (generate-new-buffer " *viewer*")) (observer (generate-new-buffer " *observer*")))

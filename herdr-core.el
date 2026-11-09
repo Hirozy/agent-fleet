@@ -69,43 +69,26 @@ option when using a custom socket in Core's config.toml."
   (gethash address herdr-core--terminals))
 (defun herdr-core-terminals () "Return all cached terminal records."
   (hash-table-values herdr-core--terminals))
-(defun herdr-core-machines ()
-  "Read machine routes and permanent identities from the connected Core."
-  (let* ((result (herdr-core-request "machine.list"))
-         (machines (plist-get result :machines)))
-    (unless (and (plist-member result :machines)
-                 (cl-every (lambda (m) (and (stringp (plist-get m :id))
-                                            (stringp (plist-get m :name)))) machines))
-      (error "Invalid Core machine inventory"))
-    machines))
-
-(defun herdr-core-machine (value &optional by-name)
-  "Resolve permanent ID VALUE, or a route name with BY-NAME.
-Unknown or disconnected routes fail closed.  Never match a display hostname."
-  (let ((machine (cl-find value (herdr-core-machines) :test #'equal
-                          :key (lambda (m) (plist-get m (if by-name :name :id))))))
-    (unless (and machine (equal (plist-get machine :state) "connected"))
-      (user-error "Machine %s is unavailable; inspect hc machine ls" value))
-    machine))
+(defun herdr-core-local-address-p (address)
+  "Return non-nil for a local terminal ADDRESS, excluding routed addresses."
+  (and (stringp address) (not (string-empty-p address))
+       (not (string-match-p "/" address))))
 
 (defun herdr-core-identity (terminal)
-  "Pin TERMINAL to its Core and creation identity.
-Remote addresses are represented by (MACHINE-ID TERMINAL-ID), independent of
-route names.  This operation queries machine identity; do not call in filters."
-  (let* ((address (plist-get terminal :address)) (parts (split-string address "/")))
-    (list (herdr-core-id)
-          (if (= 1 (length parts)) address
-            (unless (= 2 (length parts)) (user-error "Unsupported nested machine route"))
-            (list (plist-get (herdr-core-machine (car parts) t) :id) (cadr parts)))
-          (plist-get terminal :created_ms))))
+  "Pin local TERMINAL to its Core and creation identity."
+  (let ((address (plist-get terminal :address)))
+    (unless (herdr-core-local-address-p address)
+      (user-error "Fleet supports local terminals only"))
+    (list (herdr-core-id) address (plist-get terminal :created_ms))))
 
 (defun herdr-core-identity-address (identity)
-  "Resolve pinned IDENTITY to its current route, rejecting another Core."
+  "Resolve local IDENTITY, rejecting another Core or a routed identity."
   (unless (equal (car identity) (herdr-core-id))
     (user-error "Core identity changed; reopen this view"))
-  (let ((key (nth 1 identity)))
-    (if (stringp key) key
-      (concat (plist-get (herdr-core-machine (car key)) :name) "/" (cadr key)))))
+  (let ((address (nth 1 identity)))
+    (unless (herdr-core-local-address-p address)
+      (user-error "Fleet supports local terminals only"))
+    address))
 (defun herdr-core-environment () "Return a copy of the pinned CLI environment."
   (copy-sequence herdr-core--environment))
 

@@ -82,13 +82,6 @@
     (should (equal (gethash nil labels) "— No Project"))
     (should (= 5 (length (delete-dups (hash-table-values labels)))))))
 
-(ert-deftest fleet-project-short-labels-retain-remote-machine-identity ()
-  (let* ((one '(remote "one" "/code/repo")) (two '(remote "two" "/code/repo"))
-         (labels (agent-fleet-project--short-labels (list one two "/local/repo"))))
-    (should-not (equal (gethash one labels) (gethash two labels)))
-    (should (string-match-p "one" (gethash one labels)))
-    (should (equal (gethash "/local/repo" labels) "repo"))))
-
 (ert-deftest fleet-project-cache-reuses-aliases-and-expires ()
   (fleet-test-git
     (let ((agent-fleet-project--cache (make-hash-table :test 'equal))
@@ -222,11 +215,8 @@
         (should (equal (get-text-property 0 'help-echo short) "/very/long/路径/frontend"))))
     (cl-letf (((symbol-function 'agent-fleet-project--context) (lambda (&rest _) (error "Local discovery")))
               ((symbol-function 'abbreviate-file-name) (lambda (&rest _) (error "Local abbreviation"))))
-      (should (equal (agent-fleet-project--path-label path nil t) (concat path "/")))
-      (should (equal (agent-fleet-project--directory-note (list :address "remote/t1" :cwd path) nil)
-                     (concat "Remote: " path "/")))
-      (should (equal (agent-fleet-project--directory-note '(:address "remote/t1") nil)
-                     "Directory not reported")))))
+      (should-not (agent-fleet-project--directory-note (list :address "remote/t1" :cwd path) nil))
+      (should-not (agent-fleet-project--directory-note '(:address "remote/t1") nil)))))
 
 (ert-deftest fleet-project-dashboard-filter-reuses-discovery-and-g-refreshes ()
   (fleet-test-git

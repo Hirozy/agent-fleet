@@ -68,8 +68,7 @@
                                             (mapconcat #'shell-quote-argument argv " ")))
     (when-let* ((template (plist-get record :template)))
       (agent-fleet-details--field "Template" template))
-    (agent-fleet-details--field "Project" (if (or (null project) (stringp project)) project
-                                            (format "%s (remote)" (nth 2 project))))
+    (agent-fleet-details--field "Project" project)
     (agent-fleet-details--field "Directory" (plist-get record :cwd))
     (pcase (plist-get location :state)
       ('unavailable (agent-fleet-details--field "Directory status" "Unavailable (missing or inaccessible)" 'warning))

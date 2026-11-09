@@ -7,8 +7,6 @@
 (require 'subr-x)
 (require 'project)
 (require 'agent-fleet)
-(declare-function agent-fleet-remote-project "agent-fleet-remote" (record))
-(declare-function agent-fleet-remote-context-path "agent-fleet-remote" (record file))
 (defcustom agent-fleet-project-backend 'project
   "Source for project detection: built-in `project' or `projectile'.
 The default `project' uses `project-current'/`project-root' with a
@@ -160,53 +158,46 @@ Non-Git roots retain their explicit `file-truename' identity."
 
 (defun agent-fleet-project-for-agent (record)
   "Return the local Project of RECORD, never interpreting remote paths locally."
-  (if (string-match-p "/" (plist-get record :address))
-      (progn (require 'agent-fleet-remote) (agent-fleet-remote-project record))
+  (when (herdr-core-local-address-p (plist-get record :address))
     (agent-fleet-project-root-for-cwd (plist-get record :cwd))))
 
 (defun agent-fleet-project--display-name (root)
   "Return a short label for canonical ROOT, without filesystem access."
   (if root
-      (if (stringp root)
-          (let ((name (file-name-nondirectory (directory-file-name root))))
-            (if (string-empty-p name) root name))
-        (concat (file-name-nondirectory (directory-file-name (nth 2 root))) " (remote)")) "—"))
+      (let ((name (file-name-nondirectory (directory-file-name root))))
+        (if (string-empty-p name) root name))
+    "—"))
 
 (defun agent-fleet-project--full-label (root)
   "Describe ROOT completely, without resolving paths."
-  (cond ((null root) "— No Project") ((stringp root) root)
-        (t (format "%s (remote %s)" (nth 2 root) (nth 1 root)))))
+  (or root "— No Project"))
 
 (defun agent-fleet-project--short-labels (roots)
   "Return distinct short labels for canonical ROOTS, without filesystem I/O."
   (let ((roots (delete-dups (copy-sequence roots)))
         (labels (make-hash-table :test 'equal)))
     (dolist (root roots)
-      (let* ((path (if (stringp root) root (nth 2 root)))
-             (parts (and path (split-string path "/" t)))
+      (let* ((parts (and root (split-string root "/" t)))
              (depth 1)
              (label (if root (agent-fleet-project--display-name root) "— No Project")))
         (while (and root
                     (cl-some (lambda (other)
                                (and (not (equal root other))
                                     (equal label
-                                           (let* ((other-path (if (stringp other) other (nth 2 other)))
-                                                  (other-parts (and other-path (split-string other-path "/" t))))
-                                             (if (null other) "— No Project"
-                                               (concat (mapconcat #'identity (last other-parts depth) "/")
-                                                       (unless (stringp other) " (remote)"))))))) roots))
+                                           (if other
+                                               (mapconcat #'identity (last (split-string other "/" t) depth) "/")
+                                             "— No Project")))) roots))
           (if (>= depth (length parts))
               (setq label (agent-fleet-project--full-label root) depth (1+ depth))
             (setq depth (1+ depth)
-                  label (concat (mapconcat #'identity (last parts depth) "/")
-                                (unless (stringp root) " (remote)")))))
+                  label (mapconcat #'identity (last parts depth) "/"))))
         (puthash root label labels)))
     labels))
 
-(defun agent-fleet-project--path-label (path &optional width remote)
+(defun agent-fleet-project--path-label (path &optional width)
   "Display directory PATH within WIDTH columns, keeping its trailing components.
-Keep the full path in a tooltip.  REMOTE paths are never abbreviated locally."
-  (let* ((text (if remote path (abbreviate-file-name path)))
+Keep the full path in a tooltip.  Do not resolve TRAMP paths locally."
+  (let* ((text (if (file-remote-p path) path (abbreviate-file-name path)))
          (text (if (string-suffix-p "/" text) text (concat text "/"))))
     (when (and width (> (string-width text) width))
       (let ((start 0) (remaining (string-width text)))
@@ -220,31 +211,30 @@ Keep the full path in a tooltip.  REMOTE paths are never abbreviated locally."
   "Return meaningful working-directory context for RECORD under ROOT.
 Return nil for the ordinary project root.  Keep full paths in tooltips.
 Fit the note within WIDTH columns when provided."
-  (let* ((cwd (plist-get record :cwd))
-         (remote (or (string-match-p "/" (plist-get record :address))
-                     (and cwd (file-remote-p cwd))))
-         (context (unless remote (agent-fleet-project--context cwd)))
-         (directory (plist-get context :directory))
-         (checkout (plist-get context :checkout))
-         (unavailable (eq (plist-get context :state) 'unavailable))
-         (prefix (cond (remote "Remote: ") (unavailable "Directory unavailable: ")
-                       ((and root checkout (not (equal checkout root))) "Worktree: ")
-                       (t ""))))
-    (cond
-     ((or (not (stringp cwd)) (string-empty-p cwd))
-      (propertize "Directory not reported" 'face 'shadow))
-     ((and (not remote) root (equal root directory)) nil)
-     (t
-      (let* ((path (if (and (not remote) root directory (string-empty-p prefix))
-                       (concat "./" (file-relative-name directory (file-name-as-directory root)))
-                     cwd))
-             (text (concat prefix (agent-fleet-project--path-label
-                                   path (and width (max 1 (- width (length prefix)))) remote))))
-        (propertize text 'help-echo cwd 'face (if unavailable 'warning 'shadow)))))))
+  (when (herdr-core-local-address-p (plist-get record :address))
+    (let* ((cwd (plist-get record :cwd))
+           (context (agent-fleet-project--context cwd))
+           (directory (plist-get context :directory))
+           (checkout (plist-get context :checkout))
+           (unavailable (memq (plist-get context :state) '(unavailable remote)))
+           (prefix (cond (unavailable "Directory unavailable: ")
+                         ((and root checkout (not (equal checkout root))) "Worktree: ")
+                         (t ""))))
+      (cond
+       ((or (not (stringp cwd)) (string-empty-p cwd))
+        (propertize "Directory not reported" 'face 'shadow))
+       ((and root (equal root directory)) nil)
+       (t
+        (let* ((path (if (and root directory (string-empty-p prefix))
+                         (concat "./" (file-relative-name directory (file-name-as-directory root)))
+                       cwd))
+               (text (concat prefix (agent-fleet-project--path-label
+                                     path (and width (max 1 (- width (length prefix))))))))
+          (propertize text 'help-echo cwd 'face (if unavailable 'warning 'shadow))))))))
 
 (defun agent-fleet-project-agents (&optional root)
   "Return live members in canonical Project ROOT, defaulting to the current one."
-  (let ((root (if root (if (listp root) root (agent-fleet-project--canonical-root root))
+  (let ((root (if root (agent-fleet-project--canonical-root root)
                 (agent-fleet-project-root-for-cwd default-directory))))
     (and root (cl-remove-if-not
                (lambda (r) (equal root (agent-fleet-project-for-agent r)))
@@ -286,14 +276,6 @@ Interactive calls attach after a successful launch."
                        (same (agent-fleet--read-target same "Same-Project agent: "))
                        (t (message "No same-Project agent; showing all Fleet agents")
                           (agent-fleet-read-agent)))))
-    (let ((record (agent-fleet-resolve target)))
-      (when (and file (string-match-p "/" (plist-get record :address)))
-        (require 'agent-fleet-remote)
-        (setq context (concat
-                       (if-let* ((path (agent-fleet-remote-context-path record file)))
-                           (format "Remote file: %s\n" path)
-                         "Local source reference; no remote path mapping or file transfer.\n")
-                       context))))
     (agent-fleet-prompt target context)))
 (provide 'agent-fleet-project)
 ;;; agent-fleet-project.el ends here
