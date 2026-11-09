@@ -27,6 +27,8 @@ Write Markdown in English.
 - Parent relationships come from Core; do not maintain a Fleet Task lifecycle.
 - Project is a canonical codebase identity. Unify linked Git worktrees and
   retain absent Projects. Never interpret a remote path on the local machine.
+- Git/Magit owns worktree creation and removal. Fleet starts agents in existing
+  directories and groups linked worktrees under the same Project.
 
 ## Lifecycle safety
 

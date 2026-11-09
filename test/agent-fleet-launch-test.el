@@ -1,6 +1,6 @@
 ;;; agent-fleet-launch-test.el --- Launch and remote identity regressions -*- lexical-binding: t; -*-
 (require 'agent-fleet-core-test)
-(require 'agent-fleet-worktree)
+(require 'agent-fleet-test-git)
 (require 'agent-fleet-batch)
 (require 'agent-fleet-remote)
 
@@ -23,43 +23,28 @@
       (should-error (agent-fleet--read-command) :type 'user-error))
     (should (eq original-space (lookup-key minibuffer-local-completion-map (kbd "SPC"))))))
 
-(defmacro fleet-test-git (&rest body)
-  "Run BODY in disposable REPO, with DIR and WT paths available."
-  (declare (indent 0))
-  `(let* ((dir (make-temp-file "fleet-launch-" t))
-          (repo (expand-file-name "repo" dir)) (wt (expand-file-name "worker" dir)))
-     (make-directory repo)
-     (ignore wt)
-     (unwind-protect
-         (progn
-           (agent-fleet-worktree--git repo "init" "-q")
-           (agent-fleet-worktree--git repo "-c" "user.name=Test" "-c" "user.email=test@example.invalid"
-                                     "-c" "commit.gpgsign=false" "commit" "-q" "--allow-empty" "-m" "initial")
-           ,@body)
-       (delete-directory dir t))))
+(ert-deftest fleet-batch-rejects-worktree-creation-specs ()
+  (fleet-test-model nil
+    (cl-letf (((symbol-function 'agent-fleet-start)
+               (lambda (&rest _) (ert-fail "An unsupported worktree spec must not launch"))))
+      (should-error
+       (agent-fleet-start-batch '((:argv ("sh") :cwd "/tmp"
+                                  :worktree (:directory "/tmp/new-worker" :branch "worker"))))
+       :type 'user-error))))
 
-(ert-deftest fleet-worktree-records-immutable-base-and-canonical-project ()
-  (fleet-test-git
-    (let* ((base (agent-fleet-worktree--git repo "rev-parse" "HEAD"))
-           (options (agent-fleet-worktree-prepare repo wt "worker")))
-      (should (equal base (plist-get (plist-get options :labels) :fleet.review-base)))
-      (should (equal (file-truename repo) (agent-fleet-project-root-for-cwd wt)))
-      (should (equal base (agent-fleet-worktree--git wt "rev-parse" "HEAD")))
-      (should-error (agent-fleet-worktree-prepare repo wt "second") :type 'user-error)
-      (should (file-directory-p wt)))))
-
-(ert-deftest fleet-worktree-rejects-bad-base-before-creating-checkout ()
-  (fleet-test-git
-    (should-error (agent-fleet-worktree-prepare repo wt "worker" "--help"))
-    (should-not (file-exists-p wt))))
-
-(ert-deftest fleet-worktree-launch-failure-preserves-checkout ()
-  (fleet-test-git
-    (cl-letf (((symbol-function 'herdr-core-connect) #'ignore)
-              ((symbol-function 'agent-fleet-start) (lambda (&rest _) (error "Launch rejected"))))
-      (should-error (agent-fleet-start-worktree '("missing") repo wt "worker")))
-    (should (file-directory-p wt))
-    (should (equal "worker" (agent-fleet-worktree--git wt "branch" "--show-current")))))
+(ert-deftest fleet-batch-interactive-selects-existing-member-directories ()
+  (let ((directories '("/tmp/worker-a" "/tmp/worker-b")))
+    (cl-letf (((symbol-function 'agent-fleet--start-interactive)
+               (lambda () '(("sh") :cwd "/tmp")))
+              ((symbol-function 'read-number) (lambda (&rest _) 2))
+              ((symbol-function 'y-or-n-p) (lambda (&rest _) (ert-fail "No worktree creation choice")))
+              ((symbol-function 'read-directory-name)
+               (lambda (_prompt _directory _default mustmatch &rest _)
+                 (should mustmatch)
+                 (pop directories))))
+      (should (equal (agent-fleet-batch--interactive)
+                     '(((:argv ("sh") :cwd "/tmp/worker-a")
+                        (:argv ("sh") :cwd "/tmp/worker-b"))))))))
 
 (ert-deftest fleet-batch-out-of-order-outcomes-stay-with-their-members ()
   (fleet-test-model nil

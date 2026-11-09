@@ -45,6 +45,21 @@ but Projectile is not installed")))
 
 ;;; --- Project root resolution ----------------------------------------
 
+(defun agent-fleet-project--git-primary-root (common)
+  "Resolve COMMON's primary checkout, including a submodule's Git directory."
+  (if (equal (file-name-nondirectory common) ".git")
+      (directory-file-name (file-name-directory common))
+    ;; Submodules store their repository in the superproject's .git/modules.
+    ;; core.worktree is relative to that Git directory, not the agent's cwd.
+    (with-temp-buffer
+      (when (eq 0 (process-file "git" nil t nil (concat "--git-dir=" common)
+                                "config" "--path" "--get" "core.worktree"))
+        (let* ((configured (string-trim (buffer-string)))
+               (root (and (not (string-empty-p configured))
+                          (expand-file-name configured common))))
+          (when (and root (not (file-remote-p root)) (file-directory-p root))
+            (directory-file-name (file-truename root))))))))
+
 (defun agent-fleet-project--git-context (dir)
   "Discover the shared repository identity and actual checkout for DIR.
 Keep non-standard common-dir layouts unresolved rather than guessing."
@@ -58,8 +73,7 @@ Keep non-standard common-dir layouts unresolved rather than guessing."
             (when (= (length lines) 2)
               (let ((common (directory-file-name (file-truename (car lines))))
                     (checkout (directory-file-name (file-truename (cadr lines)))))
-                (list :root (when (equal (file-name-nondirectory common) ".git")
-                              (directory-file-name (file-name-directory common)))
+                (list :root (agent-fleet-project--git-primary-root common)
                       :checkout checkout)))))))))
 
 (defun agent-fleet-project--git-common-root (dir)

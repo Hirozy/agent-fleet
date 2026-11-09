@@ -3,7 +3,7 @@
 (require 'ert)
 (require 'agent-fleet-cleanup)
 (require 'agent-fleet-remote)
-(require 'agent-fleet-worktree)
+(require 'agent-fleet-test-git)
 (require 'agent-fleet-start)
 (require 'agent-fleet-attach)
 
@@ -191,8 +191,8 @@ This exercises real routing without SSH."
   (hc-live-isolated
     (hc-live-remote
       ;; A real checkout on the second Core, still isolated from user projects.
-      (agent-fleet-worktree--git remote-dir "init" "-q")
-      (agent-fleet-worktree--git remote-dir "-c" "user.name=Test" "-c" "user.email=test@example.invalid"
+      (fleet-test-git-command remote-dir "init" "-q")
+      (fleet-test-git-command remote-dir "-c" "user.name=Test" "-c" "user.email=test@example.invalid"
                                 "-c" "commit.gpgsign=false" "commit" "-q" "--allow-empty" "-m" "initial")
       (let (result failure completed)
         (agent-fleet-start '("sh" "-c" "sleep 60") :machine remote-id :cwd remote-dir
@@ -270,10 +270,10 @@ This exercises real routing without SSH."
            (worktree (expand-file-name "feature" root))
            (subdir (expand-file-name "frontend" worktree)))
       (make-directory repo)
-      (agent-fleet-worktree--git repo "init" "-q")
-      (agent-fleet-worktree--git repo "-c" "user.name=Test" "-c" "user.email=test@example.invalid"
+      (fleet-test-git-command repo "init" "-q")
+      (fleet-test-git-command repo "-c" "user.name=Test" "-c" "user.email=test@example.invalid"
                                 "-c" "commit.gpgsign=false" "commit" "-q" "--allow-empty" "-m" "initial")
-      (agent-fleet-worktree-prepare repo worktree "feature")
+      (fleet-test-git-command repo "worktree" "add" "-b" "feature" worktree)
       (make-directory subdir)
       (let ((default-directory (file-name-as-directory subdir)))
         (cl-letf (((symbol-function 'agent-fleet--read-command) (lambda () '("sh" "-c" "sleep 60"))))
