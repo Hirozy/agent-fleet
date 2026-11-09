@@ -23,6 +23,7 @@
 (declare-function agent-fleet-project-root-for-cwd "agent-fleet-project" (cwd))
 (declare-function agent-fleet-project-checkout-for-cwd "agent-fleet-project" (cwd &optional refresh))
 (declare-function agent-fleet-dashboard-focus "agent-fleet-dashboard" (address))
+(declare-function agent-fleet-attach--reuse-visible "agent-fleet-attach" (target))
 (autoload 'agent-fleet "agent-fleet-dashboard" nil t)
 (autoload 'agent-fleet-attach "agent-fleet-attach" nil t)
 (autoload 'agent-fleet-cleanup "agent-fleet-cleanup" nil t)
@@ -267,8 +268,9 @@ TARGET may be an address or a pinned identity; interactive selection pins it."
     (herdr-core-request "terminal.label"
                        (list :terminal (plist-get record :address) :labels '(:fleet.role "agent")))))
 
-(defun agent-fleet-present-buffer (buffer)
-  "Present BUFFER without resizing an attached terminal."
+(defun agent-fleet-present-buffer (buffer &optional retain-origin)
+  "Present BUFFER without resizing an attached terminal.
+RETAIN-ORIGIN records the preceding view when opening in an ordinary window."
   (agent-fleet-call-with-presentation
    (lambda ()
      (let ((origin (agent-fleet-display-origin-frame)))
@@ -280,6 +282,7 @@ TARGET may be an address or a pinned identity; interactive selection pins it."
            (agent-fleet-display-aux-run-at-origin
             origin (lambda () (switch-to-buffer buffer)
                      (agent-fleet-display-make-outcome t buffer buffer))))
+        (retain-origin (agent-fleet-display-window-open buffer))
         (t (switch-to-buffer buffer nil t)))
        buffer))))
 
@@ -432,7 +435,14 @@ Only follow the agent while the submitting window remains selected and focused."
     (setq agent-fleet-prompt--attach-error nil)
     (agent-fleet-prompt--render-status)
     (condition-case err
-        (agent-fleet-attach agent-fleet-target)
+        (progn
+          (require 'agent-fleet-attach)
+          (if-let* ((window (agent-fleet-attach--reuse-visible agent-fleet-target)))
+              (progn
+                (agent-fleet-view-quit)
+                (select-window window)
+                (set-buffer (window-buffer window)))
+            (agent-fleet-attach agent-fleet-target)))
       ((error quit)
        (when (buffer-live-p buffer)
          (with-current-buffer buffer
@@ -454,7 +464,7 @@ Only follow the agent while the submitting window remains selected and focused."
                   (format "%s [%s]" (agent-fleet-name record) (plist-get record :address)))
       (insert (or initial-text ""))
       (agent-fleet-prompt--render-status))
-    (agent-fleet-present-buffer buffer)))
+    (agent-fleet-present-buffer buffer t)))
 
 (defun agent-fleet-prompt-submit ()
   "Submit this draft once and attach after Core acknowledges submission.

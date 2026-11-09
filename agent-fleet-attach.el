@@ -46,11 +46,6 @@
                        (process-live-p (get-buffer-process buffer)))))
               (buffer-list)))
 
-(defun agent-fleet-attach--current-address ()
-  "Return this attach buffer's verified terminal address."
-  (unless agent-fleet-target (user-error "Not an Agent Fleet attach buffer"))
-  (plist-get (agent-fleet-resolve agent-fleet-target) :address))
-
 (defun agent-fleet-attach--display (buffer)
   "Replace the current window with BUFFER without splitting."
   (let* ((window (selected-window)) (dedicated (window-dedicated-p window)))
@@ -62,17 +57,22 @@
                window)
       (set-window-dedicated-p window dedicated))))
 
-(defun agent-fleet-attach--ctrl-g ()
-  "Send exactly Ctrl-G to the current terminal, without submitting input."
-  (interactive)
-  (when agent-fleet-observe-p (user-error "Read-only observer; attach to send terminal keys"))
-  (herdr-core-request "terminal.keys"
-                      (list :terminal (agent-fleet-attach--current-address) :keys ["ctrl+g"])))
+(defun agent-fleet-attach--reuse-visible (target)
+  "Validate and reuse TARGET's interactive viewer in the origin frame.
+Return its window on success, nil if absent.  Keep the requesting view selected
+until the caller can close it after successful attachment."
+  (let* ((reference (agent-fleet-reference (agent-fleet-resolve target)))
+         (buffer (agent-fleet-attach--live-buffer reference))
+         (window (and buffer (get-buffer-window buffer (agent-fleet-display-origin-frame)))))
+    (when (window-live-p window)
+      (with-selected-window window
+        (agent-fleet-attach reference))
+      window)))
 
 (defvar agent-fleet-attach-mode-map
   (let ((map (make-sparse-keymap)))
     (define-key map (kbd "C-c a") agent-fleet-terminal-command-map)
-    (define-key map (kbd "C-c C-g") #'agent-fleet-attach--ctrl-g) map))
+    map))
 (defvar-local agent-fleet-attach--dashboard-key-p nil)
 (defvar agent-fleet-attach--keymaps
   `((agent-fleet-attach-mode . ,agent-fleet-attach-mode-map)

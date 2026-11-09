@@ -459,7 +459,7 @@
   (fleet-test-model (list (fleet-test-agent "t1"))
     (let (buffers first)
       (unwind-protect
-          (cl-letf (((symbol-function 'agent-fleet-present-buffer) #'identity)
+          (cl-letf (((symbol-function 'agent-fleet-present-buffer) (lambda (buffer &rest _) buffer))
                     ((symbol-function 'herdr-core-request)
                      (lambda (method &optional _params _timeout)
                        (pcase method
@@ -498,7 +498,7 @@
   (fleet-test-model (list (fleet-test-agent "t1") (fleet-test-agent "t2" "finished"))
     (let (buffers)
       (unwind-protect
-          (cl-letf (((symbol-function 'agent-fleet-present-buffer) #'identity)
+          (cl-letf (((symbol-function 'agent-fleet-present-buffer) (lambda (buffer &rest _) buffer))
                     ((symbol-function 'herdr-core-request)
                      (lambda (_method params &optional _timeout)
                        (herdr-core-terminal (plist-get params :terminal)))))
@@ -592,7 +592,7 @@
 
 (ert-deftest fleet-prompt-feedback-never-enters-the-submitted-text ()
   (fleet-test-model (list (fleet-test-agent "t1"))
-    (cl-letf (((symbol-function 'agent-fleet-present-buffer) #'identity))
+    (cl-letf (((symbol-function 'agent-fleet-present-buffer) (lambda (buffer &rest _) buffer)))
       (let ((buffer (agent-fleet-prompt "t1" "original draft")) callback params)
         (unwind-protect
             (with-current-buffer buffer
@@ -661,6 +661,51 @@
                     (should-not agent-fleet-prompt--attach-error))))
             (kill-buffer form)
             (kill-buffer viewer)))))))
+
+(ert-deftest fleet-prompt-reuses-visible-terminal-and-restores-code-window ()
+  (dolist (fail '(nil t))
+    (fleet-test-model (list (fleet-test-agent "t1"))
+      (save-window-excursion
+        (delete-other-windows)
+        (let* ((code (generate-new-buffer " *fleet-source*"))
+               (viewer (generate-new-buffer " *fleet-visible-agent*"))
+               (left (selected-window)) (right (split-window-right))
+               (reference (agent-fleet-reference (herdr-core-terminal "t1")))
+               form callback geometry position)
+          (unwind-protect
+              (progn
+                (switch-to-buffer code)
+                (insert "first\nsecond\nthird\n")
+                (goto-char 9)
+                (setq position (point) geometry (mapcar #'window-edges (list left right)))
+                (with-current-buffer viewer
+                  (agent-fleet-attach-mode 1)
+                  (setq agent-fleet-target reference)
+                  (make-pipe-process :name "fleet-viewer-test" :buffer viewer :noquery t))
+                (set-window-buffer right viewer)
+                (setq form (agent-fleet-prompt reference "Keep draft"))
+                (cl-letf (((symbol-function 'herdr-core-request)
+                           (lambda (&rest _)
+                             (if (and fail callback) (user-error "Target unavailable")
+                               (herdr-core-terminal "t1"))))
+                          ((symbol-function 'herdr-core-request-async)
+                           (lambda (_method _params cb &rest _) (setq callback cb)))
+                          ((symbol-function 'display-graphic-p) (lambda (&rest _) nil)))
+                  (agent-fleet-prompt-submit)
+                  (funcall callback '(:turn 1) nil))
+                (should (eq (window-buffer right) viewer))
+                (should (equal geometry (mapcar #'window-edges (list left right))))
+                (if fail
+                    (progn (should (eq (selected-window) left))
+                           (should (eq (window-buffer left) form)))
+                  (should (eq (selected-window) right))
+                  (should (eq (window-buffer left) code))
+                  (should (= (window-point left) position)))
+                (with-current-buffer form
+                  (should (equal (buffer-string) "Keep draft"))
+                  (should (eq agent-fleet-operation-state 'sent))))
+            (dolist (buffer (list code viewer form))
+              (when (buffer-live-p buffer) (kill-buffer buffer)))))))))
 
 (ert-deftest fleet-prompt-no-auto-attach-after-navigation-or-unsuccessful-send ()
   (dolist (scenario '(buffer window minibuffer unfocused rejected uncertain invalid))
@@ -780,24 +825,6 @@
             (should (window-dedicated-p window)))
         (set-window-dedicated-p window nil)
         (kill-buffer buffer)))))
-
-(ert-deftest fleet-attach-ctrl-g-pins-target-and-never-submits-a-prompt ()
-  (fleet-test-model (list (fleet-test-agent "t1"))
-    (with-temp-buffer
-      (agent-fleet-attach-mode 1)
-      (setq agent-fleet-target (agent-fleet-reference (herdr-core-terminal "t1")))
-      (let (calls)
-        (cl-letf (((symbol-function 'herdr-core-request)
-                   (lambda (method params &rest _) (push (list method params) calls))))
-          (call-interactively (key-binding (kbd "C-c C-g")))
-          (should (equal calls '(("terminal.keys" (:terminal "t1" :keys ["ctrl+g"])))))
-          (setq agent-fleet-observe-p t)
-          (should-error (agent-fleet-attach--ctrl-g) :type 'user-error)
-          (setq agent-fleet-observe-p nil)
-          (puthash "t1" (plist-put (copy-sequence (herdr-core-terminal "t1")) :created_ms 99)
-                   herdr-core--terminals)
-          (should-error (agent-fleet-attach--ctrl-g) :type 'user-error)
-          (should (= 1 (length calls))))))))
 
 (ert-deftest fleet-dashboard-window-returns-through-views-and-preserves-position ()
   (fleet-test-model nil
@@ -1199,6 +1226,11 @@
             (should (eq (key-binding (kbd "C-c a a")) #'agent-fleet))
             (should (eq (key-binding (kbd "a")) #'agent-fleet-dashboard-attach))
             (should (eq (key-binding (kbd "RET")) #'agent-fleet-dashboard-attach))
+            (dolist (group agent-fleet--action-groups)
+              (dolist (action (cdr group))
+                (unless (member (car action) '("a" "RET"))
+                  (should (eq (key-binding (kbd (car action)))
+                              (or (nth 3 action) (nth 2 action)))))))
             (should (equal (plist-get (cdr (transient-get-suffix 'agent-fleet-dashboard-help "a")) :description)
                            "Attach")))
           (with-temp-buffer
@@ -1333,9 +1365,9 @@
             (agent-fleet-dashboard-refresh)
             (agent-fleet-dashboard-refresh)
             (should (equal (buffer-string)
-                           "No Fleet agents in this view. Press h N to start an agent, or h H to toggle history.\n"))
+                           "No Fleet agents in this view. Press N to start an agent, or H to toggle history.\n"))
             (should (string-match-p "Type" (format "%s" header-line-format)))
-            (should-not (lookup-key agent-fleet-mode-map (kbd "N")))
+            (should (eq (lookup-key agent-fleet-mode-map (kbd "N")) #'agent-fleet-dashboard-start))
             (should (eq (key-binding (kbd "h")) #'agent-fleet-dashboard-help))
             (should-not (buffer-modified-p)))
         (kill-buffer buffer)))))

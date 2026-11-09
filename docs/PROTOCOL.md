@@ -70,7 +70,6 @@ event state.
 | End program | terminal.kill |
 | Remove finished history | terminal.rm |
 | Output snapshot | terminal.read |
-| External editor key | terminal.keys, keys=["ctrl+g"] |
 | Attach | hc attach subprocess |
 | Observe | hc attach --observe subprocess |
 | Remote launch | terminal.run, on=current route for pinned machine ID |
