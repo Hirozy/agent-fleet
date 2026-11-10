@@ -1,65 +1,12 @@
-;;; agent-fleet-project.el --- project.el integration for agent-fleet -*- lexical-binding: t; -*-
-
-;; Copyright (C) 2026  agent-fleet contributors
-
-;; Author: agent-fleet
-;; Keywords: processes, tools, convenience, projects
-;; Version: 0.4.0
+;;; agent-fleet-project.el --- Project identity and context -*- lexical-binding: t; -*-
 ;; Package-Requires: ((emacs "29.1"))
-
-;; This program is free software; you can redistribute it and/or modify
-;; it under the terms of the GNU General Public License as published by
-;; the Free Software Foundation, either version 3 of the License, or
-;; (at your option) any later version.
-
-;; This program is distributed in the hope that it will be useful,
-;; but WITHOUT ANY WARRANTY; without even the implied warranty of
-;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-;; GNU General Public License for more details.
-
-;; You should have received a copy of the GNU General Public License
-;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
 ;;; Commentary:
-
-;; The project-integration layer.  Maps Herdr-managed
-;; agents to Emacs `project.el' projects by **canonical cwd**:
-;; "不要仅通过 label 判断" — do not judge by workspace label alone; match by
-;; `file-truename (project-root ...)`, and lets the user start/list agents
-;; scoped to the current project.
-;;
-;; Design rules honored:
-;;     `project.el' is the default backend; Projectile is opt-in via
-;;        `agent-fleet-project-backend' (both yield a cwd root; the git-worktree
-;;        normalization runs first either way, so git repos resolve identically).
-;;        Default mapping: one Emacs project ↔ one Herdr workspace.
-;;     match by canonical cwd; allow multiple workspaces per repo (worktrees,
-;;        investigation workspaces).  No label-based matching, no stale table —
-;;        the association is *derived* from agent cwds each time.
-;;     deliverables: project.el + cwd↔workspace + project-scoped dashboard,
-;;        plus commands `agent-fleet-start-for-project' and
-;;        `agent-fleet-project-agents'.
-;;
-;; This is a thin layer over the control commands (`agent-fleet-start')
-;; and the model accessors (`herdr-agents', `herdr-agent-cwd',
-;; `herdr-agent-workspace-id').  It adds no wire protocol.  Worktree isolation
-;; (`:worktree t') is forwarded to `agent-fleet-start'.
-;;
-;; The workspace *label* is intentionally not set on creation: the
-;; `workspace.create' label param is undocumented, and labels are not used for
-;; identity anyway.  Project identity comes from agent cwd, not workspace label.
-
+;; Canonical Git common-root identity; absent Projects remain absent.
 ;;; Code:
-
 (require 'cl-lib)
 (require 'subr-x)
 (require 'project)
 (require 'agent-fleet)
-(require 'herdr-model)
-
-
-;;; --- Project backend ------------------------------------------------
-
 (defcustom agent-fleet-project-backend 'project
   "Source for project detection: built-in `project' or `projectile'.
 The default `project' uses `project-current'/`project-root' with a
@@ -77,6 +24,13 @@ demand and signals a `user-error' if it is absent."
 ;; Projectile is optional: declare the entry point so the byte-compiler does
 ;; not warn, without forcing a top-level `require' (mirrors the magit idiom).
 (declare-function projectile-project-root "projectile" (&optional dir))
+(defvar agent-fleet-project--cache (make-hash-table :test 'equal))
+(defconst agent-fleet-project--cache-seconds 30
+  "Maximum age of a directory's project discovery result.")
+
+(defun agent-fleet-project--clear-cache ()
+  "Discard cached directory discovery, including negative results."
+  (clrhash agent-fleet-project--cache))
 
 (defun agent-fleet-project--ensure-projectile ()
   "Load Projectile or signal a `user-error' that it is not installed.
@@ -89,30 +43,40 @@ but Projectile is not installed")))
 
 ;;; --- Project root resolution ----------------------------------------
 
-(defun agent-fleet-project--git-common-root (dir)
-  "Return the primary checkout root shared by Git worktree DIR, or nil.
-For a normal checkout, `git rev-parse --git-common-dir' yields ROOT/.git;
-for a linked worktree it yields that same directory in the primary checkout.
-Mapping both to ROOT makes all worktrees of one repository share the project
-identity.  Non-standard separate git-dir layouts fall
-back to `project.el' rather than guessing."
-  (when (and (executable-find "git") (file-directory-p dir))
+(defun agent-fleet-project--git-primary-root (common)
+  "Resolve COMMON's primary checkout, including a submodule's Git directory."
+  (if (equal (file-name-nondirectory common) ".git")
+      (directory-file-name (file-name-directory common))
+    ;; Submodules store their repository in the superproject's .git/modules.
+    ;; core.worktree is relative to that Git directory, not the agent's cwd.
+    (with-temp-buffer
+      (when (eq 0 (process-file "git" nil t nil (concat "--git-dir=" common)
+                                "config" "--path" "--get" "core.worktree"))
+        (let* ((configured (string-trim (buffer-string)))
+               (root (and (not (string-empty-p configured))
+                          (expand-file-name configured common))))
+          (when (and root (not (file-remote-p root)) (file-directory-p root))
+            (directory-file-name (file-truename root))))))))
+
+(defun agent-fleet-project--git-context (dir)
+  "Discover the shared repository identity and actual checkout for DIR.
+Keep non-standard common-dir layouts unresolved rather than guessing."
+  (when (and (not (file-remote-p dir)) (executable-find "git") (file-directory-p dir))
     (let ((default-directory (file-name-as-directory (file-truename dir))))
       (with-temp-buffer
         (when (eq 0 (process-file "git" nil t nil
                                   "rev-parse" "--path-format=absolute"
-                                  "--git-common-dir"))
-          (let* ((raw (string-trim (buffer-string)))
-                 (common (and (not (string-empty-p raw))
-                              (file-truename
-                               (expand-file-name raw default-directory)))))
-            (when (and common
-                       (string= (file-name-nondirectory
-                                 (directory-file-name common))
-                                ".git"))
-              (directory-file-name
-               (file-truename (file-name-directory
-                               (directory-file-name common)))))))))))
+                                  "--git-common-dir" "--show-toplevel"))
+          (let ((lines (split-string (string-trim (buffer-string)) "\n" t)))
+            (when (= (length lines) 2)
+              (let ((common (directory-file-name (file-truename (car lines))))
+                    (checkout (directory-file-name (file-truename (cadr lines)))))
+                (list :root (agent-fleet-project--git-primary-root common)
+                      :checkout checkout)))))))))
+
+(defun agent-fleet-project--git-common-root (dir)
+  "Return the primary checkout root shared by Git worktree DIR, or nil."
+  (plist-get (agent-fleet-project--git-context dir) :root))
 
 (defun agent-fleet-project--backend-root-for-cwd (dir)
   "Return the project root for DIR per `agent-fleet-project-backend', or nil.
@@ -121,7 +85,7 @@ dirs the git pass left unresolved.  `project' (default) uses
 `project-current'/`project-root' with a `vc-root-dir' fallback;
 `projectile' uses `projectile-project-root', which does its own fallback.
 Returns a `file-truename'-canonicalized directory or nil."
-  (let ((default-directory (file-truename dir)))
+  (let ((default-directory (file-name-as-directory (file-truename dir))))
     (pcase agent-fleet-project-backend
       ('projectile
        (agent-fleet-project--ensure-projectile)
@@ -137,20 +101,46 @@ Returns a `file-truename'-canonicalized directory or nil."
              (and root (not (string-empty-p root))
                   (directory-file-name (file-truename root)))))))))))
 
+(defun agent-fleet-project--context (dir &optional refresh)
+  "Resolve local DIR into project identity, checkout and availability.
+Cache discovery for 30 seconds; REFRESH bypasses the cache.  Missing or
+remote directories never inherit the current buffer's project."
+  (cond
+   ((or (not (stringp dir)) (string-empty-p dir)) '(:state unknown))
+   ((file-remote-p dir) '(:state remote))
+   ((not (and (file-directory-p dir) (file-accessible-directory-p dir)))
+    (remhash (list agent-fleet-project-backend
+                   (directory-file-name (or (ignore-errors (file-truename dir)) (expand-file-name dir))))
+             agent-fleet-project--cache)
+    '(:state unavailable))
+   (t
+    (condition-case nil
+        (let* ((canonical (directory-file-name (file-truename dir)))
+               (key (list agent-fleet-project-backend canonical))
+               (cached (gethash key agent-fleet-project--cache))
+               (now (float-time)))
+          (if (and (not refresh) cached (< now (plist-get cached :expires))) cached
+            (let* ((git (agent-fleet-project--git-context canonical))
+                   (root (or (plist-get git :root)
+                             (agent-fleet-project--backend-root-for-cwd canonical)))
+                   (context (list :state (if root 'project 'none)
+                                  :root root :checkout (or (plist-get git :checkout) root)
+                                  :directory canonical :expires (+ now agent-fleet-project--cache-seconds))))
+              (when (>= (hash-table-count agent-fleet-project--cache) 512)
+                (agent-fleet-project--clear-cache))
+              (puthash key context agent-fleet-project--cache))))
+      (file-error '(:state unavailable))))))
+
 (defun agent-fleet-project-root-for-cwd (dir)
-  "Return the canonical project root for DIR, or nil.
-Resolves via the shared git-worktree normalization first
-(`agent-fleet-project--git-common-root'), then the configured
-`agent-fleet-project-backend' (`project' uses `project-current'/`project-root'
-with a `vc-root-dir' fallback; `projectile' uses `projectile-project-root').
-The result is `file-truename'-canonicalized so symlinked cwd variants of one
-repo all match.
-Nil-safe: nil, empty, or non-existent DIR returns nil — an empty cwd would
-otherwise expand to `default-directory' (via `file-directory-p') and leak the
-caller's project as the agent's."
-  (when (and (stringp dir) (not (string-empty-p dir)) (file-directory-p dir))
-    (or (agent-fleet-project--git-common-root (file-truename dir))
-        (agent-fleet-project--backend-root-for-cwd dir))))
+  "Return DIR's canonical Project identity, shared across linked worktrees.
+This identity is for grouping; use `agent-fleet-project-checkout-for-cwd'
+when choosing an execution directory."
+  (plist-get (agent-fleet-project--context dir) :root))
+
+(defun agent-fleet-project-checkout-for-cwd (dir &optional refresh)
+  "Return DIR's actual checkout or non-Git project root.
+REFRESH forces discovery before an explicit project launch."
+  (plist-get (agent-fleet-project--context dir refresh) :checkout))
 
 (defun agent-fleet-project--canonical-root (dir)
   "Return the canonical Project identity for explicit root DIR, or nil.
@@ -160,301 +150,132 @@ the shared Git common-root normalization so a `project.el' struct rooted at a
 linked worktree matches agents in the primary checkout and sibling worktrees.
 Non-Git roots retain their explicit `file-truename' identity."
   (when (and (stringp dir) (not (string-empty-p dir))
-             (file-directory-p dir))
+             (not (file-remote-p dir)) (file-directory-p dir))
     (let ((truename (file-truename dir)))
       (or (agent-fleet-project--git-common-root truename)
           (directory-file-name truename)))))
 
-(defun agent-fleet-project-for-agent (agent)
-  "Return the canonical project root for AGENT (by its cwd), or nil."
-  (agent-fleet-project-root-for-cwd (herdr-agent-cwd agent)))
 
-(defun agent-fleet--project-root (project-or-root)
-  "Normalize PROJECT-OR-ROOT to a canonical root directory string.
-PROJECT-OR-ROOT is either a project struct (its `project-root' is used) or
-a directory string; either way the result uses the same linked-worktree/Git
-common-root Project identity as `agent-fleet-project-root-for-cwd'.  Returns
-nil when PROJECT-OR-ROOT is nil or its root is not a directory."
-  (when project-or-root
-    (agent-fleet-project--canonical-root
-     (if (stringp project-or-root)
-         project-or-root
-       (project-root project-or-root)))))
+(defun agent-fleet-project-for-agent (record)
+  "Return the local Project of RECORD, never interpreting remote paths locally."
+  (when (herdr-core-local-address-p (plist-get record :address))
+    (agent-fleet-project-root-for-cwd (plist-get record :cwd))))
 
-(defun agent-fleet-project-current ()
-  "Return the current project, for `agent-fleet--project-root'.
-Dispatches on `agent-fleet-project-backend': `project' returns
-`(project-current)' (a project struct); `projectile' returns
-`(projectile-project-root default-directory)' (a root string).  Either shape
-is accepted by `agent-fleet--project-root'.  Returns nil when no project is
-current."
-  (pcase agent-fleet-project-backend
-    ('projectile
-     (agent-fleet-project--ensure-projectile)
-     (projectile-project-root default-directory))
-    (_ (project-current))))
+(defun agent-fleet-project--display-name (root)
+  "Return a short label for canonical ROOT, without filesystem access."
+  (if root
+      (let ((name (file-name-nondirectory (directory-file-name root))))
+        (if (string-empty-p name) root name))
+    "—"))
 
+(defun agent-fleet-project--full-label (root)
+  "Describe ROOT completely, without resolving paths."
+  (or root "— No Project"))
 
-;;; --- Project label (dashboard column) -------------------------------
+(defun agent-fleet-project--short-labels (roots)
+  "Return distinct short labels for canonical ROOTS, without filesystem I/O."
+  (let ((roots (delete-dups (copy-sequence roots)))
+        (labels (make-hash-table :test 'equal)))
+    (dolist (root roots)
+      (let* ((parts (and root (split-string root "/" t)))
+             (depth 1)
+             (label (if root (agent-fleet-project--display-name root) "— No Project")))
+        (while (and root
+                    (cl-some (lambda (other)
+                               (and (not (equal root other))
+                                    (equal label
+                                           (if other
+                                               (mapconcat #'identity (last (split-string other "/" t) depth) "/")
+                                             "— No Project")))) roots))
+          (if (>= depth (length parts))
+              (setq label (agent-fleet-project--full-label root) depth (1+ depth))
+            (setq depth (1+ depth)
+                  label (mapconcat #'identity (last parts depth) "/"))))
+        (puthash root label labels)))
+    labels))
 
-(defun agent-fleet-project-label (agent)
-  "Return a Project label for AGENT.
-Returns the canonical project-root basename when a project is
-resolved; \"—\" (em dash) otherwise.  A cwd without a project is NOT
-labeled by its basename — presenting an arbitrary directory as a
-Project would mislead the user into treating it as a codebase
-identity."
-  (let ((root (agent-fleet-project-for-agent agent)))
-    (if (and root (file-directory-p root))
-        (file-name-nondirectory (directory-file-name root))
-      "—")))
+(defun agent-fleet-project--path-label (path &optional width)
+  "Display directory PATH within WIDTH columns, keeping its trailing components.
+Keep the full path in a tooltip.  Do not resolve TRAMP paths locally."
+  (let* ((text (if (file-remote-p path) path (abbreviate-file-name path)))
+         (text (if (string-suffix-p "/" text) text (concat text "/"))))
+    (when (and width (> (string-width text) width))
+      (let ((start 0) (remaining (string-width text)))
+        (while (and (< start (length text)) (> remaining (max 0 (1- width))))
+          (setq remaining (- remaining (char-width (aref text start)))
+                start (1+ start)))
+        (setq text (concat "…" (substring text start)))))
+    (propertize text 'face 'shadow 'help-echo path)))
 
+(defun agent-fleet-project--directory-note (record root &optional width)
+  "Return meaningful working-directory context for RECORD under ROOT.
+Return nil for the ordinary project root.  Keep full paths in tooltips.
+Fit the note within WIDTH columns when provided."
+  (when (herdr-core-local-address-p (plist-get record :address))
+    (let* ((cwd (plist-get record :cwd))
+           (context (agent-fleet-project--context cwd))
+           (directory (plist-get context :directory))
+           (checkout (plist-get context :checkout))
+           (unavailable (memq (plist-get context :state) '(unavailable remote)))
+           (prefix (cond (unavailable "Directory unavailable: ")
+                         ((and root checkout (not (equal checkout root))) "Worktree: ")
+                         (t ""))))
+      (cond
+       ((or (not (stringp cwd)) (string-empty-p cwd))
+        (propertize "Directory not reported" 'face 'shadow))
+       ((and root (equal root directory)) nil)
+       (t
+        (let* ((path (if (and root directory (string-empty-p prefix))
+                         (concat "./" (file-relative-name directory (file-name-as-directory root)))
+                       cwd))
+               (text (concat prefix (agent-fleet-project--path-label
+                                     path (and width (max 1 (- width (length prefix))))))))
+          (propertize text 'help-echo cwd 'face (if unavailable 'warning 'shadow))))))))
 
-;;; --- Project-scoped agent queries -----------------------------------
-
-(defun agent-fleet-project-agents (&optional project)
-  "Return the agents whose project root matches PROJECT.
-PROJECT defaults to the current project (per `agent-fleet-project-backend').
-It may be a project struct or a root directory string.  Matching is by
-canonical cwd, so
-agents in separate worktrees or checkouts of one repo all match.  Nil-safe
-when not connected or when PROJECT resolves to no root."
-  (let ((root (agent-fleet--project-root (or project (agent-fleet-project-current)))))
-    (if (not root)
-        nil
-      (cl-remove-if-not
-       (lambda (a)
-         (let ((r (agent-fleet-project-for-agent a)))
-           (and r (string= r root))))
-       (herdr-agents)))))
-
-(defun agent-fleet--workspace-for-root (root)
-  "Return a workspace id hosting an agent whose project root is ROOT, or nil.
-Used to co-locate a project's agents in one workspace (one
-project ↔ one workspace, by default).  Returns the first match."
-  (cl-loop for a in (herdr-agents)
-           when (equal (agent-fleet-project-for-agent a) root)
-           return (herdr-agent-workspace-id a)))
-
-
-;;; --- Start for project ----------------------------------------------
-
-;;;###autoload
-(cl-defun agent-fleet-start-for-project (kind &key project name args
-                                                  (timeout-ms agent-fleet-start-timeout-ms)
-                                                  focus worktree branch base)
-  "Start a CLI agent of KIND in Emacs project PROJECT (default: current).
-Resolves the project root, then finds a Herdr workspace
-already serving this project (one with an agent in it); if none, reuses the
-focused workspace; if none, creates a workspace with `cwd=root'.  The agent
-is started at `cwd=root' so the derived project association is immediate.
-
-With `:worktree t', the project root becomes the source repo for a fresh
-git worktree: the agent starts in an isolated checkout instead of the
-normal working tree.  Optional BRANCH/BASE override the
-default branch selection.  When `:worktree t' is set, the workspace/pane
-resolution above is skipped — `worktree.create' provisions both.
-
-When called interactively, if no workspace serves this project and none
-is focused, the user is prompted to pick an existing workspace; the
-agent's terminal is then attached automatically after start (see
-`agent-fleet-attach').
-
-KIND is a symbol like `claude' (see `agent-fleet-agent-executables').
-Keyword args:
-  :name        agent name (auto-generated if nil)
-  :project     a project struct or root dir (default: current project,
-               per `agent-fleet-project-backend')
-  :args        list of extra CLI arg strings
-  :timeout-ms  startup timeout (Herdr requires > 3000)
-  :focus       non-nil to focus the new pane in the Herdr UI
-  :worktree    non-nil to start in a fresh git worktree at the project root
-  :branch      worktree branch override (with :worktree; nil = Herdr decides)
-  :base        worktree base ref override (with :worktree)
-
-Returns the `herdr-agent' for the started agent.  Signals `user-error' if
-no project can be resolved."
-  (interactive
-   (let* ((choices (agent-fleet--kind-choices))
-          (sel (completing-read "Agent kind: " (mapcar #'car choices) nil t))
-          (kind (cdr (assoc sel choices #'equal)))
-          (nm (read-string "Name (empty for auto): ")))
-     (list kind :name (and (not (string-empty-p nm)) nm))))
-  (agent-fleet--ensure-connected)
-  (let ((root (agent-fleet--project-root (or project (agent-fleet-project-current)))))
-    (unless root
-      (user-error "No current project; call from a project buffer or pass :project"))
-    (let ((interactive-p (called-interactively-p 'interactive)))
-      (if worktree
-          ;; A worktree start provisions its own workspace + pane via
-          ;; `worktree.create'; the project root is the source repo.
-          (agent-fleet-start kind :name name :cwd root :args args
-                                 :timeout-ms timeout-ms :focus focus
-                                 :worktree worktree :branch branch :base base
-                                 :attach interactive-p)
-        (let ((ws (or (agent-fleet--workspace-for-root root)
-                      (when (herdr-focused-workspace)
-                        (herdr-workspace-id (herdr-focused-workspace)))
-                      ;; Interactive with no project/focused workspace: pick
-                      ;; an existing one instead of silently creating a frame.
-                      (when interactive-p
-                        (agent-fleet--read-workspace "Start in workspace: ")))))
-          (agent-fleet-start kind :name name :cwd root :workspace ws
-                                 :args args :timeout-ms timeout-ms :focus focus
-                                 :attach interactive-p))))))
-
-
-;;; --- Prompt DWIM: task reference from buffer context ----------------
-
-(defcustom agent-fleet-prompt-dwim-max-region-lines 50
-  "Maximum region size (lines) to include verbatim in a dwim prompt.
-A region with more lines than this is referenced by line range only —
-the reference (file + line range + symbol) is retained so the user can
-ask the agent to read the span directly from its working directory, but
-the verbatim text is omitted to keep the compose buffer small."
-  :type 'integer
-  :group 'agent-fleet)
-
-(defcustom agent-fleet-prompt-dwim-max-region-chars 4000
-  "Maximum region size (characters) to include verbatim in a dwim prompt.
-This remains a secondary safety ceiling alongside
-`agent-fleet-prompt-dwim-max-region-lines'.  A region that exceeds either
-limit is referenced by file and line range, while its verbatim text is
-omitted.  Keeping this option active preserves existing user configuration
-from before the line-based limit was introduced and also bounds very long
-single-line selections."
-  :type 'integer
-  :group 'agent-fleet)
-
-(defun agent-fleet-prompt-dwim--read-agent ()
-  "Read an agent, scoped to the same Project as the buffer when possible.
-Always confirms the target (no auto-selection): with exactly one
-same-Project agent it is still offered as the sole candidate (RET
-selects).  When no same-Project agent exists, falls back to the
-unfiltered reader with a message and an explicit all-agents prompt."
-  (let* ((current-root (agent-fleet--project-root
-                         (agent-fleet-project-current)))
-         (same-project (and current-root
-                            (agent-fleet-project-agents current-root))))
-    (if same-project
-        (let ((same-ids (mapcar #'herdr-agent-id same-project)))
-          (agent-fleet-read-agent-name
-           "Prompt agent (same project)"
-           (lambda (entry)
-             (member (plist-get entry :pane-id) same-ids))))
-      (message (if current-root
-                   "agent-fleet: no same-project agent; showing all agents"
-                 "agent-fleet: current buffer has no Project; showing all agents"))
-      (agent-fleet-read-agent-name "Prompt agent (all agents)"))))
-
-(defun agent-fleet-prompt-dwim--context (project-root)
-  "Build a task-reference from the current buffer context.
-Return (STRING . TRUNCATED-P).  STRING gathers: the buffer's file path
-(relative to the selected agent's working directory when under it, else
-absolute truename), the active region's line range, the symbol near
-point, and — when the region is at most
-`agent-fleet-prompt-dwim-max-region-lines' lines and
-`agent-fleet-prompt-dwim-max-region-chars' characters — the selected text.
-TRUNCATED-P is non-nil when a region was active but exceeded the line
-limit, so its text was omitted (the line range still lets the agent
-read the span).  Returns (\"\" . nil) when nothing can be gathered."
-  (let* ((file (and (buffer-file-name)
-                    (let ((truename (file-truename (buffer-file-name))))
-                      (if (and project-root
-                               (string-prefix-p
-                                (file-name-as-directory project-root)
-                                truename))
-                          (file-relative-name truename project-root)
-                        truename))))
-         (region-p (use-region-p))
-         (beg (and region-p (region-beginning)))
-         (end (and region-p (region-end)))
-         (line1 (and beg (line-number-at-pos beg)))
-         ;; REGION-END is exclusive.  Looking up its line directly includes
-         ;; the next line when the selection ends at that line's first
-         ;; character (for example, selecting "alpha\n" before "beta").
-         (line2 (and end
-                     (line-number-at-pos
-                      (if (and beg (> end beg))
-                          (max beg (1- end))
-                        end))))
-         ;; When a region is active, only report a symbol if point is inside
-         ;; the selected half-open interval.  At the end boundary
-         ;; `thing-at-point' would otherwise describe text outside the
-         ;; selection.
-         (symbol (and (or (not region-p)
-                          (and beg end (>= (point) beg) (< (point) end)))
-                      (thing-at-point 'symbol t)))
-         (region-lines (and line1 line2 (1+ (- line2 line1))))
-         (region-chars (and beg end (- end beg)))
-         (truncated (and region-p region-lines
-                         (or (> region-lines
-                                agent-fleet-prompt-dwim-max-region-lines)
-                             (> region-chars
-                                agent-fleet-prompt-dwim-max-region-chars))))
-         (region-text (and region-p (not truncated)
-                           (buffer-substring-no-properties beg end))))
-    (let ((loc (cond
-                ((and file line1 line2 (not (= line1 line2)))
-                 (format "%s:%d-%d" file line1 line2))
-                ((and file line1)
-                 (format "%s:%d" file line1))
-                (file file))))
-      (let ((base (if symbol
-                      (if loc
-                          (format "%s  (symbol: %s)" loc symbol)
-                        (format "(symbol: %s)" symbol))
-                    loc)))
-        (cons (cond
-               ((and base region-text) (format "%s\n\n%s" base region-text))
-               (base base)
-               (t ""))
-              truncated)))))
-
-(declare-function agent-fleet-attach-paste-prompt "agent-fleet-attach"
-                  (pane-id initial-text))
+(defun agent-fleet-project-agents (&optional root)
+  "Return live members in canonical Project ROOT, defaulting to the current one."
+  (let ((root (if root (agent-fleet-project--canonical-root root)
+                (agent-fleet-project-root-for-cwd default-directory))))
+    (and root (cl-remove-if-not
+               (lambda (r) (equal root (agent-fleet-project-for-agent r)))
+               (agent-fleet-agents)))))
 
 ;;;###autoload
-(defun agent-fleet-prompt-dwim (agent)
-  "Attach to AGENT and paste the buffer context into its input box.
-Gathers a lightweight reference — file path (relative to the agent's
-project root when possible), the active region's line range, the symbol
-near point, and the selected text when small enough
-\(see `agent-fleet-prompt-dwim-max-region-lines').  AGENT is selected
-scoped to the same Project as the current buffer when one exists (no
-auto-selection; you confirm the target).  The reference (and selected
-text) is bracketed-pasted directly into the live attach terminal without
-Enter, so it lands in the agent's own input box; finish the task there
-and press Enter to submit.  Composing in a child frame remains available
-via `agent-fleet-attach-prompt-in-child-frame'.  Does not save user
-files or copy an entire buffer by default."
-  (interactive
-   (progn
-     ;; Candidate readers inspect the cache, so establish the on-demand
-     ;; connection before asking the user to choose a target.  The body keeps
-     ;; its own ensure for non-interactive callers and race-safe reuse.
-     (agent-fleet--ensure-connected)
-     (list (agent-fleet-prompt-dwim--read-agent))))
-  (agent-fleet--ensure-connected)
-  (let* ((struct (agent-fleet--find-agent agent))
-         (root (and struct (herdr-agent-cwd struct))))
-    (unless struct
-      (user-error "No agent %S" agent))
-    (let* ((context (agent-fleet-prompt-dwim--context root))
-           (reference (car context))
-           ;; Keep the task visually and semantically separate from both a
-           ;; bare file reference and verbatim selected source.  Empty
-           ;; context stays empty so the fallback does not inject whitespace.
-           (initial-text (if (string-empty-p reference)
-                             ""
-                           (concat reference "\n\n"))))
-      (when (cdr context)
-        (message "agent-fleet: selected text exceeds a context limit; text omitted"))
-      ;; `agent-fleet-attach' is autoloaded, so calling it loads the attach
-      ;; feature and makes the public paste presentation API available.
-      (agent-fleet-attach agent)
-      (agent-fleet-attach-paste-prompt
-       (herdr-agent-id struct) initial-text))))
+(defun agent-fleet-start-for-project ()
+  "Choose a command and start it in the current Project.
+Interactive calls attach after a successful launch."
+  (interactive)
+  (let ((root (agent-fleet-project-checkout-for-cwd default-directory t)))
+    (unless root (user-error "No Project in the current directory"))
+    (herdr-core-connect)
+    (if (called-interactively-p 'any)
+        (let ((default-directory (file-name-as-directory root)))
+          (agent-fleet-start-minibuffer current-prefix-arg))
+      (agent-fleet-start (agent-fleet--read-command) :cwd root))))
 
+;;;###autoload
+(defun agent-fleet-prompt-dwim ()
+  "Compose a prompt containing a bounded reference to the current code context."
+  (interactive)
+  (herdr-core-connect)
+  (let* ((file buffer-file-name)
+         (start (and (use-region-p) (region-beginning)))
+         (end (and start (region-end)))
+         (context (concat
+                   (if file (format "File: %s\n" file) "")
+                   (if start (format "Lines: %d-%d\n"
+                                     (line-number-at-pos start)
+                                     (line-number-at-pos (max start (1- end)))) "")
+                   (if (and start (<= (- end start) 4000))
+                       (concat "\n" (buffer-substring-no-properties start end) "\n") "")
+                   "\n"))
+         (pinned (or agent-fleet-target
+                     (and agent-fleet-target-function (funcall agent-fleet-target-function))))
+         (same (unless pinned (agent-fleet-project-agents)))
+         (target (cond (pinned pinned)
+                       (same (agent-fleet--read-target same "Same-Project agent: "))
+                       (t (message "No same-Project agent; showing all Fleet agents")
+                          (agent-fleet-read-agent)))))
+    (agent-fleet-prompt target context)))
 (provide 'agent-fleet-project)
 ;;; agent-fleet-project.el ends here

@@ -1,1852 +1,727 @@
-;;; agent-fleet.el --- Multi-agent supervisor over Herdr -*- lexical-binding: t; -*-
-
-;; Copyright (C) 2026  agent-fleet contributors
-
-;; Author: agent-fleet
-;; Keywords: processes, tools, convenience
-;; Version: 0.2.0
-;; Package-Requires: ((emacs "29.1") (transient "0.7.2"))
-
-;; This program is free software; you can redistribute it and/or modify
-;; it under the terms of the GNU General Public License as published by
-;; the Free Software Foundation, either version 3 of the License, or
-;; (at your option) any later version.
-
-;; This program is distributed in the hope that it will be useful,
-;; but WITHOUT ANY WARRANTY; without even the implied warranty of
-;; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
-;; GNU General Public License for more details.
-
-;; You should have received a copy of the GNU General Public License
-;; along with this program.  If not, see <https://www.gnu.org/licenses/>.
-
+;;; agent-fleet.el --- Coding agents through herdr-core -*- lexical-binding: t; -*-
+;; Version: 1.0.0
+;; Package-Requires: ((emacs "29.1"))
 ;;; Commentary:
-
-;; The agent-facing supervisor layer.  Built on
-;; the Herdr client (`herdr.el'): it provisions panes, starts CLI
-;; agents (Claude / Codex / Pi / ...), drives them through Herdr's
-;; `agent.*' RPCs, reads their output, and exposes an event-driven hook
-;; bus for status transitions — without ever bringing the agents' PTY/TUI
-;; into Emacs.
-;;
-;; Design rules honored:
-;;     agent statuses come straight from Herdr (idle/working/blocked/
-;;        done/unknown); this layer adds NO status parsing of its own.
-;;     prompts go through `agent.prompt', not pane.send-text + RET.
-;;     prompt+wait is a single atomic `agent.prompt' with a `wait'
-;;        field, to avoid the separate prompt/wait race.
-;;     three input tiers: agent.prompt (L1), agent.send_keys (L2),
-;;        pane.send_input (L3 escape hatch).
-;;     interrupt = agent.send_keys "ctrl+c"; NOT "cancel".
-;;     output is a read-snapshot, not a continuously mirrored terminal.
-;;     event-driven; no polling timers.
-;;     Herdr events are bridged into agent-fleet-*-hook variables.
-;;
-;; Requiring this package entry point loads only the core control plane.  The
-;; generated autoload file makes dashboard and feature commands available
-;; without loading their modules.  Optional runtime integrations
-;; (Magit/Eat/Ghostel/vterm) remain lazily probed by their own modules.
-
+;; Identity, selection and agent operations shared by all Fleet interfaces.
 ;;; Code:
-
-;; Declare the alias before loading Herdr so an early user setting becomes
-;; the canonical value before its defcustom installs the default.
-;;;###autoload
-(progn
-  ;; Deferred Customize settings can precede alias registration.  Their
-  ;; properties belong to the alias symbol until we transfer them to the
-  ;; canonical option.  Do this only once, never on a subsequent reload.
-  (when (eq (indirect-variable 'agent-fleet-default-session-name)
-            'agent-fleet-default-session-name)
-    (let ((saved (get 'agent-fleet-default-session-name 'saved-value)))
-      (when saved
-        (dolist (property '(saved-value theme-value saved-variable-comment
-                                       variable-comment))
-          (put 'herdr-default-session-name property
-               (get 'agent-fleet-default-session-name property)))
-        ;; Keep the owning theme's records aligned with the canonical name
-        ;; too, so disabling/re-enabling that theme addresses the same option.
-        (dolist (entry (get 'agent-fleet-default-session-name 'theme-value))
-          (dolist (setting (get (car entry) 'theme-settings))
-            (when (and (eq (car setting) 'theme-value)
-                       (eq (cadr setting) 'agent-fleet-default-session-name))
-              (setcar (cdr setting) 'herdr-default-session-name))))
-        ;; Herdr may already be loaded.  In that case no future defcustom
-        ;; initialization will apply the deferred value for us.
-        (when (default-boundp 'herdr-default-session-name)
-          (funcall (or (get 'herdr-default-session-name 'custom-set)
-                       #'set-default)
-                   'herdr-default-session-name (eval (car saved) t))))))
-  (defvaralias 'agent-fleet-default-session-name 'herdr-default-session-name
-  "Default Herdr Session used by Agent Fleet.
-Alias for `herdr-default-session-name'; both names share one value.
-Changing it affects the next connection after an explicit disconnect,
-not the endpoint of an existing connection."))
-
-;; Package installation generates and loads this file automatically.  A source
-;; checkout creates it with `make autoloads'; loading it here keeps the README's
-;; `(require 'agent-fleet)' setup sufficient while leaving feature modules lazy.
-(require 'agent-fleet-autoloads nil t)
-
 (require 'cl-lib)
 (require 'subr-x)
-(require 'tabulated-list)
-(require 'herdr)
-(require 'herdr-model)
-(require 'herdr-events)
+(require 'pp)
+(require 'herdr-core)
+(require 'agent-fleet-display)
+(defgroup agent-fleet nil "Coding agents in Emacs." :group 'tools)
+(defcustom agent-fleet-commands '("claude" "codex" "pi")
+  "Commands offered alongside Core templates." :type '(repeat string) :group 'agent-fleet)
+(defvar agent-fleet--last-command nil)
+(defvar-local agent-fleet-target nil "Pinned identity for this view.")
+(defvar-local agent-fleet-target-function nil
+  "Optional function resolving the target at point in a Fleet view.")
+(defvar-local agent-fleet-presentation-function nil
+  "Optional function calling a presentation thunk at this view's origin.")
+(defvar-local agent-fleet-operation-state nil)
+(defvar-local agent-fleet-operation-result nil)
+(declare-function agent-fleet-project-root-for-cwd "agent-fleet-project" (cwd))
+(declare-function agent-fleet-project-checkout-for-cwd "agent-fleet-project" (cwd &optional refresh))
+(declare-function agent-fleet-dashboard-focus "agent-fleet-dashboard" (address))
+(declare-function agent-fleet-attach--reuse-visible "agent-fleet-attach" (target))
+(autoload 'agent-fleet "agent-fleet-dashboard" nil t)
+(autoload 'agent-fleet-attach "agent-fleet-attach" nil t)
+(autoload 'agent-fleet-cleanup "agent-fleet-cleanup" nil t)
+(autoload 'agent-fleet-start-for-project "agent-fleet-project" nil t)
+(autoload 'agent-fleet-prompt-dwim "agent-fleet-project" nil t)
+(autoload 'agent-fleet-magit-status "agent-fleet-magit" nil t)
+(autoload 'agent-fleet-magit-diff "agent-fleet-magit" nil t)
+(autoload 'agent-fleet-start-form "agent-fleet-start" nil t)
+(autoload 'agent-fleet-start-minibuffer "agent-fleet-start" nil t)
+(autoload 'agent-fleet-observe "agent-fleet-attach" nil t)
+(autoload 'agent-fleet-details "agent-fleet-details" nil t)
+(declare-function evil-make-overriding-map "evil-core" (keymap &optional state copy))
 
-;; `agent-fleet-attach' lives in the `agent-fleet-attach' feature module,
-;; which requires this file (a one-way dependency: modules depend on the
-;; control plane, never the reverse).  An interactive `agent-fleet-start'
-;; attaches the new agent's terminal, so this base layer calls the module
-;; function; `declare-function' informs the byte-compiler without pulling
-;; the module into the require graph (which would re-enter this file at
-;; load time).  The module is loaded on demand via autoload or explicit
-;; `require'; the core control plane works without it.
-(declare-function agent-fleet-attach "agent-fleet-attach" (target &optional takeover))
-;; `agent-fleet-parallel' is another one-way feature module.  The
-;; candidate builder surfaces a parallel task's title, so it calls
-;; these; `declare-function' keeps the module out of the require graph.
-(declare-function agent-fleet-task-for-agent "agent-fleet-parallel" (pane-id))
-(declare-function agent-fleet-task-title "agent-fleet-parallel" (task))
+(defun agent-fleet-protect-keymap (map)
+  "Keep MAP's Fleet commands accessible when optional Evil is active."
+  (with-eval-after-load 'evil
+    (evil-make-overriding-map map)))
 
+(defun agent-fleet-call-with-presentation (function)
+  "Call presentation FUNCTION through the current view's origin handler."
+  (cond ((agent-fleet-display-window-active-p)
+         (agent-fleet-display-window-call function))
+        (agent-fleet-presentation-function
+         (funcall agent-fleet-presentation-function function))
+        (t (funcall function))))
 
-;;; --- Customization --------------------------------------------------
+(defun agent-fleet-label (terminal key)
+  "Read label KEY from TERMINAL."
+  (plist-get (plist-get terminal :labels) (intern (concat ":" key))))
 
-(defgroup agent-fleet nil
-  "Multi-agent supervisor over the Herdr terminal workspace server."
-  :group 'processes
-  :link '(url-link "https://herdr.dev"))
+(defun agent-fleet-managed-p (terminal &optional seen)
+  "Return whether TERMINAL belongs to Fleet, following parents through SEEN."
+  (let ((address (plist-get terminal :address)))
+    (when (and (herdr-core-local-address-p address) (not (member address seen)))
+      (or (equal (agent-fleet-label terminal "fleet.role") "agent")
+          (when-let* ((parent (herdr-core-terminal (plist-get terminal :parent))))
+            (agent-fleet-managed-p parent (cons address seen)))))))
 
-(custom-add-to-group 'agent-fleet 'agent-fleet-default-session-name
-                     'custom-variable)
+(defun agent-fleet-agents (&optional all)
+  "Return Fleet members, including finished records when ALL."
+  (cl-remove-if-not
+   (lambda (r) (and (agent-fleet-managed-p r)
+                    (or all (equal (plist-get r :state) "live"))))
+   (herdr-core-terminals)))
 
-(defvar agent-fleet--auto-connect-timer nil
-  "Pending idle timer for an automatic Herdr connection, or nil.")
+(defun agent-fleet-name (terminal)
+  "Return TERMINAL's display name."
+  (or (agent-fleet-label terminal "fleet.name")
+      (plist-get terminal :name) (plist-get terminal :address)))
 
-(defvar agent-fleet--connect-in-progress nil
-  "Non-nil while agent-fleet is establishing a Herdr connection.")
+(defun agent-fleet-status (terminal)
+  "Return TERMINAL's reported work status without guessing."
+  (or (plist-get (plist-get terminal :status) :state) "unreported"))
 
-(defun agent-fleet--set-auto-connect (symbol value)
-  "Set SYMBOL to VALUE and reconfigure automatic connection startup.
-This is the custom setter for `agent-fleet-auto-connect'."
-  (set-default symbol value)
-  ;; During the first `defcustom' evaluation the setup function has not
-  ;; been defined yet.  It is called explicitly once the package is loaded.
-  (when (fboundp 'agent-fleet--configure-auto-connect)
-    (agent-fleet--configure-auto-connect)))
+(defun agent-fleet-type (terminal)
+  "Return TERMINAL's reported app or launch executable name.
+This does not infer work status.
+Use only path text; do not inspect the executable on disk."
+  (let ((app (plist-get (plist-get terminal :status) :app))
+        (command (car (append (plist-get terminal :argv) nil))))
+    (cond ((and (stringp app) (not (string-blank-p app))) app)
+          ((and (stringp command) (not (string-blank-p command)))
+           (or (car (last (split-string command "/" t))) "—"))
+          (t "—"))))
 
-(defcustom agent-fleet-auto-connect 'on-demand
-  "When agent-fleet should connect to Herdr automatically.
-`on-demand' connects before the first dashboard or control operation.
-`after-init' additionally pre-connects from an idle timer after Emacs
-initialization; a later command retries on demand if pre-connection failed.
-Nil preserves manual-only behavior and requires `herdr-connect'.
+(defun agent-fleet-reference (terminal)
+  "Pin TERMINAL to its Core identity and creation time."
+  (list :fleet-identity (herdr-core-identity terminal)))
 
-Automatic connection never starts the Herdr server itself."
-  :type '(choice (const :tag "Manually only" nil)
-                 (const :tag "When first needed" on-demand)
-                 (const :tag "After Emacs initialization" after-init))
-  :set #'agent-fleet--set-auto-connect
-  :group 'agent-fleet)
+(defun agent-fleet-resolve (target &optional fresh)
+  "Resolve TARGET, checking pinned identity; FRESH queries Core."
+  (herdr-core-connect)
+  (let* ((identity (and (listp target) (plist-get target :fleet-identity)))
+         (address (if identity (herdr-core-identity-address identity) target))
+         (cached (and (stringp address) (herdr-core-terminal address))))
+    (unless (herdr-core-local-address-p address)
+      (user-error "Fleet supports local terminals only"))
+    (unless cached (user-error "Terminal unavailable: %s" address))
+    (when (and identity (not (equal identity (herdr-core-identity cached))))
+      (user-error "Terminal identity changed; reopen this view"))
+    (if (not fresh) cached
+      (let ((record (herdr-core-request "terminal.get" (list :terminal address))))
+        (unless (and (herdr-core--valid-terminal-p record)
+                     (equal (herdr-core-identity cached) (herdr-core-identity record)))
+          (user-error "Terminal identity changed during operation"))
+        record))))
 
-(defcustom agent-fleet-auto-connect-delay 1.0
-  "Idle seconds before an `after-init' automatic Herdr connection.
-This affects only `agent-fleet-auto-connect' set to `after-init'."
-  :type 'number
-  :group 'agent-fleet)
+(defun agent-fleet--read-target (records prompt)
+  "Select from RECORDS with PROMPT, retaining identity from before selection."
+  (let ((choices
+         (mapcar
+          (lambda (r)
+            (let ((pinned (condition-case err
+                              (list :reference (agent-fleet-reference r))
+                            (error (list :error err)))))
+              (cons (format "%s [%s]  %s / %s%s"
+                            (agent-fleet-name r) (plist-get r :address)
+                            (plist-get r :state) (agent-fleet-status r)
+                            (if (plist-get pinned :error) " (unavailable)" ""))
+                    pinned)))
+          (cl-remove-if-not (lambda (r) (herdr-core-local-address-p (plist-get r :address))) records))))
+    (unless choices (user-error "No terminals available"))
+    (let ((selected (cdr (assoc (completing-read prompt choices nil t) choices))))
+      (unless selected (user-error "Select a terminal"))
+      (when-let* ((err (plist-get selected :error))) (signal (car err) (cdr err)))
+      (plist-get selected :reference))))
 
-(defcustom agent-fleet-agent-executables
-  '((claude "claude" "Claude Code")
-    (codex "codex" "Codex")
-    (pi-agent "pi" "Pi"))
-  "Known agent kinds and the CLI executables they use.
-Each entry is (KIND-SYMBOL EXECUTABLE DISPLAY-NAME).  Used by
-`agent-fleet-doctor' and to provide a default `kind' completion table."
-  :type '(repeat (list (symbol :tag "Kind")
-                       (string :tag "Executable")
-                       (string :tag "Display name")))
-  :group 'agent-fleet)
+(defun agent-fleet-read-agent (&optional prompt all)
+  "Read a pinned agent identity with PROMPT; include history when ALL."
+  (herdr-core-connect)
+  (let ((records (agent-fleet-agents all)))
+    (unless records (user-error "No Fleet agents; start one or use agent-fleet-adopt"))
+    (agent-fleet--read-target records (or prompt "Agent: "))))
 
-(defcustom agent-fleet-agent-editor-command "emacsclient --quiet"
-  "Command assigned to EDITOR and VISUAL for newly provisioned agent panes.
+(defun agent-fleet-current-target (&optional all)
+  "Return this view's target, or ask for an agent, including history with ALL."
+  (or agent-fleet-target
+      (and agent-fleet-target-function (funcall agent-fleet-target-function))
+      (agent-fleet-read-agent nil all)))
 
-Agent Fleet passes this value through Herdr's pane-provisioning `env' field;
-it never changes Emacs's global `process-environment'.  Set this to nil to
-omit EDITOR and VISUAL.  A caller-supplied existing pane and the root pane
-returned by `worktree.create' retain their existing environment because the
-corresponding Herdr RPCs do not accept environment overrides."
-  :type '(choice (const :tag "Do not set EDITOR or VISUAL" nil)
-                 (string :tag "Editor command"))
-  :group 'agent-fleet)
+(defun agent-fleet--name (cwd)
+  "Generate a Core-compatible unique name from CWD."
+  (require 'agent-fleet-project)
+  (let* ((case-fold-search nil)
+         (root (or (agent-fleet-project-root-for-cwd cwd) cwd))
+         (base (replace-regexp-in-string
+                "[^a-z0-9_-]+" "-"
+                (downcase (file-name-nondirectory (directory-file-name root)))))
+         (base (replace-regexp-in-string "\\`[^a-z0-9]+" "" base))
+         (base (if (string-empty-p base) "agent" (substring base 0 (min 24 (length base)))))
+         ;; Guard after truncation, which can itself leave an ID-shaped name.
+         (base (if (string-match-p "\\`t[0-9][a-z0-9]*\\'" base)
+                   (concat "agent-" (substring base 0 (min 18 (length base)))) base))
+         (names (cl-loop for r in (herdr-core-terminals)
+                         when (herdr-core-local-address-p (plist-get r :address))
+                         collect (plist-get r :name)))
+         (name base) (n 1))
+    (while (member name names)
+      (let ((suffix (format "-%d" (cl-incf n))))
+        (setq name (concat (substring base 0 (min (length base) (- 32 (length suffix)))) suffix))))
+    name))
 
-(defcustom agent-fleet-default-read-source 'recent_unwrapped
-  "Default `agent.read' source.
-`recent_unwrapped' ignores soft wrapping and is best for log/agent
-output.  One of: visible, recent, recent_unwrapped,
-detection."
-  :type '(choice (const visible) (const recent)
-                 (const recent_unwrapped) (const detection))
-  :group 'agent-fleet)
+(defun agent-fleet--commands ()
+  "Return choices pairing labels with literal argv lists."
+  (append
+   (mapcar (lambda (template)
+             (cons (concat "template: " (plist-get template :name))
+                   (list (plist-get template :name))))
+           (plist-get (herdr-core-request "templates.list") :templates))
+   (mapcar (lambda (command) (cons command (split-string-and-unquote command)))
+           agent-fleet-commands)))
 
-(defcustom agent-fleet-default-read-lines 120
-  "Default line count for `agent-fleet-read' and the output view commands."
-  :type 'integer
-  :group 'agent-fleet)
+(defun agent-fleet--read-command ()
+  "Read a template or literal command, retaining spaces in its arguments."
+  (let ((choices (agent-fleet--commands))
+        (minibuffer-local-completion-map (copy-keymap minibuffer-local-completion-map)))
+    ;; Space normally requests word completion in this minibuffer map.
+    (define-key minibuffer-local-completion-map (kbd "SPC") #'self-insert-command)
+    (let* ((choice (completing-read "Template or command: " choices nil nil nil nil
+                                    (or agent-fleet--last-command (car agent-fleet-commands)
+                                        (caar choices))))
+           (argv (or (cdr (assoc choice choices)) (split-string-and-unquote choice))))
+      (unless argv (user-error "Provide a command"))
+      (setq agent-fleet--last-command choice)
+      argv)))
 
-(defcustom agent-fleet-default-read-format 'text
-  "Default `agent.read' format: `text' (ANSI stripped) or `ansi'."
-  :type '(choice (const text) (const ansi))
-  :group 'agent-fleet)
-
-(defcustom agent-fleet-start-timeout-ms 30000
-  "Startup timeout (ms) passed to `agent.start'.
-Herdr requires this to be greater than 3000 and at most 300000."
-  :type 'integer
-  :group 'agent-fleet)
-
-(defcustom agent-fleet-wait-timeout-ms 120000
-  "Default timeout (ms) for `agent-fleet-wait' and `agent-fleet-prompt-and-wait'."
-  :type 'integer
-  :group 'agent-fleet)
-
-(defcustom agent-fleet-default-wait-until '(done blocked)
-  "Default statuses `agent-fleet-wait' / `-prompt-and-wait' wait for.
-A list of status symbols.  `done' = finished; `blocked' = needs input."
-  :type '(repeat (choice (const idle) (const working)
-                         (const blocked) (const done) (const unknown)))
-  :group 'agent-fleet)
-
-(defcustom agent-fleet-output-buffer-prefix "*Agent Output: "
-  "Prefix for the output view buffer names.
-The buffer is named PREFIX<name>*."
-  :type 'string
-  :group 'agent-fleet)
-
-(defconst agent-fleet--request-timeout-slack 5.0
-  "Extra seconds allowed beyond a Herdr server-side timeout.
-Long-running RPCs such as `agent.start' and `agent.wait' carry their own
-`timeout_ms'.  The socket request must remain alive for at least that long;
-this small allowance covers framing and scheduling around the server wait.")
-
-
-;;; --- Errors ---------------------------------------------------------
-
-(define-error 'agent-fleet-error "agent-fleet error" 'herdr-error)
-(define-error 'agent-fleet-not-connected
-  "agent-fleet: not connected to Herdr" 'agent-fleet-error)
-(define-error 'agent-fleet-target-not-found
-  "agent-fleet: agent not found" 'agent-fleet-error)
-(define-error 'agent-fleet-provisioning-failed
-  "agent-fleet: pane provisioning failed" 'agent-fleet-error)
-
-(defun agent-fleet--connect-now ()
-  "Establish a Herdr connection once and return non-nil when live.
-Concurrent/re-entrant attempts are coalesced.  Errors from `herdr-connect'
-are allowed to propagate to the caller."
+;;;###autoload
+(cl-defun agent-fleet-start (argv &key (cwd default-directory) name task configure display
+                                labels callback)
+  "Start agent ARGV in CWD, optionally named NAME.
+TASK is an initial task for a Core template; CONFIGURE opens a start form.
+DISPLAY opens the Dashboard for programmatic calls.
+Interactive calls use minibuffer prompts and attach after a successful launch;
+a prefix argument opens the advanced form instead.
+LABELS adds string-valued Core labels; Fleet ownership cannot be overridden.
+CALLBACK receives (RECORD ERROR) once the launch request completes.
+Return an asynchronous request ID.  An unsent first message never kills
+a successfully started terminal."
+  (interactive (list nil))
   (cond
-   ((herdr-connected-p) t)
-   (agent-fleet--connect-in-progress nil)
+   ((called-interactively-p 'any)
+    (if current-prefix-arg (agent-fleet-start-form) (agent-fleet-start-minibuffer)))
+   (configure (agent-fleet-start-form))
    (t
-    (let ((agent-fleet--connect-in-progress t))
-      (herdr-connect)
-      (herdr-connected-p)))))
+    (herdr-core-connect)
+    (unless (and argv (cl-every #'stringp argv)) (user-error "Provide a command"))
+    (unless (and (not (file-remote-p cwd)) (file-directory-p cwd))
+      (user-error "Select an existing local working directory"))
+    (when (and task
+               (not (member (car argv)
+                            (mapcar (lambda (r) (plist-get r :name))
+                                    (plist-get (herdr-core-request "templates.list") :templates)))))
+      (user-error "Initial task requires a Core template"))
+    (let* ((cwd (file-truename cwd))
+           (name (or name (agent-fleet--name cwd)))
+           (params (list :argv (vconcat argv (and task (list task))) :cwd cwd :name name
+                         :no_parent t :wait :false :keep :false :rm :false
+                         :labels (plist-put (copy-sequence labels) :fleet.role "agent"))))
+      (when display (agent-fleet))
+      (message "Starting %s…" name)
+      (herdr-core-request-async
+       "terminal.run" params
+       (lambda (record err)
+         (when (and (null err) (not (herdr-core--valid-terminal-p record)))
+           (setq err (list 'herdr-core-uncertain :reason 'invalid-launch-response :response record)))
+         (if err (message "Start %s: %s (not retried)" name (herdr-core-error-message err))
+           (let ((first (plist-get record :first_message)))
+             (message "Started %s [%s]%s" name (plist-get record :address)
+                      (if (and first (not (eq (plist-get first :sent) t)))
+                          (format "; first task NOT sent: %s" (plist-get first :reason)) "")))
+           (when (fboundp 'agent-fleet-dashboard-focus)
+             (agent-fleet-dashboard-focus (plist-get record :address))))
+         (when callback (funcall callback record err))) 90)))))
 
-(defun agent-fleet--ensure-connected ()
-  "Ensure Herdr is live according to `agent-fleet-auto-connect'.
-Return t when connected.  In automatic modes, make one immediate connection
-attempt before signalling `agent-fleet-not-connected'."
-  (cond
-   ((herdr-connected-p) t)
-   ;; A subscription loss leaves the connection object (and its resolved
-   ;; socket path) alive while a reconnect timer is pending.  Do not call
-   ;; `herdr-connect' here: it would tear down that object and rediscover the
-   ;; endpoint from mutable Session/environment settings.  The reconnect
-   ;; machinery will retry against the endpoint saved on the connection.
-   ((and (herdr-connection)
-         (eq (herdr-connection-state) 'reconnecting))
-    (signal 'agent-fleet-not-connected
-            (list :hint "Herdr is reconnecting on its existing Session endpoint; retry shortly")))
-   ((null agent-fleet-auto-connect)
-    (signal 'agent-fleet-not-connected
-            (list :hint "run M-x herdr-connect, or enable agent-fleet-auto-connect")))
-   (agent-fleet--connect-in-progress
-    (signal 'agent-fleet-not-connected
-            (list :hint "a Herdr connection is already in progress; retry shortly")))
-   (t
-    (let ((cause (condition-case err
-                     (progn (agent-fleet--connect-now) nil)
-                   (error err))))
-      (if (herdr-connected-p)
-          t
-        (signal 'agent-fleet-not-connected
-                (list :cause cause
-                      :hint (concat "ensure the Herdr server is running, then retry; "
-                                    "see M-x agent-fleet-doctor"))))))))
+;;;###autoload
+(defun agent-fleet-adopt (target)
+  "Explicitly include terminal TARGET as a Fleet agent.
+TARGET may be an address or a pinned identity; interactive selection pins it."
+  (interactive
+   (progn (herdr-core-connect)
+          (list (agent-fleet--read-target (herdr-core-terminals) "Include terminal: "))))
+  (let ((record (agent-fleet-resolve target t)))
+    (herdr-core-request "terminal.label"
+                       (list :terminal (plist-get record :address) :labels '(:fleet.role "agent")))))
 
-(defun agent-fleet--auto-connect-now ()
-  "Try the configured startup connection without disrupting Emacs startup."
-  (setq agent-fleet--auto-connect-timer nil)
-  (when (and (eq agent-fleet-auto-connect 'after-init)
-             (not (herdr-connected-p))
-             (not agent-fleet--connect-in-progress))
+;;;###autoload
+(defun agent-fleet-send-file (target file)
+  "Attach local FILE to live TARGET and open an unsent prompt with its path.
+The Core artifact is removed with its terminal history; no checkout is written."
+  (interactive (list (agent-fleet-current-target) (read-file-name "Send file: " nil nil t)))
+  (let* ((record (agent-fleet-resolve target t))
+         (reference (agent-fleet-reference record)) data bytes)
+    (unless (equal (plist-get record :state) "live") (user-error "Choose a live agent"))
+    (unless (and (not (file-remote-p file)) (file-regular-p file)
+                 (<= (file-attribute-size (file-attributes file)) (* 8 1024 1024)))
+      (user-error "Choose a local regular file of at most 8 MiB"))
+    (with-temp-buffer
+      (set-buffer-multibyte nil)
+      (insert-file-contents-literally file nil 0 (1+ (* 8 1024 1024)))
+      (when (> (buffer-size) (* 8 1024 1024)) (user-error "File grew beyond 8 MiB"))
+      (setq bytes (buffer-size) data (base64-encode-string (buffer-string) t)))
+    (setq record (agent-fleet-resolve reference t))
+    (let* ((result (herdr-core-request "terminal.put"
+                                     (list :terminal (plist-get record :address)
+                                           :name (file-name-nondirectory file) :data data)))
+           (path (plist-get result :path)))
+      (unless (and (stringp path) (not (string-empty-p path))
+                   (equal bytes (plist-get result :bytes)))
+        (signal 'herdr-core-uncertain '(:reason invalid-file-acknowledgement)))
+      (agent-fleet-prompt reference (format "Attached file: %s\n\n" path)))))
+
+(defun agent-fleet-present-buffer (buffer &optional retain-origin)
+  "Present BUFFER without resizing an attached terminal.
+RETAIN-ORIGIN records the preceding view when opening in an ordinary window."
+  (agent-fleet-call-with-presentation
+   (lambda ()
+     (let ((origin (agent-fleet-display-origin-frame)))
+       (cond
+        ((agent-fleet-display-window-active-p)
+         (agent-fleet-display-window-open buffer))
+        ((and (bound-and-true-p agent-fleet-attach-mode)
+              (agent-fleet-display-child-frame-available-p origin))
+           (agent-fleet-display-aux-run-at-origin
+            origin (lambda () (switch-to-buffer buffer)
+                     (agent-fleet-display-make-outcome t buffer buffer))))
+        (retain-origin (agent-fleet-display-window-open buffer))
+        (t (switch-to-buffer buffer nil t)))
+       buffer))))
+
+(defvar agent-fleet-review-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map special-mode-map)
+    (define-key map (kbd "q") #'agent-fleet-view-quit)
+    (define-key map (kbd "C-g") #'agent-fleet-view-quit) map))
+(agent-fleet-protect-keymap agent-fleet-review-mode-map)
+(define-derived-mode agent-fleet-review-mode special-mode "Fleet Review"
+  "Read-only Fleet output and review."
+  (setq-local truncate-lines nil))
+
+(defun agent-fleet-view-quit ()
+  "Close a view, preserving its origin and terminal client."
+  (interactive)
+  (cond ((agent-fleet-display-window-quit))
+        ((frame-parameter nil 'agent-fleet-auxiliary-frame)
+         (agent-fleet-display-close-auxiliary-frame (selected-frame)))
+        (t (quit-window))))
+
+(defun agent-fleet-view-buffer (mode reference name)
+  "Reuse a MODE view pinned to REFERENCE, or create a buffer named NAME."
+  (or (cl-find-if (lambda (buffer)
+                    (with-current-buffer buffer
+                      (and (derived-mode-p mode) (equal agent-fleet-target reference))))
+                  (buffer-list))
+      (generate-new-buffer name)))
+
+(define-derived-mode agent-fleet-output-mode agent-fleet-review-mode "Fleet Output"
+  "Read a refreshable, identity-pinned output snapshot."
+  (setq-local revert-buffer-function #'agent-fleet--output-revert
+              header-line-format "g refresh snapshot   q / C-g close"))
+
+(defun agent-fleet--output-render (record result)
+  "Replace this snapshot with RECORD's output RESULT, retaining point."
+  (let ((inhibit-read-only t) (point-before (point)))
+    (erase-buffer)
+    (insert (propertize (concat (agent-fleet-name record) "\n") 'face 'bold))
+    (insert (format "Snapshot: %s%s\n\n" (plist-get result :how)
+                    (if (eq (plist-get result :complete) t) "" " (incomplete)")))
+    (insert (or (plist-get result :text) ""))
+    (goto-char (min point-before (point-max)))
+    (set-buffer-modified-p nil)))
+
+(defun agent-fleet--output-revert (&optional _ignore-auto _noconfirm)
+  "Refresh this view's pinned target; preserve the snapshot on failure."
+  (let* ((record (agent-fleet-resolve agent-fleet-target t))
+         (result (herdr-core-request "terminal.read"
+                                    (list :terminal (plist-get record :address) :lines 200))))
+    (agent-fleet--output-render record result)))
+
+;;;###autoload
+(defun agent-fleet-show-output (target)
+  "Read a finite output snapshot for TARGET."
+  (interactive (list (agent-fleet-current-target)))
+  (let* ((record (agent-fleet-resolve target t))
+         (result (herdr-core-request "terminal.read"
+                                    (list :terminal (plist-get record :address) :lines 200)))
+         (reference (agent-fleet-reference record))
+         (buffer (agent-fleet-view-buffer 'agent-fleet-output-mode reference
+                                          (format "*Fleet Output: %s*" (plist-get record :address)))))
+    (with-current-buffer buffer
+      (unless (derived-mode-p 'agent-fleet-output-mode) (agent-fleet-output-mode))
+      (agent-fleet--output-render record result)
+      (setq-local agent-fleet-target reference))
+    (agent-fleet-present-buffer buffer)))
+
+(defvar agent-fleet-prompt-mode-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map text-mode-map)
+    (define-key map (kbd "C-c C-c") #'agent-fleet-prompt-submit)
+    (define-key map (kbd "C-c C-a") #'agent-fleet-prompt-attach)
+    (define-key map (kbd "C-c C-k") #'agent-fleet-view-quit) map))
+(defvar-local agent-fleet-prompt--status-overlay nil)
+(defvar-local agent-fleet-prompt--recipient nil)
+(defvar-local agent-fleet-prompt--attach-error nil)
+(define-derived-mode agent-fleet-prompt-mode text-mode "Fleet Prompt"
+  "Compose an explicit agent message."
+  (setq-local truncate-lines nil
+              header-line-format "C-c C-c send & attach   C-c C-a attach   C-c C-k back"))
+
+(defun agent-fleet-prompt--render-status ()
+  "Display status separately from the exact text of this draft."
+  (let* ((state agent-fleet-operation-state)
+         (result agent-fleet-operation-result)
+         (title (pcase state ('sent "Submitted") ('sending "Sending")
+                       ('rejected "Rejected") ('uncertain "Outcome unknown") (_ "Draft")))
+         (face (pcase state ('sent 'success) ('rejected 'error)
+                      ('uncertain 'warning) (_ 'font-lock-keyword-face)))
+         (detail
+          (pcase state
+            ('sending "Waiting for Core. Closing this view does not cancel delivery.")
+            ('sent (format "Core acknowledged turn %s. Work completion is not confirmed."
+                           (plist-get result :turn)))
+            ('rejected (concat (herdr-core-error-message result)
+                               "\nDraft retained. Inspect the target before creating another prompt."))
+            ('uncertain (concat (herdr-core-error-message result)
+                                "\nDelivery may have happened. Inspect the agent before sending again.")))))
+    (setq header-line-format
+          (concat (if (eq state 'draft) "C-c C-c send & attach" title)
+                  "   C-c C-a attach   C-c C-k back"))
+    (unless (overlayp agent-fleet-prompt--status-overlay)
+      (setq agent-fleet-prompt--status-overlay (make-overlay (point-min) (point-min))))
+    (overlay-put agent-fleet-prompt--status-overlay 'before-string
+                 (concat (propertize (concat "To: " (or agent-fleet-prompt--recipient "agent") "\n\n")
+                                     'face 'bold)
+                         (propertize (concat title "\n") 'face face)
+                         (when detail (concat detail "\n"))
+                         (when agent-fleet-prompt--attach-error
+                           (propertize
+                            (concat "Attach failed: " (error-message-string agent-fleet-prompt--attach-error)
+                                    "\nC-c C-a retries attachment without sending again.\n")
+                            'face 'warning))
+                         (when (or detail agent-fleet-prompt--attach-error) "\nPrompt text\n")
+                         "\n"))))
+
+(defun agent-fleet-prompt--finish (buffer result err &optional window)
+  "Retain RESULT or ERR in BUFFER; attach after acknowledgement in WINDOW.
+Only follow the agent while the submitting window remains selected and focused."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (when (and (null err) (not (herdr-core--valid-send-result-p result)))
+        (setq err (list 'herdr-core-uncertain :reason 'invalid-send-response :response result)))
+      (setq agent-fleet-operation-result (or err result)
+            agent-fleet-operation-state
+            (cond ((null err) 'sent)
+                  ((eq (car err) 'herdr-core-request-error) 'rejected)
+                  (t 'uncertain))
+            buffer-read-only t)
+      (agent-fleet-prompt--render-status)
+      ;; Native child frames may report input focus only on their parent.
+      (when (and (null err) (window-live-p window) (eq window (selected-window))
+                 (eq (window-buffer window) buffer) (not (active-minibuffer-window))
+                 (or (not (display-graphic-p (window-frame window)))
+                     (frame-focus-state (window-frame window))
+                     (frame-focus-state (agent-fleet-display-origin-frame (window-frame window)))))
+        (condition-case attach-error
+            (agent-fleet-prompt-attach)
+          ((error quit)
+           (message "Prompt submitted; attach failed: %s" (error-message-string attach-error))))))))
+
+;;;###autoload
+(defun agent-fleet-prompt-attach ()
+  "Open this prompt's pinned agent without submitting or resending its text."
+  (interactive)
+  (unless (and (derived-mode-p 'agent-fleet-prompt-mode) agent-fleet-target)
+    (user-error "Not an Agent Fleet prompt"))
+  (let ((buffer (current-buffer)))
+    (setq agent-fleet-prompt--attach-error nil)
+    (agent-fleet-prompt--render-status)
     (condition-case err
-        (agent-fleet--connect-now)
-      (error
-       (message "agent-fleet: Herdr pre-connection failed: %s"
-                (error-message-string err))
-       nil))))
-
-(defun agent-fleet--schedule-auto-connect ()
-  "Schedule one idle Herdr connection for `after-init' mode."
-  (remove-hook 'after-init-hook #'agent-fleet--schedule-auto-connect)
-  (when (and (eq agent-fleet-auto-connect 'after-init)
-             (not (herdr-connected-p))
-             (not (timerp agent-fleet--auto-connect-timer)))
-    (setq agent-fleet--auto-connect-timer
-          (run-with-idle-timer agent-fleet-auto-connect-delay nil
-                               #'agent-fleet--auto-connect-now))))
-
-(defun agent-fleet--configure-auto-connect ()
-  "Install or remove startup behavior for `agent-fleet-auto-connect'."
-  (remove-hook 'after-init-hook #'agent-fleet--schedule-auto-connect)
-  (when (timerp agent-fleet--auto-connect-timer)
-    (cancel-timer agent-fleet--auto-connect-timer))
-  (setq agent-fleet--auto-connect-timer nil)
-  (when (eq agent-fleet-auto-connect 'after-init)
-    (if after-init-time
-        (agent-fleet--schedule-auto-connect)
-      (add-hook 'after-init-hook #'agent-fleet--schedule-auto-connect))))
-
-
-;;; --- Target resolution ----------------------------------------------
-
-;; `agent.*' RPCs take a `target' string that Herdr resolves as either an
-;; agent name or a pane id.  We prefer the pane id (stable across renames)
-;; when we can resolve it from the cache; otherwise we pass the string
-;; through and let Herdr resolve it.  `pane.*' RPCs need a real pane id.
-
-(defun agent-fleet--find-agent (agent)
-  "Resolve AGENT to a cached `herdr-agent' struct, or nil.
-AGENT may be a struct, a name string, a pane-id string, or a symbol."
-  (cond
-   ((herdr-agent-p agent) agent)
-   ((stringp agent)
-    (or (herdr-model-find-agent-by-name agent)
-        (herdr-model-find-agent agent)))      ; by pane id
-   ((symbolp agent)
-    (herdr-model-find-agent-by-name (symbol-name agent)))
-   (t nil)))
-
-(defun agent-fleet--resolve-target (agent)
-  "Resolve AGENT to a `target' string for `agent.*' RPCs.
-Prefers the pane id (stable across renames); falls back to the name or
-the string itself.  Never signals: an unresolvable string is passed
-through so Herdr can report the error."
-  (let ((struct (agent-fleet--find-agent agent)))
-    (cond
-     ((herdr-agent-p struct) (herdr-agent-id struct))
-     ((stringp agent) agent)
-     ((symbolp agent) (symbol-name agent))
-     (t (signal 'agent-fleet-target-not-found (list :agent agent))))))
-
-(defun agent-fleet--resolve-pane-id (agent)
-  "Resolve AGENT to a pane id string (for `pane.*' RPCs).
-Signals `agent-fleet-target-not-found' if AGENT cannot be resolved to a
-pane id."
-  (let ((struct (agent-fleet--find-agent agent)))
-    (cond
-     ((herdr-agent-p struct) (herdr-agent-id struct))
-     ((stringp agent)
-      (let ((cached (herdr-model-find-agent agent))) ; by pane id
-        (if cached (herdr-agent-id cached)
-          ;; Uncached string (a name Herdr knows but we don't): ask Herdr
-          ;; to resolve name -> pane id, falling back to treating the
-          ;; string itself as a pane id.
-          (or (plist-get
-               (agent-fleet--unwrap-agent
-                (ignore-errors
-                  (herdr-request "agent.get" `(("target" . ,agent)))))
-               :pane_id)
-              agent))))
-     ((symbolp agent) (agent-fleet--resolve-pane-id (symbol-name agent)))
-     (t (signal 'agent-fleet-target-not-found (list :agent agent))))))
-
-(defun agent-fleet--normalize-until (until)
-  "Convert UNTIL to a list of status strings.
-UNTIL may be a symbol, a string, or a list of either."
-  (cond
-   ((null until) nil)
-   ((consp until)
-    (delq nil (mapcar (lambda (s)
-                        (cond ((symbolp s) (symbol-name s))
-                              ((stringp s) s)
-                              (t nil)))
-                      until)))
-   ((symbolp until) (list (symbol-name until)))
-   ((stringp until) (list until))
-   (t nil)))
-
-(defun agent-fleet--transport-timeout (timeout-ms)
-  "Return a socket timeout in seconds for server TIMEOUT-MS.
-The result exceeds the server-side deadline by
-`agent-fleet--request-timeout-slack', preventing the protocol layer's
-short default timeout from cutting off legitimate agent waits."
-  (+ (/ timeout-ms 1000.0) agent-fleet--request-timeout-slack))
-
-(defun agent-fleet-status (agent)
-  "Return AGENT's current cached status as a symbol, or nil.
-One of idle/working/blocked/done/unknown, read straight
-from the Herdr-mirrored cache."
-  (let ((a (agent-fleet--find-agent agent)))
-    (and a (let ((s (herdr-agent-agent-status a)))
-             (and s (intern s))))))
-
-(defun agent-fleet-connection-state ()
-  "Return the current Herdr connection state as a symbol.
-Delegates to `herdr-connection-state': `connected', `reconnecting',
-`gave-up', or `disconnected'.  Transitions are surfaced via
-`agent-fleet-connection-state-changed-hook' (event-driven, no polling)."
-  (herdr-connection-state))
-
-
-;;; --- Pane provisioning (for agent.start) ----------------------------
-
-(defun agent-fleet--editor-environment-param ()
-  "Return an RPC `env' parameter for the configured agent editor.
-Return nil when `agent-fleet-agent-editor-command' is nil.  Signal a typed
-error for an invalid non-nil value before any provisioning RPC is issued."
-  (let ((command agent-fleet-agent-editor-command))
-    (cond
-     ((null command) nil)
-     ((and (stringp command) (not (string-empty-p command)))
-      `(("env" . (("EDITOR" . ,command)
-                   ("VISUAL" . ,command)))))
-     (t
-      (signal 'agent-fleet-error
-              (list :hint "agent editor command must be a non-empty string or nil"
-                    :value command))))))
-
-(defun agent-fleet--extract-pane-id (result)
-  "Extract a pane id from a pane.split / tab.create / pane.current RESULT.
-  Tolerant of several result shapes: top-level :pane_id, nested :pane or
-:root_pane, a :panes list (last entry), or a :tab envelope."
-  (cond
-   ((null result) nil)
-   ((plist-get result :pane_id) (plist-get result :pane_id))
-   ((plist-get result :pane)
-    (plist-get (plist-get result :pane) :pane_id))
-   ((plist-get result :root_pane)
-    (plist-get (plist-get result :root_pane) :pane_id))
-   ((plist-get result :panes)
-    (let ((panes (plist-get result :panes)))
-      (and panes (plist-get (car (last (if (listp panes) panes
-                                            (append panes nil))))
-                            :pane_id))))
-   ((plist-get result :tab)
-    (plist-get (plist-get result :tab) :pane_id))
-   (t nil)))
-
-(defun agent-fleet--unwrap-agent (result)
-  "Return the AgentInfo plist from a Herdr agent-RPC RESULT.
-Live Herdr wraps agent results in a typed envelope whose payload is
-under `:agent' (`:type \"agent_info\"', `agent_started',
-`agent_prompted'); a bare result carries `:pane_id' directly (as in
-`session.snapshot' agent entries).  Returns nil if RESULT has neither
-\(e.g. a bare `ok' ack)."
-  (cond
-   ((null result) nil)
-   ((plist-member result :pane_id) result)          ; bare AgentInfo
-   ((plist-member result :agent) (plist-get result :agent))
-   (t nil)))
-
-(defun agent-fleet--unwrap-read (result)
-  "Return the PaneReadResult from an `agent.read' RESULT.
-Live Herdr wraps it as `:type \"pane_read\"/:read'; a bare result
-carries `:text' directly.  Falls back to RESULT itself."
-  (cond
-   ((null result) nil)
-   ((plist-member result :read) (plist-get result :read))
-   (t result)))
-
-(defun agent-fleet--create-workspace-provisioning (cwd &optional focus)
-  "Create a workspace and return its workspace/root-pane provisioning data.
-The live `workspace_created' result contains `:workspace', `:tab', and
-`:root_pane'.  Reusing that root pane avoids immediately creating a redundant
-second tab.  The configured agent editor environment is assigned to the root
-pane.  Returns `(:workspace-id WS :pane-id PANE)' or signals."
-  (let* ((params `(("focus" . ,(if focus t :false))
-                   ,@(and cwd `(("cwd" . ,cwd)))
-                   ,@(agent-fleet--editor-environment-param)))
-         (res (herdr-request "workspace.create" params))
-         (workspace (or (plist-get res :workspace)
-                        (and (plist-get res :workspace_id) res)))
-         (root-pane (or (plist-get res :root_pane)
-                        (plist-get res :pane)))
-         (workspace-id (plist-get workspace :workspace_id))
-         (pane-id (plist-get root-pane :pane_id)))
-    (unless workspace-id
-      (signal 'agent-fleet-provisioning-failed
-              (list :step 'workspace-create :result res)))
-    (herdr-model-upsert-workspace workspace)
-    (when (and root-pane (herdr-model-cache))
-      (herdr-model--upsert-pane (herdr-model-cache) root-pane))
-    `(:workspace-id ,workspace-id :pane-id ,pane-id)))
-
-(defun agent-fleet--create-workspace (cwd)
-  "Create a Herdr workspace (with CWD if given) and return its id."
-  (plist-get (agent-fleet--create-workspace-provisioning cwd) :workspace-id))
-
-(defun agent-fleet--resolve-workspace-id (&optional workspace cwd)
-  "Return a workspace id to start an agent in.
-WORKSPACE wins if given; else the focused workspace; else a new one
-(created with CWD if given)."
-  (cond
-   (workspace workspace)
-   ((herdr-focused-workspace) (herdr-workspace-id (herdr-focused-workspace)))
-   (t (agent-fleet--create-workspace cwd))))
-
-(defun agent-fleet--read-workspace (prompt)
-  "Prompt for a cached workspace via `completing-read', returning its id.
-Each choice is labeled `id (display-name)'.  Signals `user-error' if no
-workspace is cached."
-  (let ((wss (herdr-workspaces)))
-    (if (null wss)
-        (user-error "No Herdr workspace; start one first")
-      (let* ((choices (mapcar
-                       (lambda (ws)
-                         (cons (format "%s (%s)"
-                                       (herdr-workspace-id ws)
-                                       (herdr-workspace-label ws))
-                               (herdr-workspace-id ws)))
-                       wss))
-             (sel (completing-read prompt choices nil t))
-             (cell (assoc sel choices #'equal)))
-        (cdr cell)))))
-
-(defun agent-fleet--kind-choices ()
-  "Return an alist (EXECUTABLE . KIND-SYMBOL) for interactive kind prompts.
-The executable name is what the user runs in the shell and what prompts
-display; the kind symbol may differ from it (e.g. `pi-agent' runs `pi'),
-so a selection maps back to the symbol the code uses rather than
-exposing that internal symbol in the minibuffer."
-  (mapcar (lambda (entry) (cons (cadr entry) (car entry)))
-          agent-fleet-agent-executables))
-
-(defconst agent-fleet--kind-wire-aliases
-  '((pi-agent . "pi"))
-  "Internal agent kind symbols mapped to their Herdr protocol names.
-These aliases are deliberately separate from executable customization:
-using a wrapper executable must not change the `agent.start' wire kind.")
-
-(defun agent-fleet--kind-wire-name (kind)
-  "Return the Herdr wire name for agent KIND.
-Known internal aliases such as `pi-agent' use
-`agent-fleet--kind-wire-aliases'.  Other symbols and string kinds retain the
-historical symbol-name/string behavior so custom Herdr manifests continue to
-work independently of executable customization."
-  (cond
-   ((symbolp kind)
-    (or (cdr (assq kind agent-fleet--kind-wire-aliases))
-        (symbol-name kind)))
-   (t kind)))
-
-(defun agent-fleet--provision-pane (workspace-id cwd focus &optional force-tab)
-  "Provision an empty interactive shell pane in WORKSPACE-ID.
-Splits the focused pane (agent.start needs an interactive
-shell pane); if there is no pane to split, creates a fresh tab.  With
-FORCE-TAB non-nil, always creates a fresh tab — interactive starts use
-this so each new agent gets its own switchable tab instead of crowding
-an existing pane.  Newly created panes receive the configured
-`agent-fleet-agent-editor-command' as EDITOR and VISUAL.  Returns the new pane
-id.  Signals `agent-fleet-provisioning-failed'."
-  (let* ((focused (herdr-focused-pane))
-         ;; The globally focused pane may belong to another project.  Split a
-         ;; pane only when it is in the requested workspace; otherwise choose
-         ;; another pane from that workspace, or create a tab there.
-         (target (or (and focused
-                          (equal workspace-id
-                                 (herdr-pane-workspace-id focused))
-                          focused)
-                     (cl-find workspace-id (herdr-panes)
-                              :test #'equal
-                              :key #'herdr-pane-workspace-id))))
-    (if (and (not force-tab) target (herdr-pane-id target))
-        ;; Split a pane in the target workspace to get a fresh shell prompt.
-        (let* ((params `(("direction" . "right")
-                         ("workspace_id" . ,workspace-id)
-                         ("target_pane_id" . ,(herdr-pane-id target))
-                         ("focus" . ,(if focus t :false))
-                         ,@(and cwd `(("cwd" . ,cwd)))
-                         ,@(agent-fleet--editor-environment-param)))
-               (res (herdr-request "pane.split" params)))
-          (or (agent-fleet--extract-pane-id res)
-              ;; Some servers return only a layout; the new pane was
-              ;; focused, so pane.current gives its id.
-              (agent-fleet--extract-pane-id
-               (ignore-errors
-                 (herdr-request "pane.current" nil)))
-              (signal 'agent-fleet-provisioning-failed
-                      (list :step 'pane-split :result res))))
-      ;; No pane to split (or a tab was forced): a fresh tab creates a
-      ;; fresh pane.
-      (let* ((params `(("workspace_id" . ,workspace-id)
-                       ("focus" . ,(if focus t :false))
-                       ,@(and cwd `(("cwd" . ,cwd)))
-                       ,@(agent-fleet--editor-environment-param)))
-             (res (herdr-request "tab.create" params)))
-        (or (agent-fleet--extract-pane-id res)
-            (agent-fleet--extract-pane-id
-             (ignore-errors
-               (herdr-request "pane.current" nil)))
-            (signal 'agent-fleet-provisioning-failed
-                    (list :step 'tab-create :result res)))))))
-
-(cl-defun agent-fleet--provision-worktree (cwd &key branch base focus)
-  "Create a Herdr worktree at CWD and return its workspace + root pane.
-Calls `worktree.create', which provisions a workspace, a tab, and a root
-pane (a shell at the worktree cwd) in one step, so `agent.start' can
-target the root pane directly — no separate `pane.split'.
-Optional BRANCH/BASE override the default branch selection (nil lets
-Herdr decide); FOCUS focuses the new workspace in the Herdr UI.  The
-returned worktree and workspace are upserted into the cache immediately,
-closing the race before the pushed `worktree_created' event lands (same
-reason `agent-fleet-start' upserts the agent).  Returns
-\`(:workspace-id WS :pane-id PANE :worktree WT)', or signals
-`agent-fleet-provisioning-failed' (step `worktree-create') if the
-response lacks a workspace or root pane."
-  (let* ((params `(("cwd" . ,cwd)
-                   ("focus" . ,(if focus t :false))
-                   ,@(and branch `(("branch" . ,branch)))
-                   ,@(and base `(("base" . ,base)))))
-         (res (herdr-request "worktree.create" params))
-         (ws (plist-get res :workspace))
-         (pane (plist-get res :root_pane))
-         (wt (plist-get res :worktree)))
-    (unless (and ws pane (plist-get pane :pane_id))
-      (signal 'agent-fleet-provisioning-failed
-              (list :step 'worktree-create :result res)))
-    (herdr-model-upsert-workspace ws)
-    (when wt (herdr-model-upsert-worktree wt))
-    `(:workspace-id ,(plist-get ws :workspace_id)
-      :pane-id ,(plist-get pane :pane_id)
-      :worktree ,wt)))
-
-
-;;; --- Start ----------------------------------------------------------
-
-(defvar agent-fleet--name-counter 0
-  "Monotonic source of default agent names (per Emacs session).")
-
-(defun agent-fleet--fresh-name (kind)
-  "Generate a unique default name for an agent of KIND."
-  (cl-incf agent-fleet--name-counter)
-  (let ((base (if (symbolp kind) (symbol-name kind)
-                (or kind "agent"))))
-    (format "%s-%d" base agent-fleet--name-counter)))
-
-(defun agent-fleet--suggest-name (workspace-id kind)
-  "Suggest a default agent name for a new agent in WORKSPACE-ID.
-Return `<label>-<N>': <label> is the workspace's display name
-\(`herdr-workspace-label') and <N> is the smallest positive integer
-whose `<label>-<N>' is not already a live agent's name, so successive
-agents in one workspace get distinct serials.  When WORKSPACE-ID is
-nil or no cached workspace matches it, fall back to
-`agent-fleet--fresh-name' (KIND), the global kind+counter default."
-  (let ((ws (and workspace-id (herdr-find-workspace workspace-id))))
-    (if ws
-        (let ((label (herdr-workspace-label ws))
-              (n 1))
-          (while (herdr-model-find-agent-by-name
-                  (format "%s-%d" label n))
-            (cl-incf n))
-          (format "%s-%d" label n))
-      (agent-fleet--fresh-name kind))))
+        (progn
+          (require 'agent-fleet-attach)
+          (if-let* ((window (agent-fleet-attach--reuse-visible agent-fleet-target)))
+              (progn
+                (agent-fleet-view-quit)
+                (select-window window)
+                (set-buffer (window-buffer window)))
+            (agent-fleet-attach agent-fleet-target)))
+      ((error quit)
+       (when (buffer-live-p buffer)
+         (with-current-buffer buffer
+           (setq agent-fleet-prompt--attach-error err)
+           (agent-fleet-prompt--render-status)))
+       (signal (car err) (cdr err))))))
 
 ;;;###autoload
-(cl-defun agent-fleet-start (kind &key name cwd workspace pane args
-                                     (timeout-ms agent-fleet-start-timeout-ms)
-                                     focus worktree branch base attach)
-  "Start a CLI agent of KIND (a symbol like `claude') in a Herdr pane.
-Provisions an empty interactive shell pane (splitting the focused pane,
-or creating a tab if there is none), then calls `agent.start'.  The
-cache is updated immediately from the result and again via the
-`pane.agent_detected' event.
+(defun agent-fleet-prompt (target &optional initial-text)
+  "Compose a message to TARGET, optionally containing INITIAL-TEXT."
+  (interactive (list (agent-fleet-current-target)))
+  (let* ((record (agent-fleet-resolve target))
+         (buffer (generate-new-buffer (format "*Fleet Prompt: %s*" (agent-fleet-name record)))))
+    (with-current-buffer buffer
+      (agent-fleet-prompt-mode)
+      (setq-local agent-fleet-target (agent-fleet-reference record))
+      (setq-local agent-fleet-operation-state 'draft)
+      (setq-local agent-fleet-prompt--recipient
+                  (format "%s [%s]" (agent-fleet-name record) (plist-get record :address)))
+      (insert (or initial-text ""))
+      (agent-fleet-prompt--render-status))
+    (agent-fleet-present-buffer buffer t)))
 
-With `:worktree t', instead of splitting a pane in an existing workspace,
-Herdr creates a git worktree (a separate checkout of the repo at CWD) and
-provisions a fresh workspace + root pane there, so the agent works in
-isolation.  CWD is required in this mode (a worktree needs a
-source repo); BRANCH/BASE optionally override Herdr's default branch.
+(defun agent-fleet-prompt-submit ()
+  "Submit this draft once and attach after Core acknowledges submission.
+Retain failures and uncertain outcomes for inspection without changing views."
+  (interactive)
+  (unless (eq agent-fleet-operation-state 'draft)
+    (user-error "Draft is %s; create a new prompt to send again" agent-fleet-operation-state))
+  (let* ((record (agent-fleet-resolve agent-fleet-target t))
+         (text (buffer-substring-no-properties (point-min) (point-max)))
+         (buffer (current-buffer))
+         (window (and (eq (window-buffer (selected-window)) buffer) (selected-window))))
+    (when (string-empty-p (string-trim text)) (user-error "Empty prompt"))
+    (setq agent-fleet-operation-state 'sending buffer-read-only t)
+    (agent-fleet-prompt--render-status)
+    (condition-case err
+        (herdr-core-request-async
+         "terminal.send" (list :terminal (plist-get record :address) :text text :force :false)
+         (lambda (result err) (agent-fleet-prompt--finish buffer result err window)) 210)
+      ((error quit)
+       (when (and (buffer-live-p buffer)
+                  (eq (buffer-local-value 'agent-fleet-operation-state buffer) 'sending))
+         (agent-fleet-prompt--finish buffer nil err))
+       (signal (car err) (cdr err))))))
 
-Ordinary panes provisioned for this command receive
-`agent-fleet-agent-editor-command' as both EDITOR and VISUAL.  An explicitly
-reused PANE and a worktree root pane retain their existing environment because
-their Herdr operations do not support an environment override.
+(defvar agent-fleet--control-results nil
+  "The latest 30 control outcomes, including original responses and errors.")
 
-When called interactively, the user is always prompted to pick the
-workspace the agent starts in (unless :workspace/:pane/:worktree is given
-explicitly); the agent then opens as a fresh tab in the selected
-workspace, rather than a new frame.  The name prompt is prefilled with
-`<workspace-label>-<serial>' — the workspace's display name plus the
-smallest serial not already a live agent's name; accept it or type your
-own.  After a successful interactive start, the agent's terminal is
-attached automatically (see `agent-fleet-attach').
+(defun agent-fleet--control-summary (action record result)
+  "Summarize ACTION's RESULT for RECORD, or return nil for an invalid reply."
+  (when (listp result)
+    (pcase action
+      ('rename
+       (format "Renamed to %s" (agent-fleet-name result)))
+      ('end
+       (when (and (herdr-core--valid-terminal-p result)
+                  (equal (plist-get result :address) (plist-get record :address))
+                  (equal (plist-get result :created_ms) (plist-get record :created_ms)))
+         (if (equal (plist-get result :state) "finished")
+             (format "Ended%s"
+                     (if (integerp (plist-get result :exit_code))
+                         (format " (exit code %s)" (plist-get result :exit_code)) ""))
+           "End requested; Core still reports live")))
+      ('interrupt
+       (when (and (stringp (plist-get result :key))
+                  (stringp (plist-get result :outcome)))
+         (format "Interrupt: %s"
+                 (pcase (plist-get result :outcome)
+                   ("stopped" "work stopped") ("exited" "program exited")
+                   ("still_working" "still working")
+                   ("unknown" "stop key sent; effect unknown")
+                   (other (format "Core reported %s" other))))))
+      ('wait
+       (when (and (equal (plist-get result :terminal) (plist-get record :address))
+                  (memq (plist-get result :ended) '(t :false))
+                  (stringp (plist-get result :reason)))
+         (format "Wait: %s%s"
+                 (pcase (plist-get result :reason)
+                   ("timeout" "timed out") ("not_started" "work did not start")
+                   ("exit" "program exited") ("message" "message received")
+                   ("output" "output matched") ("status" "status reported")
+                   (other (format "Core reported %s" other)))
+                 (if (stringp (plist-get result :status))
+                     (format " (%s)" (plist-get result :status)) "")))))))
 
-Keyword args:
-  :name        agent name (unique across live agents); auto-generated if nil
-  :cwd         working directory for the new pane (required with :worktree)
-  :workspace   workspace id to start in (default: focused, picked, or created)
-  :pane        reuse an existing pane id instead of provisioning one
-  :args        list of extra CLI arg strings passed to the agent
-  :timeout-ms  startup timeout (Herdr requires > 3000)
-  :focus       non-nil to focus the new pane in the Herdr UI
-  :worktree    non-nil to start in a fresh git worktree at :cwd
-  :branch      worktree branch override (with :worktree; nil = let Herdr decide)
-  :base        worktree base ref override (with :worktree)
-  :attach      non-nil to attach the agent's terminal after start
-               (interactive starts do this automatically)
+(defun agent-fleet--remember-control-result (action reference result err summary)
+  "Retain ACTION's original RESULT and ERR with REFERENCE and SUMMARY."
+  (push (list :time (current-time-string) :action action :target reference
+              :summary summary :response result :error err)
+        agent-fleet--control-results)
+  (when (> (length agent-fleet--control-results) 30)
+    (setcdr (nthcdr 29 agent-fleet--control-results) nil)))
 
-Returns the `herdr-agent' struct for the started agent.  Signals an
-`agent-fleet-error' (or a `herdr-error') on failure."
-  (interactive
-   (let* ((choices (agent-fleet--kind-choices))
-          (sel (completing-read "Agent kind: " (mapcar #'car choices) nil t))
-          (kind (cdr (assoc sel choices #'equal)))
-          ;; Resolve the workspace before the name so the prompt can
-          ;; suggest a workspace-derived default.  Passing :workspace
-          ;; short-circuits the body's own --read-workspace, so the
-          ;; workspace is prompted exactly once.
-          (ws-id (agent-fleet--read-workspace "Start in workspace: "))
-          (suggested (agent-fleet--suggest-name ws-id kind))
-          (nm (read-string "Name: " suggested)))
-     (list kind :workspace ws-id
-           :name (if (string-empty-p nm) suggested nm))))
-  (agent-fleet--ensure-connected)
-  (let ((candidate (agent-fleet--kind-wire-name kind)))
-    (unless (and kind (stringp candidate) (not (string-empty-p candidate)))
-      (signal 'agent-fleet-error (list :hint "agent kind must be non-empty"))))
-  (unless (and (integerp timeout-ms) (> timeout-ms 3000)
-               (<= timeout-ms 300000))
-    (signal 'agent-fleet-error
-            (list :hint "agent.start timeout_ms must be 3001..300000"
-                  :timeout-ms timeout-ms)))
-  (unless (or (null args)
-              (and (listp args) (cl-every #'stringp args)))
-    (signal 'agent-fleet-error
-            (list :hint "agent args must be a list of strings" :args args)))
-  (let* ((kind-str (agent-fleet--kind-wire-name kind))
-         (agent-name (or name (agent-fleet--fresh-name kind-str)))
-         ;; Reflects whether THIS `agent-fleet-start' was invoked
-         ;; interactively (via `call-interactively').  Wrapper commands
-         ;; (`agent-fleet-start-for-project') forward their own
-         ;; interactivity through :attach instead, since a normal Lisp
-         ;; call to this function is not itself interactive.
-         (interactive-p (called-interactively-p 'interactive))
-         ;; `:worktree t' provisions an isolated workspace + root pane via
-         ;; `worktree.create', skipping the normal workspace/pane
-         ;; resolution.  CWD is required: a worktree needs a source repo.
-         (wt-result (when worktree
-                      (unless cwd
-                        (signal 'agent-fleet-provisioning-failed
-                                (list :step 'worktree-cwd)))
-                      (agent-fleet--provision-worktree
-                       cwd :branch branch :base base :focus focus)))
-         (created-workspace
-          (when (and (null wt-result) (null pane) (null workspace)
-                     (null (herdr-focused-workspace))
-                     ;; Interactive starts prompt for an existing workspace
-                     ;; instead of silently provisioning a new one.
-                     (not interactive-p))
-            (agent-fleet--create-workspace-provisioning cwd focus)))
-         (ws-id (or (and wt-result (plist-get wt-result :workspace-id))
-                    (plist-get created-workspace :workspace-id)
-                    workspace
-                    ;; An interactive start always lets the user pick the
-                    ;; workspace (manual selection is required), even when
-                    ;; one is focused — so this branch comes before the
-                    ;; focused-workspace shortcut.  Wrapper commands pass
-                    ;; their own resolved :workspace, so they skip this.
-                    (and (null pane) interactive-p
-                         (agent-fleet--read-workspace "Start in workspace: "))
-                    ;; Programming callers reuse the focused workspace, or
-                    ;; fall through to creating one.  An explicit pane is
-                    ;; already a complete target, so none of these run then.
-                    (and (null pane) (herdr-focused-workspace)
-                         (herdr-workspace-id (herdr-focused-workspace)))
-                    (and (null pane) (agent-fleet--create-workspace cwd))))
-         (pane-id (or (and wt-result (plist-get wt-result :pane-id))
-                      (plist-get created-workspace :pane-id)
-                      pane
-                      ;; Interactive starts (and wrappers forwarding :attach)
-                      ;; open the agent in a fresh tab rather than splitting a
-                      ;; pane, so each agent gets its own switchable surface.
-                      (agent-fleet--provision-pane ws-id cwd focus
-                                                   (or attach interactive-p))))
-         (params `(("name" . ,agent-name)
-                   ("kind" . ,kind-str)
-                   ("pane_id" . ,pane-id)
-                   ("timeout_ms" . ,timeout-ms)
-                   ,@(and args `(("args" . ,(vconcat args)))))))
-    (herdr--log 'info "starting agent %s (%s) in %s" agent-name kind-str pane-id)
-    (let ((completed nil))
-      (unwind-protect
-          (let* ((result (herdr-request
-                          "agent.start" params
-                          :timeout (agent-fleet--transport-timeout timeout-ms)))
-                 ;; `agent.start' returns an AgentInfo (live:
-                 ;; `agent_started' -> :agent).  Unwrap it; if no info came
-                 ;; back (e.g. a bare ack), fetch authoritative info.
-                 (info (or (agent-fleet--unwrap-agent result)
-                           (ignore-errors
-                             (agent-fleet--unwrap-agent
-                              (herdr-request
-                               "agent.get" `(("target" . ,pane-id))))))))
-            (when info (herdr-model-upsert-agent-info info))
-            (let ((agent (herdr-model-find-agent pane-id)))
-              (unless agent
-                (signal 'agent-fleet-provisioning-failed
-                        (list :pane-id pane-id :result result)))
-              ;; Fire the started hook from the authoritative result.  The
-              ;; later screen-detection event sees the cached agent and is
-              ;; marked replay, so the hook is delivered exactly once.
-              (run-hook-with-args 'agent-fleet-agent-started-hook
-                                  (agent-fleet--enrich-descriptor nil pane-id))
-              (setq completed t)
-              ;; Interactive starts attach the agent's terminal in Emacs so
-              ;; the user lands in it.  Wrapper commands forward their own
-              ;; interactivity through :attach; programming callers (parallel
-              ;; orchestration, external scripts) pass neither and are left
-              ;; alone.  Without a terminal backend `agent-fleet-attach'
-              ;; signals a user-error pointing at the herdr CLI command.
-              (when (or attach interactive-p)
-                (agent-fleet-attach agent))
-              agent))
-        (unless completed
-          ;; Provisioning belongs to this call, so a failed agent.start must
-          ;; not leave an empty pane or isolated worktree behind.  Explicit
-          ;; caller-owned panes are never closed.  Cleanup errors are kept
-          ;; secondary to the original failure.
-          (cond
-           (created-workspace
-            (ignore-errors
-              (herdr-request "workspace.close"
-                             `(("workspace_id" . ,ws-id))))
-            (when (herdr-model-cache)
-              (herdr-model--remove-workspace-cascade
-               (herdr-model-cache) ws-id)))
-           ((and pane-id (or wt-result (null pane)))
-            (ignore-errors
-              (herdr-request "pane.close" `(("pane_id" . ,pane-id))))))
-          (when wt-result
-            (ignore-errors
-              (herdr-request
-               "worktree.remove"
-               `(("workspace_id" . ,ws-id) ("force" . :false))))
-            (when-let* ((worktree-info (plist-get wt-result :worktree))
-                        (path (plist-get worktree-info :path)))
-              (herdr-model-remove-worktree path))))))))
+(defun agent-fleet--control-finish (action record reference result err)
+  "Report and retain a control outcome without moving focus or retrying."
+  (let ((summary (and (null err) (agent-fleet--control-summary action record result))))
+    (unless (or err summary)
+      (setq err (list 'herdr-core-uncertain :reason 'invalid-control-response
+                      :response result)))
+    (when err
+      (setq summary
+            (format "%s %s: %s (not retried; M-x agent-fleet-control-results)"
+                    (capitalize (symbol-name action))
+                    (if (eq (car-safe err) 'herdr-core-request-error) "rejected" "outcome unknown")
+                    (if (eq (car-safe err) 'herdr-core-uncertain)
+                        (format "%s" (or (plist-get (cdr err) :reason) "connection lost"))
+                      (herdr-core-error-message err)))))
+    (setq summary (format "%s [%s] — %s" (agent-fleet-name record)
+                          (plist-get record :address) summary))
+    (agent-fleet--remember-control-result action reference result err summary)
+    (message "%s" summary)))
 
-
-;;; --- Prompt / Wait / Read ------------------------------------------
+(defun agent-fleet--control-request (action record &optional timeout)
+  "Dispatch ACTION once for RECORD, retaining its result; use TIMEOUT seconds."
+  (let ((reference (agent-fleet-reference record))
+        (params (list :terminal (plist-get record :address))) completed)
+    (when (eq action 'wait) (setq params (append params '(:timeout 180))))
+    (condition-case err
+        (herdr-core-request-async
+         (pcase action ('end "terminal.kill") ('interrupt "terminal.interrupt")
+                ('wait "terminal.wait"))
+         params
+         (lambda (result err)
+           (unless completed
+             (setq completed t)
+             (agent-fleet--control-finish action record reference result err))) timeout)
+      ((error quit)
+       (unless completed
+         (setq completed t)
+         (agent-fleet--control-finish action record reference nil err))
+       (signal (car err) (cdr err))))))
 
 ;;;###autoload
-(defun agent-fleet-prompt (agent text)
-  "Send TEXT to AGENT via `agent.prompt' (no wait).
-AGENT is a name, pane id, symbol, or `herdr-agent' struct.  Returns the
-agent's AgentInfo plist (the `agent_prompted' result, unwrapped from its
-envelope).  The agent may keep working after this returns; use
-`agent-fleet-wait' or the status hooks to observe completion.
-See the `agent.prompt' protocol described above."
-  (interactive
-   (list (agent-fleet-read-agent-name "Prompt agent")
-         (read-string "Prompt: ")))
-  (agent-fleet--ensure-connected)
-  (agent-fleet--unwrap-agent
-   (herdr-request "agent.prompt"
-                  `(("target" . ,(agent-fleet--resolve-target agent))
-                    ("text" . ,text)))))
-
-;;;###autoload
-(cl-defun agent-fleet-prompt-and-wait (agent text &key
-                                                (until agent-fleet-default-wait-until)
-                                                (timeout-ms agent-fleet-wait-timeout-ms))
-  "Atomically submit TEXT and wait for AGENT to reach a status.
-Uses a single `agent.prompt' request with a `wait' field, so submit+wait
-is server-side atomic — avoiding the race where the agent finishes
-between a separate prompt and wait.  UNTIL is a status
-symbol or list (default `agent-fleet-default-wait-until').  Returns the
-agent's AgentInfo plist (unwrapped); its `:agent_status' is the wait
-outcome."
-  (interactive
-   (list (agent-fleet-read-agent-name "Prompt and wait for agent")
-         (read-string "Prompt: ")))
-  (agent-fleet--ensure-connected)
-  (let ((target (agent-fleet--resolve-target agent))
-        (until-list (agent-fleet--normalize-until until)))
-    (agent-fleet--unwrap-agent
-     (herdr-request "agent.prompt"
-                    `(("target" . ,target)
-                      ("text" . ,text)
-                      ("wait" . (("until" . ,(vconcat until-list))
-                                 ("timeout_ms" . ,timeout-ms))))
-                    :timeout (agent-fleet--transport-timeout timeout-ms)))))
-
-;;;###autoload
-(cl-defun agent-fleet-read (agent &key
-                                    (source agent-fleet-default-read-source)
-                                    (lines agent-fleet-default-read-lines)
-                                    (format agent-fleet-default-read-format)
-                                    (strip-ansi (eq format 'text)))
-  "Read AGENT's terminal output via `agent.read'.
-Returns a PaneReadResult plist: (:pane_id :workspace_id :tab_id :source
-:format :text :revision :truncated), unwrapped from the `pane_read'
-envelope.  Defaults to `recent_unwrapped' output, which ignores soft wrapping
-and is best for logs.  This is a Lisp data API, not a command: to view an
-agent's output interactively, use `agent-fleet-show-output'."
-  (agent-fleet--ensure-connected)
-  (agent-fleet--unwrap-read
-   (herdr-request "agent.read"
-                  `(("target" . ,(agent-fleet--resolve-target agent))
-                    ("source" . ,(if (symbolp source) (symbol-name source) source))
-                    ("lines" . ,lines)
-                    ("format" . ,(if (symbolp format) (symbol-name format) format))
-                    ("strip_ansi" . ,(if strip-ansi t :false))))))
-
-;;;###autoload
-(cl-defun agent-fleet-wait (agent &optional until &key
-                                     (timeout-ms agent-fleet-wait-timeout-ms))
-  "Wait for AGENT to reach one of the UNTIL statuses via `agent.wait'.
-UNTIL is a status symbol or list (default `agent-fleet-default-wait-until').
-This is a single blocking RPC, NOT polling: Emacs stays
-responsive because the protocol layer pumps `accept-process-output' during
-the wait, which also keeps the live cache in step.  Returns the agent's
-AgentInfo plist (unwrapped); its `:agent_status' is the outcome."
-  (interactive (list (agent-fleet-read-agent-name "Wait for agent")))
-  (agent-fleet--ensure-connected)
-  (let ((target (agent-fleet--resolve-target agent))
-        (until-list (agent-fleet--normalize-until
-                     (or until agent-fleet-default-wait-until))))
-    (agent-fleet--unwrap-agent
-     (herdr-request "agent.wait"
-                    `(("target" . ,target)
-                      ("until" . ,(vconcat until-list))
-                      ("timeout_ms" . ,timeout-ms))
-                    :timeout (agent-fleet--transport-timeout timeout-ms)))))
-
-
-;;; --- Keys / Interrupt ----------------------------------------------
-
-;;;###autoload
-(defun agent-fleet-interrupt (agent)
-  "Interrupt AGENT by sending Ctrl-C via `agent.send_keys'.
-This is `interrupt', not `cancel': different CLIs attach different
-semantics to Ctrl-C, so we expose the key directly.
-Returns the agent's AgentInfo plist if the server returned one, else the
-raw ack."
-  (interactive (list (agent-fleet-read-agent-name "Interrupt agent")))
-  (agent-fleet--ensure-connected)
-  (let ((res (herdr-request "agent.send_keys"
-                            `(("target" . ,(agent-fleet--resolve-target agent))
-                              ("keys" . ,(vector "ctrl+c"))))))
-    (or (agent-fleet--unwrap-agent res) res)))
-
-
-;;; --- Rename / Kill / Switch / List / Get ---------------------------
-
-;;;###autoload
-(defun agent-fleet-rename (agent name)
-  "Rename AGENT to NAME (a string) via `agent.rename'.
-Refreshes the cached agent so `agent-fleet-list' reflects the new name.
-Returns the renamed agent's AgentInfo plist (unwrapped)."
-  (interactive
-   (let* ((target (agent-fleet-read-agent-name "Rename agent"))
-          (cached (agent-fleet--find-agent target))
-          (current (and cached (herdr-agent-display-name cached))))
-     (list target (read-string "New name: " current))))
-  (agent-fleet--ensure-connected)
-  (unless (stringp name)
-    (signal 'agent-fleet-error
-            (list :hint "rename requires a string name")))
-  (let ((target (agent-fleet--resolve-target agent)))
-    (let ((res (herdr-request "agent.rename"
-                              `(("target" . ,target) ("name" . ,name)))))
-      ;; Refresh the cached struct from the authoritative info (the rename
-      ;; event may lag); unwrap the `agent_info' envelope.
-      (ignore-errors
-        (herdr-model-upsert-agent-info
-         (agent-fleet--unwrap-agent
-          (herdr-request "agent.get" `(("target" . ,target))))))
-      (agent-fleet--unwrap-agent res))))
-
-;;;###autoload
-(defun agent-fleet-kill (agent)
-  "Kill AGENT by closing its pane via `pane.close'.
-The agent process is terminated with the pane.  The cache is updated
-eagerly (the `pane_closed' event also removes it).  Returns the result."
-  (interactive
-   (let ((target (agent-fleet-read-agent-name "Kill agent")))
-     (unless (y-or-n-p (format "Kill agent %s? " target))
-       (user-error "Canceled"))
-     (list target)))
-  (agent-fleet--ensure-connected)
-  (let* ((pane-id (agent-fleet--resolve-pane-id agent))
-         (res (herdr-request "pane.close" `(("pane_id" . ,pane-id)))))
-    ;; Eager cache removal; the `pane_closed' event also removes it and
-    ;; fires `agent-fleet-agent-exited-hook'.  We do not
-    ;; fire the hook here, so each exit notifies exactly once.
-    (herdr-model-remove-agent pane-id)
-    res))
-
-;;;###autoload
-(defun agent-fleet-switch (agent)
-  "Focus AGENT's pane in the Herdr UI via `agent.focus'.
-Returns the focused agent's AgentInfo plist (unwrapped)."
-  (interactive (list (agent-fleet-read-agent-name "Focus agent")))
-  (agent-fleet--ensure-connected)
-  (agent-fleet--unwrap-agent
-   (herdr-request "agent.focus" `(("target" . ,(agent-fleet--resolve-target agent))))))
-
-(defun agent-fleet--agent-list-from-result (result)
-  "Normalize an `agent.list' RESULT into a list of AgentInfo plists.
-Live Herdr returns `(:type \"agent_list\" :agents [...])'; also tolerates
-a bare array or a single AgentInfo plist.  The `:agents' check comes
-before the bare-single-AgentInfo check because the envelope's car is
-`:type' (a keyword)."
-  (cond
-   ((null result) nil)
-   ((plist-member result :agents)              ; envelope: (:type "agent_list" :agents ...)
-    (let ((a (plist-get result :agents)))
-      (cond ((listp a) a) ((vectorp a) (append a nil)) (t nil))))
-   ((vectorp result) (append result nil))
-   ((not (listp result)) nil)
-   ((keywordp (car result)) (list result))     ; bare single AgentInfo
-   (t result)))
-
-;;; --- Shared presentation descriptor --------------------------------
-;;
-;; The dashboard, quick list, minibuffer completion, and consult integration
-;; all render the same agent.  Before this descriptor each builder formatted
-;; the fields itself, and they drifted: the dashboard grouped by Project
-;; while the list and completion surfaced Workspace; the list showed a raw
-;; wire status string and a raw kind while the dashboard showed a derived
-;; symbol label and a capitalized kind.  This struct is the single source:
-;; every builder reads pre-formatted slots from it, so the fields cannot
-;; diverge across UIs.
-
-(cl-defstruct agent-fleet-agent-presentation
-  "UI-independent presentation of one cached agent for rendering.
-AGENT is the raw `herdr-agent' struct (for callers needing fields outside
-the descriptor).  PANE-ID, NAME, PROJECT, KIND, and TASK are pre-formatted
-display strings.  STATUS is the derived symbol from `agent-fleet-status'
-\(idle/working/blocked/done/unknown, or nil); callers format it for display
-via `agent-fleet-status-label' (the dashboard adds a face on top)."
-  agent pane-id name project kind status task)
-
-(defun agent-fleet-status-label (status)
-  "Return the display label for STATUS (a symbol or nil).
-`BLOCKED'/`WORKING'/`IDLE'/`DONE', or `UNKNOWN' when nil.  The dashboard
-propertizes this with a status face via
-`agent-fleet-dashboard--face-for-status'; the quick list uses it plain."
-  (if status (upcase (symbol-name status)) "UNKNOWN"))
-
-(defun agent-fleet-agent-kind-label (agent)
-  "Return a capitalized Kind label for AGENT, or \"—\".
-The single kind formatter shared by the dashboard, quick list, and
-completion candidates."
-  (let ((kind (and agent (herdr-agent-agent agent))))
-    (if (and kind (not (string-empty-p kind)))
-        (capitalize kind)
-      "—")))
-
-(defun agent-fleet--agent-project-label (agent)
-  "Return the Project label for AGENT, or \"—\".
-Delegates to `agent-fleet-project-label' (canonical project-root basename)
-when the project feature module is loaded; the base layer does not require
-it, so an absent module degrades to \"—\" rather than a void-function error.
-This mirrors the `fboundp' guard on `agent-fleet-task-for-agent' in
-`agent-fleet--agent-task-label'."
-  (if (fboundp 'agent-fleet-project-label)
-      (agent-fleet-project-label agent)
-    "—"))
-
-(defun agent-fleet--presentation-for-agent (agent)
-  "Return an `agent-fleet-agent-presentation' for AGENT.
-The single source of the rendered fields (name/project/kind/status/task):
-the dashboard, quick list, and completion candidates all read from it so
-the fields cannot drift between UIs.  NAME falls back to the pane id when
-the agent has no display name."
-  (let ((name (or (and agent (herdr-agent-display-name agent))
-                  (and agent (herdr-agent-id agent)))))
-    (make-agent-fleet-agent-presentation
-     :agent agent
-     :pane-id (and agent (herdr-agent-id agent))
-     :name name
-     :project (agent-fleet--agent-project-label agent)
-     :kind (agent-fleet-agent-kind-label agent)
-     :status (agent-fleet-status agent)
-     :task (agent-fleet--agent-task-label agent name))))
-
-(defun agent-fleet--presentations ()
-  "Return presentations for every cached agent (in cache order)."
-  (mapcar #'agent-fleet--presentation-for-agent (herdr-agents)))
-
-
-(defun agent-fleet--list-label (agent)
-  "Return a one-line label for AGENT as Herdr's sidebar shows it.
-`{display-name} · {kind}' — the display name (workspace identity, or an
-explicit name when assigned) plus the agent kind, which disambiguates
-agents sharing one workspace (e.g. a Claude and a Codex in the same
-project).  Falls back to the display name alone when the kind is nil."
-  (let ((name (herdr-agent-display-name agent))
-        (kind (herdr-agent-agent agent)))
-    (if (and kind (not (string-empty-p kind)))
-        (format "%s · %s" name kind)
-      name)))
-
-(defun agent-fleet--list-entry (agent)
-  "Return a `tabulated-list-entries' row for AGENT.
-The entry is `(ID [NAME STATUS KIND TASK PROJECT])': ID is the pane id
-and the five cells are the display name, the status label, the kind, the
-task label, and the project.  All cells are read from the shared
-`agent-fleet-agent-presentation' so the quick list and the dashboard
-render the same fields and cannot drift (e.g. one grouping by Project
-while another surfaces Workspace)."
-  (let ((p (agent-fleet--presentation-for-agent agent)))
-    (list (agent-fleet-agent-presentation-pane-id p)
-          (vector (or (agent-fleet-agent-presentation-name p) "")
-                  (agent-fleet-status-label
-                   (agent-fleet-agent-presentation-status p))
-                  (agent-fleet-agent-presentation-kind p)
-                  (agent-fleet-agent-presentation-task p)
-                  (agent-fleet-agent-presentation-project p)))))
-
-(defun agent-fleet--list-buffer (agents)
-  "Display AGENTS (a list of `herdr-agent' structs) in a read-only table.
-One row per agent with columns Name, Status, Kind, Task, Project -- the
-same fields as the dashboard, derived from the shared
-`agent-fleet-agent-presentation' so the buffer reads as a quick
-snapshot of the cache.  Uses `tabulated-list-mode' (parent
-`special-mode', so `q' quits and the buffer is read-only); rows are
-rebuilt on each call, so re-running `agent-fleet-list' refreshes it.
-When not connected, a short notice is shown instead of an empty
-table."
-  (let ((buf (get-buffer-create "*Agent Fleet List*")))
-    (with-current-buffer buf
-      (tabulated-list-mode)
-      (setq tabulated-list-format
-            `[("Name" 22 t) ("Status" 10 t) ("Kind" 8 t)
-              ("Task" 28 nil) ("Project" 14 t)])
-      (setq tabulated-list-padding 2)
-      (setq tabulated-list-sort-key nil)
-      (if (null (herdr-model-cache))
-          (let ((inhibit-read-only t))
-            (erase-buffer)
-            (setq header-line-format nil)
-            (insert "Not connected to Herdr.\n\n"
-                    "A dashboard or control command connects on demand.\n"))
-        (setq tabulated-list-entries
-              (mapcar #'agent-fleet--list-entry agents))
-        (tabulated-list-init-header)
-        (tabulated-list-print t)))
-    (pop-to-buffer buf)
-    buf))
-
-;;;###autoload
-(defun agent-fleet-list (&optional refresh)
-  "Return the cached agent structs as a list.
-With non-nil REFRESH, first refresh the cache from `agent.list'.  The
-cache is normally kept live by events, so REFRESH is only needed after
-operations Herdr does not notify about.
-An interactive call, or a REFRESH call, tries the configured automatic
-connection first.  It still returns nil rather than signalling when the
-server is unavailable, so cache inspection remains safe while offline.
-When called interactively, also display the agents in a read-only
-`*Agent Fleet List*' table (Name, Status, Kind, Task, Project)."
-  (interactive "P")
-  (when (or refresh (called-interactively-p 'any))
-    (ignore-errors (agent-fleet--ensure-connected)))
-  (when refresh
-    (ignore-errors
-      (herdr-call-with-deferred-events
-       (lambda ()
-         (let ((infos (agent-fleet--agent-list-from-result
-                       (herdr-request "agent.list" nil))))
-           ;; agent.list is authoritative, not a stream of deltas.  Replace
-           ;; the table before replaying any subscription events received
-           ;; while the request was in flight.  The replay makes newer event
-           ;; state win over this snapshot and avoids losing status/lifecycle
-           ;; transitions during synchronous request pumping.
-           (when-let* ((session (herdr-model-cache)))
-             (clrhash (herdr-session-agents session)))
-           (dolist (info infos)
-             (herdr-model-upsert-agent-info info)))))))
-  (let ((agents (herdr-agents)))
-    (when (called-interactively-p 'any)
-      (agent-fleet--list-buffer agents))
-    agents))
-
-;;;###autoload
-(defun agent-fleet-get (agent)
-  "Fetch AGENT's authoritative AgentInfo via `agent.get' and cache it.
-Returns the `herdr-agent' struct, or nil if the server returned no info.
-Unwraps the `agent_info' envelope before caching."
-  (agent-fleet--ensure-connected)
-  (let* ((target (agent-fleet--resolve-target agent))
-         (info (agent-fleet--unwrap-agent
-                (herdr-request "agent.get" `(("target" . ,target))))))
-    (when info
-      (herdr-model-upsert-agent-info info))
-    (and info (herdr-model-find-agent (plist-get info :pane_id)))))
-
-
-;;; --- Candidate builders (completion + consult) --------------------
-
-(defun agent-fleet--agent-task-label (agent name)
-  "Return the task label for AGENT, whose display name is NAME.
-A parallel task title wins when the agent is in one; otherwise the
-stripped terminal title, unless it duplicates NAME; otherwise \"—\".
-This is the single task-label implementation: the dashboard Task cell
-and the completion candidates both reach it through the shared
-`agent-fleet-agent-presentation' (built by
-`agent-fleet--presentation-for-agent'), so the two cannot drift.  The
-parallel lookup is guarded with `fboundp' so the base layer stays
-usable before `agent-fleet-parallel' is loaded."
-  (or (and (fboundp 'agent-fleet-task-for-agent)
-           (when-let* ((task (agent-fleet-task-for-agent
-                               (herdr-agent-id agent))))
-             (agent-fleet-task-title task)))
-      (let ((title (herdr-agent-terminal-title-stripped agent)))
-        (and title
-             (not (string-empty-p title))
-             (not (string= title name))
-             title))
-      "—"))
-
-(defun agent-fleet-agent-candidates (&optional filter)
-  "Return cached agents as candidate property lists for completion.
-Each element is a plist with keys `:agent' (the struct), `:pane-id',
-`:name' (the `herdr-agent-display-name' identity), `:label' (that
-name disambiguated with the pane id in brackets when two agents share
-one), and `:kind', `:task', and `:project' mirroring the dashboard
-columns.  The kind/task/project values are read from the shared
-`agent-fleet-agent-presentation' so completion and the dashboard carry
-identical information (no Workspace-vs-Project drift).  Any completion
-UI -- or a separate `consult-agent-fleet' package built on
-`consult--read' with an `:annotate' function and the
-`consult--lookup-cdr' lookup -- can show the same fields from this
-data.  FILTER, when non-nil, is a predicate on a candidate entry; only
-entries satisfying it are kept (used by `agent-fleet-prompt-dwim' to
-scope to same-Project agents).  Returns nil when no agents are cached."
-  (let* ((agents (herdr-agents))
-         (counts (let ((h (make-hash-table :test 'equal)))
-                   (dolist (a agents)
-                     (let ((n (herdr-agent-display-name a)))
-                       (puthash n (1+ (gethash n h 0)) h)))
-                   h))
-         (all (mapcar
-               (lambda (agent)
-                 (let* ((p (agent-fleet--presentation-for-agent agent))
-                        (name (agent-fleet-agent-presentation-name p))
-                        (pane-id (agent-fleet-agent-presentation-pane-id p))
-                        (label (if (> (gethash name counts 0) 1)
-                                   (format "%s  [%s]" name pane-id)
-                                 name)))
-                   (list :agent agent
-                         :pane-id pane-id
-                         :name name
-                         :label label
-                         :kind (agent-fleet-agent-presentation-kind p)
-                         :task (agent-fleet-agent-presentation-task p)
-                         :project (agent-fleet-agent-presentation-project p))))
-               agents)))
-    (if filter (cl-remove-if-not filter all) all)))
-
-(defun agent-fleet-agent-candidate-suffix (entry)
-  "Return the kind/task/project suffix for candidate ENTRY.
-ENTRY is one element of `agent-fleet-agent-candidates'.  The suffix
-joins the kind, task, and project with the `·' separator
-`agent-fleet--list-label' already uses, so it can serve as the inline
-tail of a `completing-read' candidate and as a `consult' `:annotate'
-string; a separate `consult-agent-fleet' package can reuse it for
-consistent formatting.  The project (not the workspace) is shown,
-mirroring the dashboard's Project column rather than leaking Workspace
-as the user-facing group."
-  (let ((kind (plist-get entry :kind))
-        (task (plist-get entry :task))
-        (project (plist-get entry :project)))
-    (format "%s · %s · %s" kind task project)))
-
-
-;;; --- Completion API (public category + annotation) ----------------
-;;
-;; Agent selection is a public completion API, not a private reader that only
-;; `consult' can advise.  The reader hands `completing-read' a completion TABLE
-;; whose metadata declares the `agent-fleet-agent' category and an
-;; `:annotation-function' for the kind/task/project suffix.  So any completion
-;; UI -- the native *Completions* buffer, Vertico+Marginalia, Embark -- shows
-;; the suffix and recognizes agents as a category, with clean-label candidates
-;; (search by name, not by suffix).  `consult' reuses the same public
-;; annotation function instead of reimplementing the label->suffix table.
-
-(defvar agent-fleet-completion-annotations nil
-  "Hash mapping a candidate label to its suffix string, or nil.
-Let-bound around the `completing-read' call in
-`agent-fleet-read-agent-name' (and by `consult-agent-fleet' around its
-`consult--read'); read by `agent-fleet-agent-annotation'.  nil outside a
-read.  This is a public dynamic variable so optional completion packages can
-populate it and reuse `agent-fleet-agent-annotation' without touching private
-state.")
-
-(defun agent-fleet-agent-annotation (candidate)
-  "Return the kind/task/project annotation for a completion CANDIDATE.
-CANDIDATE is a label from `agent-fleet-agent-candidates'; the suffix is read
-from `agent-fleet-completion-annotations' (populated by the reader/consult),
-or the empty string.  Exposed via the `agent-fleet-agent' completion
-category's metadata `:annotation-function', so any `completing-read' UI
-displays it.  Public so `consult-agent-fleet' reuses it instead of
-rebuilding its own label->suffix table."
-  (if (and candidate (hash-table-p agent-fleet-completion-annotations))
-      (gethash candidate agent-fleet-completion-annotations "")
-    ""))
-
-(defun agent-fleet-completion-annotation-table (entries)
-  "Return a hash mapping each candidate label to its suffix string.
-ENTRIES is the list from `agent-fleet-agent-candidates'.  Public so
-`consult-agent-fleet' can populate `agent-fleet-completion-annotations'
-from the same source as the built-in reader."
-  (let ((table (make-hash-table :test 'equal)))
-    (dolist (entry entries table)
-      (puthash (plist-get entry :label)
-               (agent-fleet-agent-candidate-suffix entry)
-               table))))
-
-(defvar agent-fleet--completion-candidates nil
-  "Alist (label . pane-id) for the current completion, or nil.
-Let-bound by `agent-fleet-read-agent-name' around `completing-read'; read by
-`agent-fleet--agent-collection' (the completion table).  Internal -- callers
-use `agent-fleet-read-agent-name'.")
-
-(defun agent-fleet--agent-collection (string pred action)
-  "Completion table over `agent-fleet--completion-candidates'.
-On the `metadata' action, declares the `agent-fleet-agent' category and an
-`annotation-function' of `agent-fleet-agent-annotation' so any completion UI
-shows the kind/task/project suffix.  Other actions delegate to
-`complete-with-action' over the candidate labels."
-  (pcase action
-    ('metadata
-     `(metadata (category . agent-fleet-agent)
-                (annotation-function . ,#'agent-fleet-agent-annotation)))
-    (_ (complete-with-action action
-              (mapcar #'car agent-fleet--completion-candidates)
-              string pred))))
-
-(defvar agent-fleet-read-agent-name-history nil
-  "Minibuffer history for `agent-fleet-read-agent-name'.")
-
-;;;###autoload
-(defun agent-fleet-read-agent-name (prompt &optional filter)
-  "Read an agent pane id from the minibuffer, completing over cached agents.
-Each candidate is the agent identity (`herdr-agent-display-name',
-disambiguated with the pane id in brackets when two agents share one); its
-kind, task, and project appear as a completion annotation (the same fields
-the dashboard shows) via the `agent-fleet-agent' category, so any
-`completing-read' UI -- the native *Completions* buffer, Vertico+Marginalia,
-Embark -- displays them without `consult'.  FILTER, when non-nil, is a
-predicate on a candidate entry passed to `agent-fleet-agent-candidates'
-\(used by `agent-fleet-prompt-dwim' to scope to same-Project agents).
-Returns the pane id so it round-trips through `agent-fleet--find-agent'.
-Signal `user-error' when no agent is cached."
-  (let* ((entries (agent-fleet-agent-candidates filter))
-         (agent-fleet--completion-candidates
-          (mapcar (lambda (entry)
-                    (cons (plist-get entry :label)
-                          (plist-get entry :pane-id)))
-                  entries))
-         (agent-fleet-completion-annotations
-          (agent-fleet-completion-annotation-table entries))
-         (default (and entries (plist-get (car entries) :label))))
-    (unless entries
-      (user-error "No agents are available"))
-    (cdr (assoc (completing-read
-                 (if default
-                     (format "%s (default %s): " prompt default)
-                   (concat prompt ": "))
-                 #'agent-fleet--agent-collection nil t nil
-                 'agent-fleet-read-agent-name-history default)
-                agent-fleet--completion-candidates))))
-
-;;;###autoload
-(define-obsolete-function-alias 'agent-fleet--read-agent-name
-  'agent-fleet-read-agent-name "0.8.0")
-
-
-;;; --- Output viewer (read snapshot) --------------------
-
-(defun agent-fleet--show-output-op (agent &optional lines source)
-  "Read AGENT's recent output and render it into its view buffer.
-Ensure the connection, resolve AGENT, run `agent.read', and fill the
-read-only `*Agent Output: <name>*' buffer with the text.  Return
-\(BUFFER . RES), where RES is the `agent.read' result plist; signal
-`agent-fleet-target-not-found' when AGENT is unknown.  Display is the
-caller's responsibility -- this is the shared operation behind the output
-presentation commands, so the read runs exactly once regardless of
-presentation."
-  (agent-fleet--ensure-connected)
-  (let* ((struct (or (agent-fleet--find-agent agent)
-                     (signal 'agent-fleet-target-not-found
-                             (list :agent agent))))
-         (name (herdr-agent-display-name struct))
-         (res (agent-fleet-read agent
-                                :lines (or lines agent-fleet-default-read-lines)
-                                :source (or source agent-fleet-default-read-source)))
-         (text (or (plist-get res :text) ""))
-         (buf-name (concat agent-fleet-output-buffer-prefix name "*"))
-         (buf (get-buffer-create buf-name)))
-    (with-current-buffer buf
-      (special-mode)                 ; read-only view: `q' quits, etc.
+(defun agent-fleet-control-results ()
+  "Review recent launch and control outcomes with original diagnostics."
+  (interactive)
+  (let ((buffer (get-buffer-create "*Fleet Control Results*")))
+    (with-current-buffer buffer
+      (agent-fleet-review-mode)
+      (setq-local header-line-format "Recent control results   q / C-g return")
       (let ((inhibit-read-only t))
         (erase-buffer)
-        (insert text)
-        (goto-char (point-min))
-        (set-buffer-modified-p nil)))
-    (cons buf res)))
+        (insert (propertize "Recent control results\n\n" 'face 'bold))
+        (unless agent-fleet--control-results (insert "No control results in this Emacs session.\n"))
+        (dolist (entry agent-fleet--control-results)
+          (insert (propertize (concat (plist-get entry :summary) "\n")
+                              'face (if (plist-get entry :error) 'warning 'bold))
+                  (plist-get entry :time) "\n"
+                  (pp-to-string (list :target (plist-get entry :target)
+                                      :response (plist-get entry :response)
+                                      :error (plist-get entry :error))) "\n"))
+        (goto-char (point-min))))
+    (agent-fleet-present-buffer buffer)))
 
 ;;;###autoload
-(defun agent-fleet-show-output (agent &optional lines source)
-  "Read AGENT's recent output and display it in an ordinary buffer.
-Opens `*Agent Output: <name>*' with the text from `agent.read' in the
-selected frame's window tree.  This is a read-snapshot view, NOT a
-continuously mirrored terminal.  With a prefix arg, prompt for the line
-count."
-  (interactive
-   (list (agent-fleet-read-agent-name "Show output for agent")
-         (and current-prefix-arg
-              (read-number "Lines: " agent-fleet-default-read-lines))))
-  (let ((pair (agent-fleet--show-output-op agent lines source)))
-    (pop-to-buffer (car pair))
-    (cdr pair)))
-
-;; `agent-fleet-show-output' used to be an obsolete alias.  Clear stale
-;; metadata when this file is reloaded after upgrading from that version.
-(put 'agent-fleet-show-output 'byte-obsolete-info nil)
-
-;;;###autoload
-(define-obsolete-function-alias 'agent-fleet-show-output-in-buffer
-  'agent-fleet-show-output "0.8.0")
-
-
-;;; --- Hook bus ----------------------------------------
-
-;; These bridge the `herdr-event-*-hook' variables into the
-;; agent-fleet-facing hook set.  Each receives a descriptor plist
-;; (:event :what :id :status :name :kind ...).
-
-(defvar agent-fleet-agent-started-hook nil
-  "Hook run when an agent is started or detected.
-Receives a descriptor plist (:pane-id :name :kind :status ...).")
-
-(defvar agent-fleet-agent-status-changed-hook nil
-  "Hook run on every agent status transition.  Receives the descriptor.")
-
-(defvar agent-fleet-agent-blocked-hook nil
-  "Hook run when an agent becomes blocked.  Receives the descriptor.")
-
-(defvar agent-fleet-agent-done-hook nil
-  "Hook run when an agent becomes done.  Receives the descriptor.")
-
-(defvar agent-fleet-agent-exited-hook nil
-  "Hook run when an agent's pane is closed or exited.  Receives the descriptor.")
-
-(defvar agent-fleet-synced-hook nil
-  "Hook run after the Herdr cache is wholesale-replaced from a snapshot.
-Bridged from `herdr-synced-hook' by `agent-fleet--on-synced'.  Each
-function is called with one argument (nil).  This is the fleet-level
-resync signal: the cache was just replaced from `session.snapshot'
-during connect/reconnect, so views and registries should rebuild from
-the cache without a server fetch.")
-
-(defvar agent-fleet-connection-state-changed-hook nil
-  "Hook run when the Herdr connection state changes.
-Bridged from `herdr-connection-state-changed-hook' by
-`agent-fleet--on-connection-state-changed'.  Each function is called
-with one argument, a state symbol: `connected', `reconnecting',
-or `disconnected'.  This is the event-driven signal for
-views that surface connection health (the dashboard shows a
-Disconnected/Reconnecting/Connection-lost banner); there is no polling
-timer.  See `agent-fleet-connection-state'.")
-
-(defun agent-fleet--enrich-descriptor (descriptor pane-id)
-  "Surface PANE-ID as :pane-id and add :name/:kind from the cache.
-The raw model descriptor carries the entity id under :id; agent-fleet
-hooks document :pane-id as the public key, so we always add it.  :name
-\(via `herdr-agent-display-name', the workspace identity, falling back to
-the cwd basename / terminal title when the agent has no name) and :kind
-are filled when the agent is still cached (an exited agent may already
-have been removed eagerly)."
-  (let ((agent (or (plist-get descriptor :agent)
-                   (and pane-id (herdr-model-find-agent pane-id)))))
-    (append descriptor
-            `(:pane-id ,pane-id
-              ,@(when agent
-                  `(:name ,(herdr-agent-display-name agent)
-                    :kind ,(herdr-agent-agent agent)))))))
-
-(defun agent-fleet--on-agent-status (descriptor)
-  "Bridge a genuine status transition to the agent-fleet hooks.
-`herdr-events-dispatch' already suppresses duplicate/replayed status
-descriptors, but retain the guard here so the Fleet-facing blocked/done
-hooks cannot acquire repeated side effects if called by another adapter."
-  (when (plist-get descriptor :changed-p)
-    (let* ((pane-id (plist-get descriptor :id))
-           (status (plist-get descriptor :status))
-           (enriched (agent-fleet--enrich-descriptor descriptor pane-id)))
-      (run-hook-with-args 'agent-fleet-agent-status-changed-hook enriched)
-      (pcase status
-        ("blocked" (run-hook-with-args 'agent-fleet-agent-blocked-hook enriched))
-        ("done"    (run-hook-with-args 'agent-fleet-agent-done-hook enriched))
-        (_ nil)))))
-
-(defun agent-fleet--on-pane-event (descriptor)
-  "Bridge pane events to agent-fleet hooks (started / exited).
-A `pane_agent_detected' for a pane that is ALREADY cached (e.g. an
-agent started via `agent.start', whose result was upserted before the
-async detection event arrives) or marked gone carries `:replayp'; the
-started hook was already fired by `agent-fleet-start' (or the pane is
-dead), so skip it to notify exactly once.  A first-time screen
-detection (no `:replayp') — an agent NOT started via the RPC, e.g. a
-TUI-spawned agent — fires the started hook here, its only signal."
-  (pcase (plist-get descriptor :what)
-    (:agent-detected
-     (unless (plist-get descriptor :replayp)
-       (run-hook-with-args 'agent-fleet-agent-started-hook
-                           (agent-fleet--enrich-descriptor
-                            descriptor (plist-get descriptor :id)))))
-    (:pane-closed
-     (when (and (plist-get descriptor :agentp)
-                (not (plist-get descriptor :replayp)))
-       (run-hook-with-args 'agent-fleet-agent-exited-hook
-                           (agent-fleet--enrich-descriptor
-                            descriptor (plist-get descriptor :id)))))
-    (_ nil)))
-
-(defun agent-fleet--on-synced (_ignore)
-  "Bridge `herdr-synced-hook' to `agent-fleet-synced-hook'.
-Fires after the cache is wholesale-replaced from a session snapshot
-\(during `herdr-connect' and `herdr--reconnect') so fleet-level views
-and registries can rebuild from the cache without a server fetch or a
-polling timer."
-  (run-hook-with-args 'agent-fleet-synced-hook nil))
-
-(defun agent-fleet--on-connection-state-changed (state)
-  "Bridge `herdr-connection-state-changed-hook' to the fleet hook.
-STATE is the symbol reported by `herdr--notify-connection-state'
-\(connected/reconnecting/gave-up/disconnected).  Re-forwarded unchanged
-so fleet consumers depend on the agent-fleet hook, not `herdr' directly."
-  (run-hook-with-args 'agent-fleet-connection-state-changed-hook state))
-
-(defun agent-fleet--setup-hooks ()
-  "Install the agent-fleet bridge on the Herdr event hooks (idempotent)."
-  (unless (memq #'agent-fleet--on-agent-status herdr-event-agent-status-hook)
-    (add-hook 'herdr-event-agent-status-hook #'agent-fleet--on-agent-status))
-  (unless (memq #'agent-fleet--on-pane-event herdr-event-pane-hook)
-    (add-hook 'herdr-event-pane-hook #'agent-fleet--on-pane-event))
-  (unless (memq #'agent-fleet--on-synced herdr-synced-hook)
-    (add-hook 'herdr-synced-hook #'agent-fleet--on-synced))
-  (unless (memq #'agent-fleet--on-connection-state-changed
-                herdr-connection-state-changed-hook)
-    (add-hook 'herdr-connection-state-changed-hook
-              #'agent-fleet--on-connection-state-changed)))
-
-(agent-fleet--setup-hooks)
-(agent-fleet--configure-auto-connect)
-
-
-;;; --- Agent-free tab cleanup -----------------------------------------
-
-(defun agent-fleet--tab-has-agent-p (tab session)
-  "Return non-nil if any pane or agent in SESSION occupies TAB."
-  (let ((id (herdr-tab-id tab)))
-    (or (cl-some (lambda (agent) (equal id (herdr-agent-tab-id agent)))
-                 (herdr-model-agents session))
-        (cl-some (lambda (pane)
-                   (and (equal id (herdr-pane-tab-id pane))
-                        (herdr-pane-agent pane)))
-                 (herdr-model-panes session)))))
-
-(defun agent-fleet--cleanup-tabs-check-connection (connection)
-  "Require the original live CONNECTION throughout tab cleanup."
-  (unless (and (eq connection (herdr-connection)) (herdr-connected-p))
-    (signal 'herdr-connection-error '(:reason cleanup-connection-changed))))
-
-(defun agent-fleet--cleanup-tabs-snapshot (connection)
-  "Fetch an authoritative tab cleanup snapshot on CONNECTION."
-  (agent-fleet--cleanup-tabs-check-connection connection)
-  (let ((session (herdr-model-parse-tab-cleanup-snapshot
-                  (herdr-request "session.snapshot" nil))))
-    (agent-fleet--cleanup-tabs-check-connection connection)
-    session))
-
-;;;###autoload
-(defun agent-fleet-cleanup-tabs ()
-  "Close agent-free tabs in the connected Herdr Session.
-Preserve every agent regardless of status, and each Workspace's last tab.
-Interactively confirm once: closing a tab also closes its ordinary shells
-and other terminal processes.  Recheck a fresh snapshot before each close;
-Herdr has no atomic conditional-close RPC, so concurrent launches can race.
-Return a plist with :closed tab IDs, :skipped tab IDs, and :failed entries
-of (TAB-ID . ERROR).  Declining confirmation adds :cancelled t.
-No global cache is replaced; pushed events maintain the existing model."
-  (interactive)
-  (agent-fleet--ensure-connected)
-  (let* ((connection (herdr-connection))
-         (session (agent-fleet--cleanup-tabs-snapshot connection))
-         (tabs (herdr-model-tabs session))
-         (remaining (make-hash-table :test 'equal))
-         candidates closed skipped failed cancelled)
-    (dolist (tab tabs)
-      (cl-incf (gethash (herdr-tab-workspace-id tab) remaining 0)))
-    (dolist (tab tabs)
-      (unless (agent-fleet--tab-has-agent-p tab session)
-        (let ((workspace (herdr-tab-workspace-id tab)))
-          (if (> (gethash workspace remaining) 1)
-              (progn (push (herdr-tab-id tab) candidates)
-                     (cl-decf (gethash workspace remaining)))
-            (push (herdr-tab-id tab) skipped)))))
-    (setq candidates (nreverse candidates))
-    (if (and candidates (called-interactively-p 'interactive)
-             (not (yes-or-no-p
-                   (format "Close %d agent-free tab(s)? Their shells and other processes will also close. "
-                           (length candidates)))))
-        (setq cancelled t)
-      (dolist (id candidates)
-        (condition-case err
-            (let* ((current (agent-fleet--cleanup-tabs-snapshot connection))
-                   (tab (herdr-model-find-tab current id)))
-              (if (or (null tab)
-                      (agent-fleet--tab-has-agent-p tab current)
-                      ;; A push may announce a launch while an older snapshot
-                      ;; response is in flight.  Positive live-cache evidence
-                      ;; must veto closing even if the response predates it.
-                      (and (herdr-model-cache)
-                           (agent-fleet--tab-has-agent-p
-                            tab (herdr-model-cache)))
-                      (<= (cl-count (herdr-tab-workspace-id tab)
-                                    (herdr-model-tabs current)
-                                    :key #'herdr-tab-workspace-id :test #'equal)
-                          1))
-                  (push id skipped)
-                (agent-fleet--cleanup-tabs-check-connection connection)
-                (herdr-protocol-validate-ok
-                 (herdr-request "tab.close" `((tab_id . ,id))) "tab.close")
-                (push id closed)))
-          (error (push (cons id err) failed)))))
-    (setq closed (nreverse closed) skipped (nreverse skipped)
-          failed (nreverse failed))
-    (when (called-interactively-p 'interactive)
-      (message "Tab cleanup: %s%d closed, %d skipped, %d failed%s"
-               (if cancelled "cancelled; " "")
-               (length closed) (length skipped) (length failed)
-               (if failed
-                   (concat ": " (mapconcat
-                                  (lambda (entry)
-                                    (format "%s: %s" (car entry)
-                                            (error-message-string (cdr entry))))
-                                  failed "; "))
-                 "")))
-    (list :closed closed :skipped skipped :failed failed :cancelled cancelled)))
-
-;;; --- Doctor ---------------------------------------------------------
-
-(defun agent-fleet--doctor-agent-checks ()
-  "Return doctor check triples for agent CLIs and Herdr manifests."
-  (let (checks)
-    (dolist (entry agent-fleet-agent-executables)
-      (let* ((exe (cadr entry))
-             (label (format "%s executable" (caddr entry)))
-             (found (executable-find exe)))
-        (push (herdr--doctor-check
-               label (and found t)
-               (if found (format "on PATH (%s)" exe)
-                 (format "not on PATH (%s)" exe)))
-              checks)))
-    (let ((detail "") (ok nil))
+(defun agent-fleet-rename (target &optional name)
+  "Set TARGET's persistent Fleet display NAME through Core labels.
+Interactively read NAME in the minibuffer.  Core's terminal name and ID
+are unchanged.  Revalidate the pinned identity after reading input."
+  (interactive (list (agent-fleet-current-target t)))
+  (let* ((record (agent-fleet-resolve target))
+         (reference (agent-fleet-reference record))
+         (name (string-trim
+                (or name (read-string
+                          (format "Rename %s [%s]: " (agent-fleet-name record)
+                                  (plist-get record :address))
+                          (agent-fleet-name record))))))
+    (when (or (string-empty-p name) (string-match-p "[[:cntrl:]]" name))
+      (user-error "Use a non-empty, single-line name without control characters"))
+    (setq record (agent-fleet-resolve reference t))
+    (if (equal name (agent-fleet-name record))
+        (message "Name unchanged: %s" name)
       (condition-case err
-          (let* ((res (ignore-errors (herdr-request "server.agent_manifests" nil)))
-                 (raw (and (listp res) (plist-get res :manifests)))
-                 (manifests (cond
-                             ((vectorp raw) (append raw nil))
-                             ((listp raw) raw)
-                             ((vectorp res) (append res nil))
-                             ((and (listp res)
-                                   (not (keywordp (car res)))) res)
-                             (t nil))))
-            (setq ok (and res t))
-            (setq detail (if manifests
-                             (mapconcat
-                              (lambda (m) (or (plist-get m :agent) "?"))
-                              manifests ", ")
-                           (if res "none loaded" "no response"))))
-        (error
-         (setq detail (error-message-string err))))
-      (push (herdr--doctor-check
-             "Agent manifests (Herdr)" ok
-             (if ok detail (format "unreachable: %s" detail)))
-            checks))
-    (nreverse checks)))
+          (let ((result (herdr-core-request
+                         "terminal.label"
+                         (list :terminal (plist-get record :address)
+                               :labels (list :fleet.name name)))))
+            (unless (and (herdr-core--valid-terminal-p result)
+                         (equal (herdr-core-identity result)
+                                (plist-get reference :fleet-identity))
+                         (equal (agent-fleet-label result "fleet.name") name))
+              (signal 'herdr-core-uncertain
+                      (list :reason 'invalid-rename-response :response result)))
+            (agent-fleet--control-finish 'rename record reference result nil))
+        ((error quit)
+         (agent-fleet--control-finish 'rename record reference nil err)
+         (signal (car err) (cdr err)))))))
 
 ;;;###autoload
-(defun agent-fleet-doctor ()
-  "Check the Herdr + agent environment and show a report.
-Runs the `herdr-doctor' checks plus agent CLI executables and the Herdr
-agent manifests.  See the environment checks above."
-  (interactive)
-  (herdr--doctor-render
-   (append (herdr--doctor-checks) (agent-fleet--doctor-agent-checks))
-   "*agent-fleet-doctor*" "Agent Fleet Doctor"))
-
-
-;;; --- Shared action registry ---------------------------------------
-;;
-;; The dashboard and the attach buffer surface the same set of agent actions
-;; (inspect/prompt/interrupt/kill/rename/worktree/diff/magit).  This table is
-;; the single source of their canonical labels and per-surface command+key
-;; bindings, so the two surfaces (and a future Embark agent action menu)
-;; cannot drift.  Surface-only actions (new/refresh/filters/quit/attention
-;; on the dashboard; menu on attach) stay inline in their surfaces
-;; -- only the SHARED actions converge here.  Commands are stored as symbols,
-;; so load order is irrelevant (autoload triggers on key press); both feature
-;; modules `require' agent-fleet, so the table is available when they build
-;; their maps.
-
-(defconst agent-fleet-action-registry
-  '((inspect :label "Inspect output"
-     :dashboard ("o" . agent-fleet-dashboard--inspect)
-     :attach (("o" . agent-fleet-attach-inspect)))
-    (prompt :label "Prompt"
-     :dashboard ("s" . agent-fleet-dashboard--prompt)
-     :attach (("s" . agent-fleet-attach-prompt)
-              ("S" . agent-fleet-attach-prompt-in-child-frame)))
-    (interrupt :label "Interrupt"
-     :dashboard ("i" . agent-fleet-dashboard--interrupt)
-     :attach (("i" . agent-fleet-attach-interrupt)))
-    (kill :label "Kill"
-     :dashboard ("x" . agent-fleet-dashboard--kill)
-     :attach (("x" . agent-fleet-attach-kill)))
-    (rename :label "Rename"
-     :dashboard ("r" . agent-fleet-dashboard--rename)
-     :attach (("r" . agent-fleet-attach-rename)))
-    (worktree :label "Worktree status"
-     :dashboard ("w" . agent-fleet-dashboard--worktree)
-     :attach (("w" . agent-fleet-attach-worktree)))
-    (diff :label "Working-tree diff"
-     :dashboard ("d" . agent-fleet-dashboard--diff)
-     :attach (("d" . agent-fleet-attach-diff)))
-    (magit :label "Magit status"
-     :dashboard ("m" . agent-fleet-dashboard--magit)
-     :attach (("m" . agent-fleet-attach-magit))))
-  "Single source of the agent actions shared by the dashboard and attach
-surfaces (and a future Embark agent menu).
-Each entry is (NAME :label L :dashboard (key . cmd)
-:attach ((key . cmd) ...)).  NAME is the action identity; :label is its
-canonical display string; :dashboard is (key . cmd); :attach is a list of
-(key . cmd) -- one binding for single actions, two for `prompt' (a plain
-prompt and the compose child frame).  View actions (inspect/diff/magit/
-worktree) open in an ordinary buffer; the dashboard display and the compose
-child frame are the only child-frame presentations.  Surface-only actions
-stay inline in their surfaces.")
-
-(defun agent-fleet-action-label (name)
-  "Return the canonical display label for action NAME, or nil.
-NAME is the action identity (a symbol in `agent-fleet-action-registry')."
-  (plist-get (cdr (assq name agent-fleet-action-registry)) :label))
-
-(defun agent-fleet-action-dashboard-bindings ()
-  "Return the (key . cmd) dashboard bindings for every registry action.
-The dashboard builds its keymap/table bindings from this so the shared
-actions match the registry (and the attach surface) by construction."
-  (delq nil
-        (mapcar (lambda (entry)
-                  (plist-get (cdr entry) :dashboard))
-                agent-fleet-action-registry)))
-
-(defun agent-fleet-action-attach-bindings ()
-  "Return a flat list of (key . cmd) attach bindings across registry actions.
-The attach command map is built from this so the shared actions match the
-registry (and the dashboard surface) by construction."
-  (let (out)
-    (dolist (entry agent-fleet-action-registry (nreverse out))
-      (dolist (kc (plist-get (cdr entry) :attach))
-        (push kc out)))))
-
-
-;;; --- Command map ---------------------------------------------------
-
-;; The ordinary-buffer command map belongs to the core entry point.
-;; Keeping it here lets generated package autoloads expose the prefix command
-;; without loading the dashboard or any optional integration.  `:bind-keymap'
-;; remains the lazy source-checkout alternative when those autoloads have not
-;; been loaded yet.  The command symbols below remain autoloaded leaves; this
-;; map only records the user's opt-in bindings.
-(declare-function agent-fleet "agent-fleet-dashboard" ())
-(declare-function agent-fleet-list-project-agents
-                  "agent-fleet-dashboard" (agent))
-(declare-function agent-fleet-next-needs-attention
-                  "agent-fleet-dashboard" (&optional include-done))
-(declare-function agent-fleet-start-for-project
-                  "agent-fleet-project" (kind &rest args))
-(declare-function agent-fleet-prompt-dwim "agent-fleet-project" (agent))
-(declare-function agent-fleet-worktree-status "agent-fleet-worktree" (target))
-(declare-function agent-fleet-magit-status "agent-fleet-magit" (target))
-(declare-function agent-fleet-magit-diff "agent-fleet-magit" (target))
+(defun agent-fleet-wait (target)
+  "Wait asynchronously for TARGET, reporting Core's actual reason."
+  (interactive (list (agent-fleet-current-target)))
+  (agent-fleet--control-request 'wait (agent-fleet-resolve target t) 190))
 
 ;;;###autoload
-(defvar-keymap agent-fleet-command-map
-  :prefix t
-  :doc "Prefix map for agent-fleet commands.
-The `:prefix' declaration also makes the symbol usable as a prefix command;
-bind it yourself with `use-package :bind' or `keymap-set'.  The package
-binds NO global keys.
+(defun agent-fleet-interrupt (target)
+  "Request interruption of TARGET's current work."
+  (interactive (list (agent-fleet-current-target)))
+  (agent-fleet--control-request 'interrupt (agent-fleet-resolve target t)))
 
-Commands in this map are intended for an ordinary source or project buffer.
-They either open the dashboard, ask for an agent, or derive their target from
-the current project.  Commands in `agent-fleet-attach-command-map' operate on
-the already attached pane and therefore belong to that buffer's map instead."
-  ;; Discover agents and the dashboard.
-  "a" #'agent-fleet
-  "l" #'agent-fleet-list
-  "L" #'agent-fleet-list-project-agents
-  "!" #'agent-fleet-next-needs-attention
-  ;; Start an agent or send context from the current project.
-  "s" #'agent-fleet-start
-  "N" #'agent-fleet-start-for-project
-  "P" #'agent-fleet-prompt-dwim
-  ;; Select an agent and perform an operation on it.
-  "t" #'agent-fleet-attach
-  "p" #'agent-fleet-prompt
-  "i" #'agent-fleet-interrupt
-  "x" #'agent-fleet-kill
-  "r" #'agent-fleet-rename
-  ;; Open views for a selected agent.
-  "o" #'agent-fleet-show-output
-  "w" #'agent-fleet-worktree-status
-  "m" #'agent-fleet-magit-status
-  "d" #'agent-fleet-magit-diff
-  ;; Prefix-map help is provided by Emacs itself and remains available even
-  ;; when optional integration modules are not installed.
-  "h" #'describe-prefix-bindings
-  "?" #'describe-prefix-bindings)
+(defun agent-fleet-kill-impact (address terminals)
+  "Return live descendants that die with ADDRESS in TERMINALS."
+  (let ((seen (list address)) (queue (list address)) result)
+    (while queue
+      (let ((parent (pop queue)))
+        (dolist (record terminals)
+          (when (and (equal parent (plist-get record :parent))
+                     (eq t (plist-get record :die_with_parent))
+                     (equal "live" (plist-get record :state))
+                     (not (member (plist-get record :address) seen)))
+            (push (plist-get record :address) seen)
+            (push (plist-get record :address) queue)
+            (push record result)))))
+    result))
 
+;;;###autoload
+(defun agent-fleet-kill (target)
+  "End TARGET after reviewing the current descendant impact."
+  (interactive (list (agent-fleet-current-target)))
+  (let* ((record (agent-fleet-resolve target t))
+         (reference (agent-fleet-reference record))
+         (address (plist-get record :address))
+         (terminals (plist-get (herdr-core-request "terminal.list" '(:all t)) :terminals))
+         (impact (agent-fleet-kill-impact address terminals)))
+    (unless (equal (plist-get record :state) "live") (user-error "Already finished"))
+    (when (yes-or-no-p
+           (format "End %s [%s]%s? Core also ends dependent descendants, including any created meanwhile. "
+                   (agent-fleet-name record) address
+                   (if impact (format " and %s" (mapconcat #'agent-fleet-name impact ", ")) "")))
+      (agent-fleet--control-request 'end (agent-fleet-resolve reference t)))))
 
+(defconst agent-fleet--action-groups
+  '(("Session"
+     ("a" "Dashboard" agent-fleet agent-fleet-attach "Attach")
+     ("N" "New agent" agent-fleet-start-minibuffer agent-fleet-dashboard-start)
+     ("J" "New in Project" agent-fleet-start-for-project)
+     ("RET" "Attach" agent-fleet-attach)
+     ("v" "Observe" agent-fleet-observe))
+    ("Agent"
+     ("s" "Prompt" agent-fleet-prompt)
+     ("P" "DWIM prompt" agent-fleet-prompt-dwim)
+     ("o" "Output" agent-fleet-show-output)
+     ("I" "Details" agent-fleet-details)
+     ("R" "Rename" agent-fleet-rename)
+     ("i" "Interrupt" agent-fleet-interrupt)
+     ("x" "End program" agent-fleet-kill))
+    ("Tools"
+     ("m" "Magit status" agent-fleet-magit-status)
+     ("d" "Diff" agent-fleet-magit-diff)
+     ("c" "Cleanup review" agent-fleet-cleanup)
+     ("f" "Send file" agent-fleet-send-file)
+     ("+" "Include terminal" agent-fleet-adopt)))
+  "Shared terminal and Dashboard actions.
+Each entry is (KEY LABEL COMMAND [DASHBOARD-COMMAND DASHBOARD-LABEL]).
+Dashboard overrides supply launch defaults and its explicit `a' attach shortcut.")
+
+;;;###autoload (autoload 'agent-fleet-command-map "agent-fleet" nil t 'keymap)
+(defvar agent-fleet-command-map
+  (let ((map (make-sparse-keymap)))
+    (define-key map (kbd "a") #'agent-fleet)
+    (define-key map (kbd "P") #'agent-fleet-prompt-dwim)
+    map)
+  "Opt-in global prefix: Dashboard and code-context prompt only.")
+(fset 'agent-fleet-command-map agent-fleet-command-map)
+(defvar agent-fleet-terminal-command-map
+  (let ((map (make-sparse-keymap)))
+    (set-keymap-parent map agent-fleet-command-map)
+    (dolist (group agent-fleet--action-groups)
+      (dolist (action (cdr group))
+        (define-key map (kbd (car action)) (nth 2 action))))
+    map)
+  "Complete buffer-local prefix for attached agents.")
 (provide 'agent-fleet)
-
-;; Loading: requiring `agent-fleet' loads the core control plane only.
-;; Feature modules (dashboard, attach, worktree, magit, parallel) are
-;; autoloaded on demand -- `M-x agent-fleet' loads the dashboard,
-;; `M-x agent-fleet-attach' loads the attach layer, and so on.  In a
-;; source checkout, run `make autoloads' to generate the autoloads file
-;; from the `;;;###autoload' cookies; a package install generates them
-;; automatically.  Optional dependencies (magit/eat/ghostel/vterm/consult)
-;; are guarded inside each module and never block core loading.
-
 ;;; agent-fleet.el ends here

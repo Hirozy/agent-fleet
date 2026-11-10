@@ -30,13 +30,136 @@
 ;; Magit, worktree, attach, the dashboard buffer, or any Herdr RPC.
 ;; Feature modules call `agent-fleet-display--aux-run' for the selected
 ;; origin, or `agent-fleet-display-aux-run-at-origin' when an asynchronous
-;; workflow recorded an explicit origin.  The dashboard calls the capability
-;; and centering helpers for its own child-frame backend.
+;; workflow recorded an explicit origin.  Dashboard uses the per-window
+;; review return stack instead of a child frame.
 
 ;;; Code:
 
 (require 'cl-lib)
 (require 'subr-x)
+
+;;; Same-window review navigation
+
+(defvar agent-fleet-display--window-calling nil)
+
+(defun agent-fleet-display-window-active-p (&optional window)
+  "Whether WINDOW displays the top of a Fleet review return stack."
+  (let* ((window (or window (selected-window)))
+         (entry (car (window-parameter window 'agent-fleet-return-stack))))
+    (and entry (eq (car entry) (window-buffer window)))))
+
+(defun agent-fleet-display--window-save (window)
+  "Save WINDOW's buffer and viewing position."
+  (with-current-buffer (window-buffer window)
+    (list (current-buffer) (copy-marker (window-point window))
+          (copy-marker (window-start window)) (window-hscroll window)
+          (window-vscroll window t)
+          (agent-fleet-display--row-position (window-point window))
+          (agent-fleet-display--row-position (window-start window)))))
+
+(defun agent-fleet-display--row-position (position)
+  "Capture a tabulated row identity and column at POSITION, when present."
+  (when-let* ((id (get-text-property position 'tabulated-list-id)))
+    (save-excursion
+      (goto-char position)
+      (cons id (current-column)))))
+
+(defun agent-fleet-display--resolve-position (saved index)
+  "Resolve point or start INDEX in SAVED, surviving a tabulated view redraw."
+  (with-current-buffer (car saved)
+    (let ((row (nth (+ index 4) saved)))
+      (if (not row) (nth index saved)
+        (save-excursion
+          (goto-char (point-min))
+          (while (and (not (eobp))
+                      (not (equal (get-text-property (point) 'tabulated-list-id) (car row))))
+            (goto-char (next-single-property-change (point) 'tabulated-list-id nil (point-max))))
+          (if (eobp)
+              ;; A removed row returns to a remaining record, never a heading.
+              (or (and (= index 1)
+                       (text-property-not-all (point-min) (point-max) 'tabulated-list-id nil))
+                  (point-min))
+            (move-to-column (cdr row))
+            (point)))))))
+
+(defun agent-fleet-display--window-restore (window saved)
+  "Restore SAVED in WINDOW without changing the window layout."
+  (let ((buffer (car saved)) (dedicated (window-dedicated-p window)))
+    (unwind-protect
+        (progn
+          (set-window-dedicated-p window nil)
+          (set-window-buffer window (if (buffer-live-p buffer) buffer
+                                      (other-buffer (window-buffer window) t)))
+          (when (buffer-live-p buffer)
+            (set-window-point window (agent-fleet-display--resolve-position saved 1))
+            (set-window-start window (agent-fleet-display--resolve-position saved 2) t)
+            (set-window-hscroll window (nth 3 saved))
+            (set-window-vscroll window (nth 4 saved) t)
+            (set-window-parameter window 'agent-fleet-restore-position saved))
+          (when (eq window (selected-window)) (set-buffer (window-buffer window))))
+      (set-window-dedicated-p window dedicated))))
+
+(defun agent-fleet-display-window-restoring-p (window)
+  "Whether WINDOW has a matching one-time position restoration pending."
+  (let ((saved (window-parameter window 'agent-fleet-restore-position)))
+    (and saved (eq (car saved) (window-buffer window)))))
+
+(defun agent-fleet-display--restore-after-change (frame)
+  "Finish position restoration in FRAME after buffer-change consumers run."
+  (dolist (window (window-list frame 'nomini))
+    (when-let* ((saved (window-parameter window 'agent-fleet-restore-position)))
+      (set-window-parameter window 'agent-fleet-restore-position nil)
+      (when (eq (car saved) (window-buffer window))
+        (set-window-point window (agent-fleet-display--resolve-position saved 1))
+        (set-window-start window (agent-fleet-display--resolve-position saved 2) t)
+        (set-window-hscroll window (nth 3 saved))
+        (set-window-vscroll window (nth 4 saved) t)))))
+
+(add-hook 'window-state-change-functions #'agent-fleet-display--restore-after-change t)
+
+(defun agent-fleet-display-window-open (buffer)
+  "Show BUFFER in the selected window, retaining its previous view."
+  (let ((window (selected-window)))
+    (unless (eq buffer (window-buffer window))
+      (unless (agent-fleet-display-window-active-p window)
+        (set-window-parameter window 'agent-fleet-return-stack nil))
+      (let ((saved (agent-fleet-display--window-save window)))
+        (agent-fleet-display--window-restore
+         window (list buffer (with-current-buffer buffer (point)) 1 0 0))
+        (set-window-parameter window 'agent-fleet-return-stack
+                              (cons (cons buffer saved)
+                                    (window-parameter window 'agent-fleet-return-stack)))))
+    buffer))
+
+(defun agent-fleet-display-window-quit (&optional window)
+  "Restore the preceding review in WINDOW, returning non-nil when handled."
+  (let ((window (or window (selected-window))))
+    (when (agent-fleet-display-window-active-p window)
+      (let ((stack (window-parameter window 'agent-fleet-return-stack)))
+        (set-window-parameter window 'agent-fleet-return-stack (cdr stack))
+        (agent-fleet-display--window-restore window (cdar stack)))
+      t)))
+
+(defun agent-fleet-display-window-call (function)
+  "Run presentation FUNCTION inside the active review window.
+Retain the previous view on success and restore it on failure."
+  (if agent-fleet-display--window-calling (funcall function)
+    (let* ((agent-fleet-display--window-calling t)
+           (window (selected-window))
+           (saved (agent-fleet-display--window-save window))
+           (stack (window-parameter window 'agent-fleet-return-stack)))
+      (condition-case err
+          (prog1 (funcall function)
+            (when (and (window-live-p window)
+                       (window-parameter window 'agent-fleet-return-stack)
+                       (not (eq (car saved) (window-buffer window))))
+              (set-window-parameter window 'agent-fleet-return-stack
+                                    (cons (cons (window-buffer window) saved) stack))))
+        ((error quit)
+         (when (window-live-p window)
+           (set-window-parameter window 'agent-fleet-return-stack stack)
+           (agent-fleet-display--window-restore window saved))
+         (signal (car err) (cdr err)))))))
 
 
 ;;; --- Capability checks ----------------------------------------------
@@ -91,10 +214,7 @@ action function.  PARENT-FRAME defaults to the selected frame."
 (defun agent-fleet-display--parent-frame (&optional frame)
   "Return the native parent frame for FRAME, or FRAME itself.
 A native child frame (one with a `frame-parent') resolves to that
-parent; an ordinary or standalone frame is its own parent.  This is
-the generic parent resolver used by the auxiliary child layer; the
-dashboard has its own `agent-fleet-dashboard--child-parent-frame' that
-also consults the backend registry."
+parent; an ordinary or standalone frame is its own parent."
   (let* ((frame (or frame (selected-frame)))
          (parent (frame-parent frame)))
     (if (frame-live-p parent) parent frame)))
@@ -135,9 +255,7 @@ explicitly so the child is reliably centered within its parent."
             (parent (cdr cell)))
         (when (and (eq parent frame)
                    (frame-live-p child)
-                   (or (eq (frame-parameter child 'agent-fleet-dashboard-display)
-                           'child-frame)
-                       (frame-parameter child 'agent-fleet-auxiliary-frame)))
+                   (frame-parameter child 'agent-fleet-auxiliary-frame))
           (agent-fleet-display--center-child-frame child parent))))))
 
 (defun agent-fleet-display--forget-centered-child (frame)
@@ -148,10 +266,9 @@ explicitly so the child is reliably centered within its parent."
 ;;; --- Auxiliary child frame -----------------------------------------
 
 ;; An auxiliary child frame floats over an attached terminal's parent
-;; frame so that opening output, worktree, or Magit views never resizes
-;; the terminal window.  It is a distinct presentation surface from the
-;; dashboard child frame: separate parameters and lifecycle metadata,
-;; reused per origin, and never used as the dashboard display backend.
+;; frame so that opening output, prompt, or Magit views never resizes
+;; the terminal window.  It is reused per origin; Dashboard uses the
+;; same-window return stack instead.
 
 (defvar agent-fleet-display--aux-frame-parameters
   '((width . 1.0)
@@ -169,8 +286,8 @@ explicitly so the child is reliably centered within its parent."
     (no-other-frame . t)
     (agent-fleet-auxiliary-frame . t))
   "Frame parameters for an auxiliary child frame.
-Unlike the compact dashboard, auxiliary interfaces fill their parent so
-full-screen interfaces such as Magit do not open in a half-size surface.
+Auxiliary interfaces fill their parent so full-screen interfaces such as
+Magit have room for their windows.
 `parent-frame' and the origin marker are merged on top at display time.")
 
 (defvar agent-fleet-display--aux-frames (make-hash-table :test 'eq)
@@ -225,14 +342,6 @@ feature modules that must record a destination before asynchronous work."
   "Return the live auxiliary child frame for ORIGIN, or nil."
   (let ((child (gethash origin agent-fleet-display--aux-frames)))
     (and (frame-live-p child) child)))
-
-(defun agent-fleet-display-auxiliary-frame-for-origin (&optional origin)
-  "Return the live auxiliary frame owned by ORIGIN, or nil.
-ORIGIN defaults to the non-child frame associated with the selected frame.
-This small query is intended for feature modules that need to inspect or
-reuse the one auxiliary frame owned by an origin."
-  (agent-fleet-display--aux-frame-for-origin
-   (agent-fleet-display--aux-origin-frame (or origin (selected-frame)))))
 
 (defun agent-fleet-display--refocus-frame (frame)
   "Select and raise FRAME after a child-frame deletion."
@@ -314,7 +423,8 @@ display lands in it.  Signal a `user-error' when Emacs cannot create it."
 
 (defun agent-fleet-display--aux-quit-restore-window
     (orig &optional window bury-or-kill)
-  "Around advice on `quit-restore-window' for auxiliary child frames.
+  "Around advice on `quit-restore-window' for Fleet review views.
+An active same-window review returns to its preceding buffer and position.
 Quitting a window whose frame is an auxiliary child closes that child —
 delete it, forget the reuse entry, refocus its origin — instead of the
 default behavior.  The default would not match the frame-deletion branch
@@ -322,10 +432,16 @@ of `quit-restore-window' (the recorded buffer is the placeholder the
 child was created with, not the view buffer later swapped in) and would
 switch the window to an unrelated buffer, leaving the child behind.
 BURY-OR-KILL is still applied to the window's buffer afterwards.
-Windows on any other frame pass through unchanged."
+Other windows pass through unchanged."
   (let* ((win (if (window-live-p window) window (selected-window)))
          (frame (window-frame win)))
-    (if (frame-parameter frame 'agent-fleet-auxiliary-frame)
+    (if (and (windowp win) (agent-fleet-display-window-active-p win))
+        (let ((buffer (window-buffer win)))
+          (agent-fleet-display-window-quit win)
+          (when (buffer-live-p buffer)
+            (cond ((eq bury-or-kill 'kill) (kill-buffer buffer))
+                  ((memq bury-or-kill '(bury burying)) (bury-buffer-internal buffer)))))
+      (if (frame-parameter frame 'agent-fleet-auxiliary-frame)
         (let ((buffer (window-buffer win)))
           (agent-fleet-display--aux-close frame)
           (when (buffer-live-p buffer)
@@ -333,7 +449,7 @@ Windows on any other frame pass through unchanged."
                    (kill-buffer buffer))
                   ((memq bury-or-kill '(bury burying))
                    (bury-buffer-internal buffer)))))
-      (funcall orig window bury-or-kill))))
+        (funcall orig window bury-or-kill)))))
 
 ;;; --- View outcomes --------------------------------------------------
 
@@ -342,38 +458,21 @@ Windows on any other frame pass through unchanged."
 ;; decisions (keep or close the child frame) from the domain return
 ;; value, which may be nil even on success (e.g. `magit-status').
 
-(defun agent-fleet-display--make-outcome (opened &optional value buffer)
+(defun agent-fleet-display-make-outcome (opened &optional value buffer)
   "Return a view outcome plist.
 OPENED is non-nil when the view was established.  VALUE is the original
 domain return value (may be nil).  BUFFER is the optional destination
 buffer, for callers that want to inspect it."
   (list :opened (if opened t) :value value :buffer buffer))
 
-(defun agent-fleet-display-make-outcome (opened &optional value buffer)
-  "Return an explicit presentation outcome for a feature view.
-OPENED, VALUE, and BUFFER have the same meanings as in the auxiliary display
-runner's outcome contract."
-  (agent-fleet-display--make-outcome opened value buffer))
-
 (defun agent-fleet-display--outcome-opened-p (outcome)
-  "Return non-nil if OUTCOME marks the view as opened.
-A non-outcome value (a plain return from a thunk that has not been
-migrated) is treated as opened when non-nil, for backward compatibility."
-  (if (and (consp outcome) (eq (car outcome) :opened))
-      (plist-get outcome :opened)
-    outcome))
-
-(defun agent-fleet-display--outcome-value (outcome)
-  "Return OUTCOME's domain value, or nil."
-  (if (and (consp outcome) (eq (car outcome) :opened))
-      (plist-get outcome :value)
-    outcome))
-
-(defun agent-fleet-display--outcome-buffer (outcome)
-  "Return OUTCOME's destination buffer, or nil."
-  (if (and (consp outcome) (eq (car outcome) :opened))
-      (plist-get outcome :buffer)
-    nil))
+  "Return non-nil for an explicit opened OUTCOME or live destination.
+Fleet commands return a buffer, window, or `agent-fleet-display-make-outcome'
+result.  Arbitrary non-nil values do not establish that a view opened."
+  (or (and (bufferp outcome) (buffer-live-p outcome))
+      (and (windowp outcome) (window-live-p outcome))
+      (and (consp outcome) (eq (car outcome) :opened)
+           (eq (plist-get outcome :opened) t))))
 
 (defun agent-fleet-display-aux-run-at-origin (origin thunk &optional parameters)
   "Run THUNK in an auxiliary child frame owned by ORIGIN.
@@ -397,10 +496,9 @@ frame instead of the default full-fill.
 
 Origins may be recorded before an asynchronous server visit, which is why
 this entry point accepts an explicit origin instead of relying on the
-currently selected frame.  A non-outcome return value is treated as opened
-when non-nil (backward compat).  Signal a `user-error' when child frames are
-unsupported; an explicit `-in-child-frame' command never falls back to an
-ordinary buffer."
+currently selected frame.  THUNK must return an explicit outcome or a live
+destination buffer/window.  Signal a `user-error' when child frames are
+unsupported; callers choose whether to offer ordinary buffer presentation."
   (let* ((origin (agent-fleet-display--aux-origin-frame origin))
          (reason (agent-fleet-display--child-frame-unavailable-reason origin)))
     (if reason
@@ -425,13 +523,9 @@ ordinary buffer."
                 ;; child's window instead of replacing the placeholder; remove
                 ;; any placeholder windows so the child shows only real content.
                 (agent-fleet-display--aux-cleanup-placeholder child))
-              (cond
-               ((and (not opened) created-p)
-                (agent-fleet-display--aux-close child))
-               ((not opened)
+              (if (and (not opened) created-p)
+                  (agent-fleet-display--aux-close child)
                 (select-frame-set-input-focus child))
-               (t
-                (select-frame-set-input-focus child)))
               result)
           (error
            (if created-p
@@ -451,19 +545,7 @@ Resolve the current origin to a non-child parent frame, then delegate to
 ;;; --- Frame hooks ---------------------------------------------------
 
 (defun agent-fleet-display--setup-frame-hooks ()
-  "Install child-frame lifecycle callbacks as ordinary, idempotent hooks.
-`remove-function' first undoes the erroneous function-composition form used
-by an older release.  It leaves a proper hook list unchanged, so this also
-repairs an already-running Emacs before `add-hook' installs the callbacks in
-the normal representation."
-  (remove-function (default-value 'window-size-change-functions)
-                   #'agent-fleet-display--recenter-on-parent-resize)
-  (remove-function (default-value 'delete-frame-functions)
-                   #'agent-fleet-display--forget-centered-child)
-  (remove-function (default-value 'delete-frame-functions)
-                   #'agent-fleet-display--aux-forget)
-  (advice-remove 'quit-restore-window
-                 #'agent-fleet-display--aux-quit-restore-window)
+  "Install child-frame lifecycle callbacks as ordinary, idempotent hooks."
   (add-hook 'window-size-change-functions
             #'agent-fleet-display--recenter-on-parent-resize)
   (add-hook 'delete-frame-functions

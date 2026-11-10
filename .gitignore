@@ -1,7 +1,5 @@
 *.elc
 *~
-*.md
-!ROADMAP.md
 \#*\#
 .\#*
 *.#*
@@ -10,7 +8,6 @@
 /coverage/
 /.projectile-cache.eld
 /agent-fleet-autoloads.el
-/test-emacs.sh
 
 # OS
 .DS_Store
