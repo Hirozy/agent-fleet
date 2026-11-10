@@ -9,6 +9,33 @@
   "Inhibit Evil escape sequences in agent terminals."
   :type 'boolean :group 'agent-fleet)
 (defvar-local agent-fleet-observe-p nil "Non-nil for a read-only Core viewer.")
+(defvar-local agent-fleet-attach--name nil "Last Fleet-managed buffer name.")
+
+(defun agent-fleet-attach--sync-name (record)
+  "Update this viewer's name from RECORD without changing its process."
+  (let ((name (format "*%s:%s*" (if agent-fleet-observe-p "observe" "agent")
+                      (agent-fleet-name record))))
+    (unless (equal name agent-fleet-attach--name)
+      ;; Fleet owns viewer names; program titles still belong to Ghostel, but
+      ;; must not replace the agent's display name in its buffer or mode line.
+      (setq-local ghostel-buffer-name-function nil)
+      (setq-local ghostel-buffer-identification-format "%b")
+      (setq-local mode-line-buffer-identification (propertized-buffer-identification "%b"))
+      (rename-buffer name t)
+      (setq agent-fleet-attach--name name)
+      (force-mode-line-update))))
+
+(defun agent-fleet-attach--refresh-names ()
+  "Refresh viewer names from the cache, including after reconnection."
+  (dolist (buffer (buffer-list))
+    (with-current-buffer buffer
+      (when (bound-and-true-p agent-fleet-attach-mode)
+        (let* ((identity (plist-get agent-fleet-target :fleet-identity))
+               (address (nth 1 identity))
+               (record (and (herdr-core-local-address-p address)
+                            (herdr-core-terminal address))))
+          (when (and record (equal identity (herdr-core-identity record)))
+            (agent-fleet-attach--sync-name record)))))))
 (defvar agent-fleet-observe--keymaps
   `((agent-fleet-observe-p
      . ,(let ((map (make-sparse-keymap)))
@@ -160,8 +187,11 @@ until the caller can close it after successful attachment."
               (agent-fleet-attach-mode 1)))
         (error (when (buffer-live-p buffer) (kill-buffer buffer))
                (signal (car err) (cdr err)))))
+    (with-current-buffer buffer
+      (agent-fleet-attach--sync-name record))
     (if observe
         (agent-fleet-display-window-open buffer)
       (agent-fleet-attach--display buffer))))
+(add-hook 'herdr-core-changed-hook #'agent-fleet-attach--refresh-names)
 (provide 'agent-fleet-attach)
 ;;; agent-fleet-attach.el ends here

@@ -93,6 +93,49 @@
           (should (plist-get (car agent-fleet--control-results) :error))
           (should-not (agent-fleet-label (herdr-core-terminal "t1") "fleet.name")))))))
 
+(ert-deftest fleet-viewer-names-follow-label-events-and-reconnect-snapshots ()
+  (fleet-test-model (list (fleet-test-agent "t1"))
+    (let ((buffers (list (generate-new-buffer " *fleet-rename-viewer*")
+                         (generate-new-buffer " *fleet-rename-observer*")))
+          (herdr-core-changed-hook '(agent-fleet-attach--refresh-names)))
+      (unwind-protect
+          (progn
+            (cl-loop for buffer in buffers for observe in '(nil t) do
+                     (with-current-buffer buffer
+                       (agent-fleet-attach-mode 1)
+                       (setq-local agent-fleet-target (agent-fleet-reference (herdr-core-terminal "t1")))
+                       (setq-local agent-fleet-observe-p observe)))
+            (herdr-core--event '(:seq 2 :type "labels" :terminal "t1"
+                                :data (:labels (:fleet.role "agent" :fleet.name "renamed"))))
+            (should (equal (mapcar #'buffer-name buffers) '("*agent:renamed*" "*observe:renamed*")))
+            (let ((record (copy-tree (herdr-core-terminal "t1"))))
+              (setf (plist-get record :labels) '(:fleet.role "agent" :fleet.name "reconnected"))
+              (herdr-core--snapshot (list :seq 3 :terminals (list record))))
+            (should (equal (mapcar #'buffer-name buffers)
+                           '("*agent:reconnected*" "*observe:reconnected*")))
+            ;; Neither an address reused by a new terminal nor another Core
+            ;; may relabel the original viewers.
+            (let ((record (copy-tree (herdr-core-terminal "t1"))))
+              (setf (plist-get record :created_ms) 99
+                    (plist-get record :labels) '(:fleet.name "replacement"))
+              (herdr-core--snapshot (list :seq 4 :terminals (list record))))
+            (should (equal (buffer-name (car buffers)) "*agent:reconnected*")))
+        (mapc #'kill-buffer buffers)))))
+
+(ert-deftest fleet-viewer-name-collisions-do-not-rename-other-buffers ()
+  (let ((occupied (generate-new-buffer "*agent:duplicate*"))
+        (viewer (generate-new-buffer " *fleet-rename-collision*")))
+    (unwind-protect
+        (with-current-buffer viewer
+          (agent-fleet-attach--sync-name '(:labels (:fleet.name "duplicate")))
+          (let ((name (buffer-name)))
+            (should-not (equal name (buffer-name occupied)))
+            (agent-fleet-attach--sync-name '(:labels (:fleet.name "duplicate")))
+            (should (equal name (buffer-name))))
+          (should (equal (buffer-name occupied) "*agent:duplicate*")))
+      (kill-buffer viewer)
+      (kill-buffer occupied))))
+
 (ert-deftest fleet-type-prefers-reported-app-without-inventing-status ()
   (dolist (case '(((:argv ["/opt/bin/claude"]) . "claude")
                   ((:argv ("codex" "--model" "x")) . "codex")

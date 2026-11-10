@@ -199,6 +199,9 @@ and `C-g` cancels. Names may contain spaces and Unicode, but cannot be blank or
 contain control characters. Core persists the display name as `fleet.name`;
 the original Core terminal name, ID and attached session remain unchanged.
 Dashboard refreshes from Core events and keeps the renamed agent selected.
+Attached and read-only viewer buffer names and mode lines follow the same
+display name, including existing viewers after a rename or reconnection.
+Fleet viewer names take precedence over Ghostel's program-title naming.
 The same action is available through `h R` and terminal `C-c a R`.
 
 Existing terminal bindings change from `n` to `N` for a new agent, `N` to `J`
