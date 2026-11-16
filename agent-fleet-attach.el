@@ -5,6 +5,7 @@
 (require 'agent-fleet)
 (declare-function ghostel-exec "ghostel" (buffer program &optional args))
 (declare-function ghostel-force-redraw "ghostel" ())
+(declare-function ghostel--window-on-cursor-p "ghostel" (window))
 (defvar ghostel-query-before-killing)
 (defcustom agent-fleet-attach-inhibit-evil-escape t
   "Inhibit Evil escape sequences in agent terminals."
@@ -34,9 +35,20 @@
                            (list window (copy-marker (window-point window))
                                  (copy-marker (window-start window))
                                  (window-hscroll window) (window-vscroll window t)))
-                         (get-buffer-window-list buffer nil t))))
+                         (cl-remove-if
+                          (lambda (window)
+                            (and (eq (window-parameter window 'agent-fleet-attach-refit) buffer)
+                                 (not (agent-fleet-display-window-restoring-p window))
+                                 ;; Only refit live input.  History readers and
+                                 ;; explicit Fleet return positions stay put.
+                                 (fboundp 'ghostel--window-on-cursor-p)
+                                 (ghostel--window-on-cursor-p window)))
+                          (get-buffer-window-list buffer nil t)))))
             (unwind-protect
-                (save-excursion (ghostel-force-redraw))
+                (if (and (eq (window-buffer (selected-window)) buffer)
+                         (not (assq (selected-window) views)))
+                    (ghostel-force-redraw)
+                  (save-excursion (ghostel-force-redraw)))
               (dolist (view views)
                 (let ((window (car view)))
                   (when (and (window-live-p window) (eq (window-buffer window) buffer))
@@ -45,7 +57,33 @@
                     (set-window-hscroll window (nth 3 view))
                     (set-window-vscroll window (nth 4 view) t)))
                 (set-marker (nth 1 view) nil)
-                (set-marker (nth 2 view) nil)))))))))
+                (set-marker (nth 2 view) nil))
+              (dolist (window (get-buffer-window-list buffer nil t))
+                (set-window-parameter window 'agent-fleet-attach-refit nil)))))))))
+
+(defun agent-fleet-attach--on-size-change (window)
+  "Refresh WINDOW after its Fleet viewport changes size.
+Remember sizes per window and viewer, so a temporary review buffer's
+header does not count as resizing the hidden terminal."
+  (when (window-live-p window)
+    (with-current-buffer (window-buffer window)
+      (when (bound-and-true-p agent-fleet-attach-mode)
+        (let* ((previous (window-parameter window 'agent-fleet-attach-size))
+               (size (list (current-buffer) (window-body-width window t)
+                           (window-body-height window t))))
+          (set-window-parameter window 'agent-fleet-attach-size size)
+          (when (and (eq (car previous) (current-buffer)) (not (equal previous size)))
+            ;; Let Ghostel fit the live viewport to its new geometry instead
+            ;; of restoring the scroll offset from the smaller window.
+            (set-window-parameter window 'agent-fleet-attach-refit (current-buffer))
+            (agent-fleet-attach--schedule-redraw)))))))
+
+(defun agent-fleet-attach--schedule-redraw ()
+  "Coalesce refresh requests until redisplay has completed its window hooks."
+  (when (and (not agent-fleet-attach--redraw-timer)
+             (fboundp 'ghostel-force-redraw))
+    (setq agent-fleet-attach--redraw-timer
+          (run-at-time 0 nil #'agent-fleet-attach--redraw (current-buffer)))))
 
 (defun agent-fleet-attach--on-arrival (window)
   "Schedule one redraw when WINDOW becomes the selected Fleet view.
@@ -53,12 +91,9 @@ Resolve the buffer from WINDOW: older Emacs versions do not make the
 window's buffer current when calling buffer-change hooks."
   (when (and (window-live-p window) (eq window (selected-window)))
     (with-current-buffer (window-buffer window)
-      (when (and (bound-and-true-p agent-fleet-attach-mode)
-                 (not agent-fleet-attach--redraw-timer)
-                 (fboundp 'ghostel-force-redraw))
+      (when (bound-and-true-p agent-fleet-attach-mode)
         ;; Let buffer changes and Fleet return-position restoration finish.
-        (setq agent-fleet-attach--redraw-timer
-              (run-at-time 0 nil #'agent-fleet-attach--redraw (current-buffer)))))))
+        (agent-fleet-attach--schedule-redraw)))))
 
 (defun agent-fleet-attach--sync-name (record)
   "Update this viewer's name from RECORD without changing its process."
@@ -169,9 +204,11 @@ until the caller can close it after successful attachment."
         (push 'agent-fleet-attach--keymaps emulation-mode-map-alists)
         (add-hook 'window-buffer-change-functions #'agent-fleet-attach--on-arrival nil t)
         (add-hook 'window-selection-change-functions #'agent-fleet-attach--on-arrival nil t)
+        (add-hook 'window-size-change-functions #'agent-fleet-attach--on-size-change nil t)
         (add-hook 'kill-buffer-hook #'agent-fleet-attach--cancel-redraw nil t))
     (remove-hook 'window-buffer-change-functions #'agent-fleet-attach--on-arrival t)
     (remove-hook 'window-selection-change-functions #'agent-fleet-attach--on-arrival t)
+    (remove-hook 'window-size-change-functions #'agent-fleet-attach--on-size-change t)
     (remove-hook 'kill-buffer-hook #'agent-fleet-attach--cancel-redraw t)
     (agent-fleet-attach--cancel-redraw)))
 
