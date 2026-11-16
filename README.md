@@ -299,6 +299,13 @@ is reused for each Core/terminal identity. Attachment replaces the origin
 window without splitting. Killing its buffer or process detaches the viewer,
 preserving the agent.
 
+The viewer is refreshed when switching back to its buffer or selecting its window. Fleet
+coalesces these arrival hooks and uses Ghostel's `ghostel-force-redraw` when
+available, retaining its input-method redraw protections. This refresh sends
+no keys, reconnects no process and requests no PTY resize; point and scrolling
+are preserved. It can recover stale
+local rendering, but cannot fix incorrect output produced by the agent itself.
+
 When invoked from attach, Fleet output, prompt and Magit views use an auxiliary
 child frame on supported graphical Emacs. On a text terminal they replace the
 current buffer without splitting. Genuine parent-frame resizing still reaches
