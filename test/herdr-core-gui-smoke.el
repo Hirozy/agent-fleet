@@ -12,7 +12,10 @@
 (declare-function ghostel--set-title "ghostel" (title))
 (declare-function evil-mode "evil-core" (&optional arg))
 (declare-function evil-set-initial-state "evil-core" (mode state))
+(declare-function magit-mode-bury-buffer "magit-mode" (&optional kill-buffer))
+(declare-function magit-status "magit-status" (&optional directory))
 (defvar evil-want-keybinding)
+(defvar magit-display-buffer-function)
 
 (defun fleet-gui-smoke-run ()
   "Exercise real frames, Ghostel attachment, PTY size and detach."
@@ -113,6 +116,15 @@
                 (call-interactively (key-binding (kbd "q")))
                 (should (eq (current-buffer) viewer)))
               (setq report (concat report "Terminal char mode preserves the common prefix and global Dashboard entry keys.\n"))
+              ;; Attach's initial resize reaches Core asynchronously.  Do not
+              ;; compare the launch-time headless size with a settled viewer.
+              (hc-live-until
+               (lambda ()
+                 (redisplay t)
+                 (let ((size (with-current-buffer viewer (ghostel--desired-size)))
+                       (record (herdr-core-request "terminal.get" (list :terminal address))))
+                   (and (= (car size) (plist-get record :cols))
+                        (= (cdr size) (plist-get record :rows))))))
               (should (equal (buffer-name) "*agent:GUI renamed agent*"))
               (let ((herdr-core-changed-hook '(agent-fleet-attach--refresh-names))
                     (before (herdr-core-request "terminal.get" (list :terminal address)))
@@ -509,7 +521,55 @@
                 (should (frame-parameter nil 'agent-fleet-auxiliary-frame))
                 (should (eq (window-buffer (frame-selected-window origin)) viewer))
                 (agent-fleet-display-close-auxiliary-frame (selected-frame))
-                (setq report (concat report "Magit auxiliary review passed.\n")))
+                (setq report (concat report "Magit auxiliary review passed.\n"))
+                (select-frame-set-input-focus origin)
+                (switch-to-buffer viewer)
+                (dolist (direction '(below right))
+                  (let* ((window (selected-window))
+                         (width (window-body-width window))
+                         (height (window-body-height window))
+                         (redraw (symbol-function 'ghostel-force-redraw))
+                         (redraws 0)
+                         (magit-display-buffer-function
+                          (lambda (buffer)
+                            (display-buffer buffer
+                                            `((display-buffer-in-direction)
+                                              (direction . ,direction)
+                                              (window . ,window))))))
+                    (magit-status root)
+                    (should (derived-mode-p 'magit-mode))
+                    (should (= (length (window-list origin 'nomini)) 2))
+                    (redisplay t)
+                    (sit-for 0.3)
+                    (let ((magit-window (selected-window)))
+                      (cl-letf (((symbol-function 'ghostel-force-redraw)
+                                 (lambda ()
+                                   (when (eq (current-buffer) viewer) (cl-incf redraws))
+                                   (funcall redraw))))
+                        (if (eq direction 'below)
+                            (magit-mode-bury-buffer)
+                          ;; Removing an unselected split changes only size.
+                          (select-window window)
+                          (sit-for 0.2)
+                          (setq redraws 0)
+                          (delete-window magit-window))
+                        (ert-info ((format "Magit %s return: size=%S timer=%S"
+                                           direction
+                                           (window-parameter window 'agent-fleet-attach-size)
+                                           (buffer-local-value 'agent-fleet-attach--redraw-timer viewer)))
+                          (hc-live-until (lambda () (redisplay t) (> redraws 0))))))
+                    (should (= (length (window-list origin 'nomini)) 1))
+                    (should (eq (window-buffer window) viewer))
+                    (should (= width (window-body-width window)))
+                    (should (= height (window-body-height window)))
+                    (should (eq process (get-buffer-process viewer)))
+                    (hc-live-until
+                     (lambda ()
+                       (let ((size (with-current-buffer viewer (ghostel--desired-size)))
+                             (record (herdr-core-request "terminal.get" (list :terminal address))))
+                         (and (= (car size) (plist-get record :cols))
+                              (= (cdr size) (plist-get record :rows))))))))
+                (setq report (concat report "Closing real Magit splits refits and redraws the full terminal, including size-only changes.\n")))
               ;; A new Emacs frame initially displays the current buffer.
               ;; Do not briefly put the interactive viewer in a smaller frame.
               (switch-to-buffer origin-buffer)
