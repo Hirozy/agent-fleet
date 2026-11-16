@@ -4,12 +4,61 @@
 ;;; Code:
 (require 'agent-fleet)
 (declare-function ghostel-exec "ghostel" (buffer program &optional args))
+(declare-function ghostel-force-redraw "ghostel" ())
 (defvar ghostel-query-before-killing)
 (defcustom agent-fleet-attach-inhibit-evil-escape t
   "Inhibit Evil escape sequences in agent terminals."
   :type 'boolean :group 'agent-fleet)
 (defvar-local agent-fleet-observe-p nil "Non-nil for a read-only Core viewer.")
 (defvar-local agent-fleet-attach--name nil "Last Fleet-managed buffer name.")
+(defvar-local agent-fleet-attach--redraw-timer nil)
+
+(defun agent-fleet-attach--cancel-redraw ()
+  "Cancel this viewer's pending arrival redraw."
+  (when (timerp agent-fleet-attach--redraw-timer)
+    (cancel-timer agent-fleet-attach--redraw-timer))
+  (setq agent-fleet-attach--redraw-timer nil))
+
+(defun agent-fleet-attach--redraw (buffer)
+  "Redraw BUFFER after arrival if it is still a visible, live Fleet viewer."
+  (when (buffer-live-p buffer)
+    (with-current-buffer buffer
+      (setq agent-fleet-attach--redraw-timer nil)
+      (when (and (bound-and-true-p agent-fleet-attach-mode)
+                 (get-buffer-window buffer t)
+                 (process-live-p (get-buffer-process buffer))
+                 (fboundp 'ghostel-force-redraw))
+        (with-demoted-errors "Fleet terminal redraw: %S"
+          (let ((views
+                 (mapcar (lambda (window)
+                           (list window (copy-marker (window-point window))
+                                 (copy-marker (window-start window))
+                                 (window-hscroll window) (window-vscroll window t)))
+                         (get-buffer-window-list buffer nil t))))
+            (unwind-protect
+                (save-excursion (ghostel-force-redraw))
+              (dolist (view views)
+                (let ((window (car view)))
+                  (when (and (window-live-p window) (eq (window-buffer window) buffer))
+                    (set-window-point window (nth 1 view))
+                    (set-window-start window (nth 2 view) t)
+                    (set-window-hscroll window (nth 3 view))
+                    (set-window-vscroll window (nth 4 view) t)))
+                (set-marker (nth 1 view) nil)
+                (set-marker (nth 2 view) nil)))))))))
+
+(defun agent-fleet-attach--on-arrival (window)
+  "Schedule one redraw when WINDOW becomes the selected Fleet view.
+Resolve the buffer from WINDOW: older Emacs versions do not make the
+window's buffer current when calling buffer-change hooks."
+  (when (and (window-live-p window) (eq window (selected-window)))
+    (with-current-buffer (window-buffer window)
+      (when (and (bound-and-true-p agent-fleet-attach-mode)
+                 (not agent-fleet-attach--redraw-timer)
+                 (fboundp 'ghostel-force-redraw))
+        ;; Let buffer changes and Fleet return-position restoration finish.
+        (setq agent-fleet-attach--redraw-timer
+              (run-at-time 0 nil #'agent-fleet-attach--redraw (current-buffer)))))))
 
 (defun agent-fleet-attach--sync-name (record)
   "Update this viewer's name from RECORD without changing its process."
@@ -115,8 +164,16 @@ until the caller can close it after successful attachment."
                    (eq (lookup-key (current-global-map) (kbd "s-d")) #'agent-fleet)))
   (setq-local emulation-mode-map-alists
               (delq 'agent-fleet-attach--keymaps (copy-sequence emulation-mode-map-alists)))
-  (when agent-fleet-attach-mode
-    (push 'agent-fleet-attach--keymaps emulation-mode-map-alists)))
+  (if agent-fleet-attach-mode
+      (progn
+        (push 'agent-fleet-attach--keymaps emulation-mode-map-alists)
+        (add-hook 'window-buffer-change-functions #'agent-fleet-attach--on-arrival nil t)
+        (add-hook 'window-selection-change-functions #'agent-fleet-attach--on-arrival nil t)
+        (add-hook 'kill-buffer-hook #'agent-fleet-attach--cancel-redraw nil t))
+    (remove-hook 'window-buffer-change-functions #'agent-fleet-attach--on-arrival t)
+    (remove-hook 'window-selection-change-functions #'agent-fleet-attach--on-arrival t)
+    (remove-hook 'kill-buffer-hook #'agent-fleet-attach--cancel-redraw t)
+    (agent-fleet-attach--cancel-redraw)))
 
 ;;;###autoload
 (defun agent-fleet-attach (target)
