@@ -299,9 +299,11 @@ is reused for each Core/terminal identity. Attachment replaces the origin
 window without splitting. Killing its buffer or process detaches the viewer,
 preserving the agent.
 
-The viewer is refreshed when switching back to its buffer, selecting its window,
-or changing the size of a visible terminal window (for example, closing a Magit split). Fleet
-coalesces these arrival hooks and uses Ghostel's `ghostel-force-redraw` when
+The viewer is refreshed when displayed again (including in an unselected window),
+when its window is selected, when its frame regains focus, on repeated attachment,
+or when a visible terminal window changes size (for example, closing a Magit split).
+Reloading the attachment module also updates existing viewers' refresh hooks.
+Fleet coalesces these requests and uses Ghostel's `ghostel-force-redraw` when
 available, retaining its input-method redraw protections. This refresh sends
 no keys, reconnects no process and requests no PTY resize. On same-size returns,
 point and scrolling are preserved. After an actual size change, Ghostel handles
@@ -309,6 +311,8 @@ PTY resizing and placement of the live input viewport; Fleet does not restore
 the smaller window's scroll offset over it. History readers and explicit Fleet
 return positions remain protected. Live-input detection uses Ghostel's optional
 cursor-position helper; older versions without it retain position preservation.
+For reading history, use Ghostel's Emacs or copy mode; terminal input modes
+can follow the live cursor again when subsequent program output arrives.
 It can recover stale
 local rendering, but cannot fix incorrect output produced by the agent itself.
 

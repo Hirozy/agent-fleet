@@ -8,6 +8,7 @@
 (require 'agent-fleet-details)
 (declare-function ghostel-send-string "ghostel" (string))
 (declare-function ghostel-char-mode "ghostel" ())
+(declare-function ghostel-emacs-mode "ghostel" (&optional sticky))
 (declare-function ghostel--desired-size "ghostel" ())
 (declare-function ghostel--set-title "ghostel" (title))
 (declare-function evil-mode "evil-core" (&optional arg))
@@ -16,6 +17,66 @@
 (declare-function magit-status "magit-status" (&optional directory))
 (defvar evil-want-keybinding)
 (defvar magit-display-buffer-function)
+
+(defun fleet-gui-check-viewer-refresh (viewer reference)
+  "Check refresh entry points on a real VIEWER pinned to REFERENCE."
+  (let* ((process (get-buffer-process viewer))
+         (address (plist-get (agent-fleet-resolve reference) :address))
+         (origin (selected-frame))
+         (redraw (symbol-function 'ghostel-force-redraw))
+         (redraws 0)
+         (other (generate-new-buffer " *Fleet refresh origin*")))
+    (unwind-protect
+        (cl-letf (((symbol-function 'ghostel-force-redraw)
+                   (lambda ()
+                     (when (eq (current-buffer) viewer) (cl-incf redraws))
+                     (funcall redraw))))
+          ;; No window changes: reattach and reload must each refresh once.
+          (dolist (action (list (lambda () (agent-fleet-attach reference))
+                               (lambda () (load "agent-fleet-attach" nil t))))
+            (setq redraws 0)
+            (funcall action)
+            (hc-live-until (lambda () (redisplay t) (> redraws 0)))
+            (should (eq process (get-buffer-process viewer))))
+          ;; First display and same-size reveal in an unselected split.
+          (switch-to-buffer other)
+          (let ((selected (selected-window)) (window (split-window-right)))
+            (unwind-protect
+                (dotimes (_ 2)
+                  (set-window-buffer window other)
+                  (redisplay t)
+                  (sit-for 0.1)
+                  (setq redraws 0)
+                  (set-window-buffer window viewer)
+                  (hc-live-until (lambda () (redisplay t) (> redraws 0)))
+                  (should (eq (selected-window) selected))
+                  (should (eq (window-buffer selected) other)))
+              (delete-window window)))
+          (switch-to-buffer viewer)
+          (hc-live-until
+           (lambda ()
+             (redisplay t)
+             (let ((size (with-current-buffer viewer (ghostel--desired-size)))
+                   (record (herdr-core-request "terminal.get" (list :terminal address))))
+               (and (= (car size) (plist-get record :cols))
+                    (= (cdr size) (plist-get record :rows))))))
+          (let ((before (herdr-core-request "terminal.get" (list :terminal address))))
+            (agent-fleet-show-output reference)
+            (should (frame-parameter nil 'agent-fleet-auxiliary-frame))
+            (redisplay t)
+            (sit-for 0.2)
+            (setq redraws 0)
+            (agent-fleet-display-close-auxiliary-frame (selected-frame))
+            (hc-live-until
+             (lambda ()
+               (redisplay t)
+               (and (eq (frame-focus-state origin) t) (> redraws 0))))
+            (let ((after (herdr-core-request "terminal.get" (list :terminal address))))
+              (should (equal (plist-get before :cols) (plist-get after :cols)))
+              (should (equal (plist-get before :rows) (plist-get after :rows)))))
+          (should (eq (window-buffer) viewer))
+          (should (eq process (get-buffer-process viewer))))
+      (kill-buffer other))))
 
 (defun fleet-gui-smoke-run ()
   "Exercise real frames, Ghostel attachment, PTY size and detach."
@@ -168,6 +229,12 @@
                   (should (equal (plist-get before :cols) (plist-get after :cols)))
                   (should (equal (plist-get before :rows) (plist-get after :rows)))))
               (setq report (concat report "Buffer arrival redraws the existing viewer without reconnecting or resizing its PTY.\n"))
+              (fleet-gui-check-viewer-refresh viewer reference)
+              (setq report (concat report "Reattach, reload, unselected reveal and auxiliary focus return refresh the existing viewer.\n"))
+              ;; Read history in Ghostel's reading mode.  Char mode follows
+              ;; the live cursor on subsequent native output, even after a
+              ;; Lisp goto-char; that is not a user-owned reading position.
+              (let ((inhibit-message t)) (ghostel-emacs-mode))
               (goto-char (point-min))
               (set-window-start nil (point-min) t)
               (sit-for 0.2)
@@ -178,6 +245,7 @@
                 (sit-for 0.2)
                 (should (= position (point)))
                 (should (= start (window-start))))
+              (let ((inhibit-message t)) (ghostel-char-mode))
               ;; Same-window review must never change the underlying PTY size.
               (let* ((before (herdr-core-request "terminal.get" (list :terminal address)))
                      (frames (frame-list)) (window (selected-window)) size-events

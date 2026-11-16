@@ -86,14 +86,27 @@ header does not count as resizing the hidden terminal."
           (run-at-time 0 nil #'agent-fleet-attach--redraw (current-buffer)))))
 
 (defun agent-fleet-attach--on-arrival (window)
-  "Schedule one redraw when WINDOW becomes the selected Fleet view.
+  "Schedule one redraw when WINDOW displays a Fleet view.
 Resolve the buffer from WINDOW: older Emacs versions do not make the
 window's buffer current when calling buffer-change hooks."
-  (when (and (window-live-p window) (eq window (selected-window)))
+  (when (window-live-p window)
     (with-current-buffer (window-buffer window)
       (when (bound-and-true-p agent-fleet-attach-mode)
         ;; Let buffer changes and Fleet return-position restoration finish.
         (agent-fleet-attach--schedule-redraw)))))
+
+(defun agent-fleet-attach--on-selection (window)
+  "Refresh WINDOW on selection, without refreshing the deselected view."
+  (when (eq window (selected-window))
+    (agent-fleet-attach--on-arrival window)))
+
+(defun agent-fleet-attach--on-focus ()
+  "Refresh visible Fleet viewers in focused frames, without selecting them."
+  (dolist (frame (frame-list))
+    (when (and (eq (frame-visible-p frame) t)
+               (eq (frame-focus-state frame) t))
+      (dolist (window (window-list frame 'nomini))
+        (agent-fleet-attach--on-arrival window)))))
 
 (defun agent-fleet-attach--sync-name (record)
   "Update this viewer's name from RECORD without changing its process."
@@ -191,6 +204,15 @@ until the caller can close it after successful attachment."
      . ,(let ((map (make-sparse-keymap)))
           (define-key map (kbd "s-d") #'agent-fleet) map)))
   "Keep Fleet prefixes and the opted-in Dashboard key above terminal input.")
+
+(defun agent-fleet-attach--install-refresh-hooks ()
+  "Install current refresh handlers in this viewer, including after reload."
+  (remove-hook 'window-selection-change-functions #'agent-fleet-attach--on-arrival t)
+  (add-hook 'window-buffer-change-functions #'agent-fleet-attach--on-arrival nil t)
+  (add-hook 'window-selection-change-functions #'agent-fleet-attach--on-selection nil t)
+  (add-hook 'window-size-change-functions #'agent-fleet-attach--on-size-change nil t)
+  (add-hook 'kill-buffer-hook #'agent-fleet-attach--cancel-redraw nil t))
+
 (define-minor-mode agent-fleet-attach-mode
   "Agent operations scoped to this attach buffer."
   :lighter " Fleet"
@@ -202,12 +224,9 @@ until the caller can close it after successful attachment."
   (if agent-fleet-attach-mode
       (progn
         (push 'agent-fleet-attach--keymaps emulation-mode-map-alists)
-        (add-hook 'window-buffer-change-functions #'agent-fleet-attach--on-arrival nil t)
-        (add-hook 'window-selection-change-functions #'agent-fleet-attach--on-arrival nil t)
-        (add-hook 'window-size-change-functions #'agent-fleet-attach--on-size-change nil t)
-        (add-hook 'kill-buffer-hook #'agent-fleet-attach--cancel-redraw nil t))
+        (agent-fleet-attach--install-refresh-hooks))
     (remove-hook 'window-buffer-change-functions #'agent-fleet-attach--on-arrival t)
-    (remove-hook 'window-selection-change-functions #'agent-fleet-attach--on-arrival t)
+    (remove-hook 'window-selection-change-functions #'agent-fleet-attach--on-selection t)
     (remove-hook 'window-size-change-functions #'agent-fleet-attach--on-size-change t)
     (remove-hook 'kill-buffer-hook #'agent-fleet-attach--cancel-redraw t)
     (agent-fleet-attach--cancel-redraw)))
@@ -282,10 +301,23 @@ until the caller can close it after successful attachment."
         (error (when (buffer-live-p buffer) (kill-buffer buffer))
                (signal (car err) (cdr err)))))
     (with-current-buffer buffer
+      ;; Also repair local hooks when reusing a viewer from an older load.
+      (agent-fleet-attach--install-refresh-hooks)
       (agent-fleet-attach--sync-name record))
-    (if observe
-        (agent-fleet-display-window-open buffer)
-      (agent-fleet-attach--display buffer))))
+    (prog1 (if observe
+               (agent-fleet-display-window-open buffer)
+             (agent-fleet-attach--display buffer))
+      ;; In-place reattachment need not generate any window-change event.
+      (with-current-buffer buffer
+        (agent-fleet-attach--schedule-redraw)))))
 (add-hook 'herdr-core-changed-hook #'agent-fleet-attach--refresh-names)
+(add-function :after after-focus-change-function #'agent-fleet-attach--on-focus)
+;; Reloading must update existing viewers without restarting their clients.
+(dolist (buffer (buffer-list))
+  (with-current-buffer buffer
+    (when (bound-and-true-p agent-fleet-attach-mode)
+      (agent-fleet-attach--install-refresh-hooks)
+      (when (get-buffer-window buffer t)
+        (agent-fleet-attach--schedule-redraw)))))
 (provide 'agent-fleet-attach)
 ;;; agent-fleet-attach.el ends here
