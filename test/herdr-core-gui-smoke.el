@@ -78,6 +78,25 @@
           (should (eq process (get-buffer-process viewer))))
       (kill-buffer other))))
 
+(defun fleet-gui-check-launch-before-event ()
+  "Attach a real newly launched terminal before its creation is cached."
+  (let* ((record (herdr-core-request "terminal.run"
+                                    '(:argv ["sh" "-c" "printf 'launch-ready\n'; sleep 30"]
+                                      :no_parent t :labels (:fleet.role "agent"))))
+         (reference (agent-fleet-reference record)) viewer)
+    (unwind-protect
+        (let ((herdr-core--terminals (make-hash-table :test 'equal)))
+          (agent-fleet-attach reference)
+          (setq viewer (current-buffer))
+          (should (equal agent-fleet-target reference))
+          (should (process-live-p (get-buffer-process viewer)))
+          (hc-live-until (lambda () (redisplay t) (string-match-p "launch-ready" (buffer-string))))
+          (agent-fleet-attach reference)
+          (should (eq (current-buffer) viewer)))
+      (when (buffer-live-p viewer)
+        (let ((kill-buffer-query-functions nil)) (kill-buffer viewer)))
+      (herdr-core-request "terminal.kill" (list :terminal (plist-get record :address))))))
+
 (defun fleet-gui-smoke-run ()
   "Exercise real frames, Ghostel attachment, PTY size and detach."
   (let ((result-file (or (getenv "FLEET_GUI_RESULT") "/tmp/fleet-gui-result"))
@@ -720,7 +739,9 @@
                                               "terminal.get" (list :terminal address)) :state)))
               (should (buffer-live-p origin-buffer)))
             (herdr-core-request "terminal.kill" (list :terminal address))
-            (setq report (concat report "Centering, focus, repeated open, failure retention, attach, output geometry, parent resize and detach passed.\n"))))
+            (setq report (concat report "Centering, focus, repeated open, failure retention, attach, output geometry, parent resize and detach passed.\n"))
+            (fleet-gui-check-launch-before-event)
+            (setq report (concat report "New terminal attaches before its creation event is cached and reuses the same viewer.\n"))))
       ((error quit)
        (setq code 1 report
              (concat report (format "FAILED: %S\nBuffer: %S Window: %S Focus: %S\n"

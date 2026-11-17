@@ -53,6 +53,9 @@ Reconnect takes a new snapshot and establishes a new sequence baseline.
 Model updates precede consumer hooks. Consumer exceptions are reported without
 dropping subsequent events. RPC query responses do not overwrite newer cached
 event state.
+When a launch acknowledgement arrives before its creation event, attachment
+queries `terminal.get` using the acknowledged Core/address/creation identity.
+The reply must match that identity and is not inserted into the event cache.
 
 ## Fleet operations
 

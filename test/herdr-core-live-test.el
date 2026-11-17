@@ -42,6 +42,18 @@
       (accept-process-output nil 0.05))
     (should (funcall predicate))))
 
+(ert-deftest hc-live-fresh-resolution-before-cache-creation ()
+  (hc-live-isolated
+    (let* ((record (herdr-core-request "terminal.run"
+                                      '(:argv ["sh" "-c" "sleep 30"] :no_parent t
+                                        :labels (:fleet.role "agent"))))
+           (reference (agent-fleet-reference record)))
+      (hc-live-until (lambda () (herdr-core-terminal (plist-get record :address))))
+      ;; Model the control response arriving ahead of the creation event.
+      (let ((herdr-core--terminals (make-hash-table :test 'equal)))
+        (should (equal (agent-fleet-reference (agent-fleet-resolve reference t)) reference))
+        (should (= (hash-table-count herdr-core--terminals) 0))))))
+
 (ert-deftest hc-live-finished-history-and-reconnect ()
   (hc-live-isolated
     (let* ((result (herdr-core-request

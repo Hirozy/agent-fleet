@@ -94,20 +94,23 @@ Use only path text; do not inspect the executable on disk."
   (list :fleet-identity (herdr-core-identity terminal)))
 
 (defun agent-fleet-resolve (target &optional fresh)
-  "Resolve TARGET, checking pinned identity; FRESH queries Core."
+  "Resolve TARGET, checking pinned identity; FRESH queries Core.
+A pinned FRESH target may precede its creation event in the cache."
   (herdr-core-connect)
   (let* ((identity (and (listp target) (plist-get target :fleet-identity)))
          (address (if identity (herdr-core-identity-address identity) target))
          (cached (and (stringp address) (herdr-core-terminal address))))
     (unless (herdr-core-local-address-p address)
       (user-error "Fleet supports local terminals only"))
-    (unless cached (user-error "Terminal unavailable: %s" address))
-    (when (and identity (not (equal identity (herdr-core-identity cached))))
+    (unless (or cached (and fresh identity))
+      (user-error "Terminal unavailable: %s" address))
+    (when (and cached identity (not (equal identity (herdr-core-identity cached))))
       (user-error "Terminal identity changed; reopen this view"))
     (if (not fresh) cached
-      (let ((record (herdr-core-request "terminal.get" (list :terminal address))))
+      (let* ((expected (or identity (herdr-core-identity cached)))
+             (record (herdr-core-request "terminal.get" (list :terminal address))))
         (unless (and (herdr-core--valid-terminal-p record)
-                     (equal (herdr-core-identity cached) (herdr-core-identity record)))
+                     (equal expected (herdr-core-identity record)))
           (user-error "Terminal identity changed during operation"))
         record))))
 
@@ -199,7 +202,8 @@ DISPLAY opens the Dashboard for programmatic calls.
 Interactive calls use minibuffer prompts and attach after a successful launch;
 a prefix argument opens the advanced form instead.
 LABELS adds string-valued Core labels; Fleet ownership cannot be overridden.
-CALLBACK receives (RECORD ERROR) once the launch request completes.
+CALLBACK receives (RECORD ERROR) once the launch request completes and owns
+presentation of the outcome; without it, report the outcome in the echo area.
 Return an asynchronous request ID.  An unsent first message never kills
 a successfully started terminal."
   (interactive (list nil))
@@ -229,14 +233,14 @@ a successfully started terminal."
        (lambda (record err)
          (when (and (null err) (not (herdr-core--valid-terminal-p record)))
            (setq err (list 'herdr-core-uncertain :reason 'invalid-launch-response :response record)))
-         (if err (message "Start %s: %s (not retried)" name (herdr-core-error-message err))
-           (let ((first (plist-get record :first_message)))
-             (message "Started %s [%s]%s" name (plist-get record :address)
-                      (if (and first (not (eq (plist-get first :sent) t)))
-                          (format "; first task NOT sent: %s" (plist-get first :reason)) "")))
-           (when (fboundp 'agent-fleet-dashboard-focus)
-             (agent-fleet-dashboard-focus (plist-get record :address))))
-         (when callback (funcall callback record err))) 90)))))
+         (when (and (null err) (fboundp 'agent-fleet-dashboard-focus))
+           (agent-fleet-dashboard-focus (plist-get record :address)))
+         (if callback (funcall callback record err)
+           (if err (message "Start %s: %s (not retried)" name (herdr-core-error-message err))
+             (let ((first (plist-get record :first_message)))
+               (message "Started %s [%s]%s" name (plist-get record :address)
+                        (if (and first (not (eq (plist-get first :sent) t)))
+                            (format "; first task NOT sent: %s" (plist-get first :reason)) "")))))) 90)))))
 
 ;;;###autoload
 (defun agent-fleet-adopt (target)
