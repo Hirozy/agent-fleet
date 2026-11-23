@@ -36,6 +36,7 @@ option when using a custom socket in Core's config.toml."
     (if (stringp message) message (error-message-string err))))
 (defvar herdr-core-changed-hook nil "Hook after model or connection changes.")
 (defvar herdr-core-event-hook nil "Hook called with each applied event.")
+(defvar herdr-core-snapshot-hook nil "Hook called after installing a full snapshot.")
 (defvar herdr-core--control nil)
 (defvar herdr-core--events nil)
 (defvar herdr-core--environment nil)
@@ -188,6 +189,7 @@ option when using a custom socket in Core's config.toml."
       (unless (herdr-core--valid-terminal-p record) (error "Invalid terminal"))
       (puthash (plist-get record :address) record table))
     (setq herdr-core--terminals table herdr-core--seq (plist-get snapshot :seq)))
+  (herdr-core--hooks 'herdr-core-snapshot-hook)
   (herdr-core--hooks 'herdr-core-changed-hook))
 
 (defun herdr-core--event (event)
@@ -243,6 +245,18 @@ option when using a custom socket in Core's config.toml."
         ("event" (herdr-core--event (plist-get message :params)))
         ("missed" (herdr-core--snapshot (plist-get message :params)))))))
 
+(defun herdr-core--decode (line)
+  "Decode a protocol LINE, keeping opaque document values round-trippable."
+  (let* ((message (json-parse-string line :object-type 'plist :array-type 'list
+                                     :null-object nil :false-object :false))
+         (result (plist-get message :result)))
+    ;; doc.get values may contain empty objects, empty arrays, arbitrary keys
+    ;; and nulls.  The normal terminal plist representation collapses these.
+    (when (and (consp result) (plist-member result :version) (plist-member result :value))
+      (let ((raw (json-parse-string line :null-object nil :false-object :false)))
+        (plist-put result :value (gethash "value" (gethash "result" raw)))))
+    message))
+
 (defun herdr-core--filter (process chunk)
   "Decode newline-delimited CHUNK on PROCESS, retaining partial messages."
   (process-put process 'input (concat (process-get process 'input) chunk))
@@ -253,9 +267,7 @@ option when using a custom socket in Core's config.toml."
             (setq input (substring input (1+ pos)))
             (process-put process 'input input)
             (unless (string-empty-p line)
-              (herdr-core--message
-               process (json-parse-string line :object-type 'plist :array-type 'list
-                                          :null-object nil :false-object :false)))))
+              (herdr-core--message process (herdr-core--decode line)))))
         (when (> (length input) (* 16 1024 1024)) (error "Oversized Core message")))
     (error
      (message "Core protocol: %s" (error-message-string err))

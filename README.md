@@ -143,6 +143,23 @@ that stale choice instead of acting on a replacement with the same address.
 Core records parent relationships. Fleet only reads them for details and
 termination impact; there is no separate Fleet Task lifecycle.
 
+### Show Fleet agents in Herdr App
+
+Enable project spaces with `(setq agent-fleet-herdr-app-spaces t)`.
+Every launch entry point then places the new agent in a desktop Space
+for its canonical Project. Linked worktrees share that Space and keep
+their own working directories. Outside a Project, the canonical working
+directory supplies the Space identity. Dashboard still shows No Project.
+Moving the primary project directory gives future launches a new Space ID.
+Lisp callers can choose an existing Space with
+`:labels '(:herdr.space "SPACE_ID")` to retain their own naming policy.
+
+The app can open after the agent starts. While Fleet is connected with the
+option enabled, it fills an empty Space name when the app adopts the terminal.
+An explicit Space name survives later launches. The app enables Core keep
+when adopting a terminal. Closing its pane in Herdr App ends the terminal.
+Closing an Emacs attach buffer detaches the viewer.
+
 ## Dashboard and commands
 
 Run `M-x agent-fleet` or `C-c a a`.

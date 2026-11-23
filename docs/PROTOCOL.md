@@ -62,6 +62,7 @@ The reply must match that identity and is not inserted into the event cache.
 | Operation | Method |
 |---|---|
 | Start root agent | terminal.run, no_parent=true, keep=false, rm=false |
+| Optional desktop placement | terminal.run labels herdr.space and fleet.space-root |
 | Templates | templates.list |
 | Explicitly include external agent | terminal.label, fleet.role=agent |
 | Rename Fleet display name | terminal.label, fleet.name; original Core name unchanged |
@@ -80,6 +81,15 @@ The reply must match that identity and is not inserted into the event cache.
 Initial template tasks are appended to the template argv. Inspect first_message:
 sent=false does not undo startup. A plain command's extra argv are arguments,
 not a task. Fleet refuses its initial-task option unless argv[0] is a template.
+
+For desktop grouping, the local Space ID is `sp` followed by the first 32 hex
+digits of SHA-256 over UTF-8 `agent-fleet:` plus the canonical root path.
+Herdr App owns pane adoption and can enable keep after launch. Fleet reads
+the App's `herdr-app` Core document on adoption or reconnect. For a matching
+automatically assigned Space with an empty name, Fleet sets the name using
+the document's current version. A version conflict triggers a fresh read.
+Other fields retain their JSON types. Missing spaces are left for the app to
+create, and naming runs independently of launch acknowledgement and attach.
 
 terminal.send may wait for human input to pause. The UI distinguishes submitted
 from completed. Its SendResult must contain a nonnegative integer `turn` before

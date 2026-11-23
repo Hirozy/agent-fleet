@@ -10,6 +10,7 @@
 (require 'herdr-core)
 (require 'agent-fleet-display)
 (defgroup agent-fleet nil "Coding agents in Emacs." :group 'tools)
+(require 'agent-fleet-space)
 (defcustom agent-fleet-commands '("claude" "codex" "pi")
   "Commands offered alongside Core templates." :type '(repeat string) :group 'agent-fleet)
 (defvar agent-fleet--last-command nil)
@@ -225,7 +226,7 @@ a successfully started terminal."
            (name (or name (agent-fleet--name cwd)))
            (params (list :argv (vconcat argv (and task (list task))) :cwd cwd :name name
                          :no_parent t :wait :false :keep :false :rm :false
-                         :labels (plist-put (copy-sequence labels) :fleet.role "agent"))))
+                         :labels (agent-fleet-space--launch-labels cwd labels))))
       (when display (agent-fleet))
       (message "Starting %s…" name)
       (herdr-core-request-async

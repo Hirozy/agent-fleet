@@ -54,6 +54,44 @@
         (should (equal (agent-fleet-reference (agent-fleet-resolve reference t)) reference))
         (should (= (hash-table-count herdr-core--terminals) 0))))))
 
+(ert-deftest hc-live-space-adoption-after-launch-and-manual-rename ()
+  (hc-live-isolated
+    (let ((agent-fleet-herdr-app-spaces t)
+          (herdr-core-event-hook '(agent-fleet-space--event))
+          (agent-fleet-space--timer nil)
+          launched)
+      (unwind-protect
+          (progn
+            (agent-fleet-start '("sh" "-c" "sleep 60") :cwd root
+                               :callback (lambda (record err) (should-not err) (setq launched record)))
+            (hc-live-until (lambda () launched))
+            (let* ((id (agent-fleet-label launched "herdr.space"))
+                   (name (file-name-nondirectory (directory-file-name root)))
+                   (space (list :id id :name "" :unknown [nil :false []]))
+                   (layout (list :spaces (vector space) :extra (make-hash-table))))
+              (cl-labels ((read-layout () (herdr-core-request "doc.get" '(:name "herdr-app")))
+                          (first-space (doc) (aref (gethash "spaces" (plist-get doc :value)) 0)))
+                (hc-live-until (lambda () (herdr-core-terminal (plist-get launched :address))))
+                ;; Core is live before the desktop app has created a layout.
+                (sleep-for 0.3)
+                (should (zerop (plist-get (read-layout) :version)))
+                (herdr-core-request "doc.set" (list :name "herdr-app" :version 0 :value layout))
+                (hc-live-until (lambda () (equal (gethash "name" (first-space (read-layout))) name)))
+                (let* ((doc (read-layout)) (stored (first-space doc)))
+                  (should (equal (gethash "unknown" stored) [nil :false []]))
+                  (should (hash-table-p (gethash "extra" (plist-get doc :value))))
+                  (puthash "name" "My review" stored)
+                  (herdr-core-request "doc.set" (list :name "herdr-app" :version (plist-get doc :version)
+                                                      :value (plist-get doc :value))))
+                (setq launched nil)
+                (agent-fleet-start '("sh" "-c" "sleep 60") :cwd root
+                                   :callback (lambda (r _) (setq launched r)))
+                (hc-live-until (lambda () launched))
+                (should (equal id (agent-fleet-label launched "herdr.space")))
+                (sleep-for 0.4)
+                (should (equal (gethash "name" (first-space (read-layout))) "My review")))))
+        (when (timerp agent-fleet-space--timer) (cancel-timer agent-fleet-space--timer))))))
+
 (ert-deftest hc-live-finished-history-and-reconnect ()
   (hc-live-isolated
     (let* ((result (herdr-core-request
