@@ -229,8 +229,11 @@ Restart Emacs after upgrading to replace keymaps already loaded in the session.
 Agents are grouped by canonical Project, with disambiguated short headings.
 Linked worktrees share one group; absent Projects have a separate
 `— No Project` group. The current
-Project is placed first when opening from code or an attached agent. Within
-groups, status priority and name determine row order. Row highlighting and
+Project is placed first when opening from code or an attached agent. When
+a visible agent uses a linked worktree, checkout headings group the agents
+inside that Project. The main checkout appears first if it has visible agents.
+A Project with only main-checkout agents keeps its compact list. Within each
+checkout, status priority and name determine row order. Row highlighting and
 navigation always target agents, not headings. The Transient menu pins the
 selected agent identity when opened, so later events cannot redirect its actions.
 
@@ -241,10 +244,9 @@ projects gain enough parent path components to distinguish them. Filtering
 continues to use full canonical identity, never the displayed name. Independent
 clones and nested repositories remain separate Projects.
 
-Subdirectories get a muted relative location such as `./frontend/` beneath
-their agent row. Linked worktrees show `Worktree:` followed by the actual
-working directory, including any subdirectory. Ordinary project-root rows
-need no annotation because the path is already in the heading. Long paths
+Subdirectories get a muted location relative to the agent's checkout, such
+as `./frontend/`. Agents at the checkout root need no directory annotation.
+Hover over a checkout heading for its full path. Long paths
 retain their trailing components with a leading ellipsis; full paths remain
 available in tooltips and Details (`I`). A heading's path moves to its own line
 when little space remains beside the title. `n` / `p` skips annotations and

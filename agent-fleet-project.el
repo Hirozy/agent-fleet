@@ -156,10 +156,14 @@ Non-Git roots retain their explicit `file-truename' identity."
           (directory-file-name truename)))))
 
 
+(defun agent-fleet-project--agent-context (record)
+  "Resolve RECORD's project and checkout only for a local terminal."
+  (when (herdr-core-local-address-p (plist-get record :address))
+    (agent-fleet-project--context (plist-get record :cwd))))
+
 (defun agent-fleet-project-for-agent (record)
   "Return the local Project of RECORD, never interpreting remote paths locally."
-  (when (herdr-core-local-address-p (plist-get record :address))
-    (agent-fleet-project-root-for-cwd (plist-get record :cwd))))
+  (plist-get (agent-fleet-project--agent-context record) :root))
 
 (defun agent-fleet-project--display-name (root)
   "Return a short label for canonical ROOT, without filesystem access."
@@ -207,26 +211,24 @@ Keep the full path in a tooltip.  Do not resolve TRAMP paths locally."
         (setq text (concat "…" (substring text start)))))
     (propertize text 'face 'shadow 'help-echo path)))
 
-(defun agent-fleet-project--directory-note (record root &optional width)
-  "Return meaningful working-directory context for RECORD under ROOT.
-Return nil for the ordinary project root.  Keep full paths in tooltips.
+(defun agent-fleet-project--directory-note (record context &optional width)
+  "Describe RECORD's directory relative to its checkout in CONTEXT.
+Return nil at the checkout root.  Keep full paths in tooltips.
 Fit the note within WIDTH columns when provided."
   (when (herdr-core-local-address-p (plist-get record :address))
     (let* ((cwd (plist-get record :cwd))
-           (context (agent-fleet-project--context cwd))
+           (context (or context (agent-fleet-project--context cwd)))
            (directory (plist-get context :directory))
            (checkout (plist-get context :checkout))
            (unavailable (memq (plist-get context :state) '(unavailable remote)))
-           (prefix (cond (unavailable "Directory unavailable: ")
-                         ((and root checkout (not (equal checkout root))) "Worktree: ")
-                         (t ""))))
+           (prefix (if unavailable "Directory unavailable: " "")))
       (cond
        ((or (not (stringp cwd)) (string-empty-p cwd))
         (propertize "Directory not reported" 'face 'shadow))
-       ((and root (equal root directory)) nil)
+       ((and checkout (equal checkout directory)) nil)
        (t
-        (let* ((path (if (and root directory (string-empty-p prefix))
-                         (concat "./" (file-relative-name directory (file-name-as-directory root)))
+        (let* ((path (if (and checkout directory)
+                         (concat "./" (file-relative-name directory (file-name-as-directory checkout)))
                        cwd))
                (text (concat prefix (agent-fleet-project--path-label
                                      path (and width (max 1 (- width (length prefix))))))))

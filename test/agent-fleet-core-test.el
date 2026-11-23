@@ -387,7 +387,7 @@
       (save-window-excursion
         (let ((buffer (get-buffer-create "*Agent Fleet*")))
           (unwind-protect
-              (cl-letf (((symbol-function 'agent-fleet-project-for-agent) (lambda (_) nil))
+              (cl-letf (((symbol-function 'agent-fleet-project--agent-context) (lambda (_) '(:state none)))
                         ((symbol-function 'agent-fleet-dashboard--available-width) (lambda () width)))
                 (switch-to-buffer buffer)
                 (agent-fleet-mode)
@@ -1636,8 +1636,9 @@
             (fleet-test-agent "t4"))
     (let ((buffer (get-buffer-create "*Agent Fleet*")))
       (unwind-protect
-          (cl-letf (((symbol-function 'agent-fleet-project-for-agent)
-                     (lambda (record) (plist-get record :project))))
+          (cl-letf (((symbol-function 'agent-fleet-project--agent-context)
+                     (lambda (record)
+                       (let ((root (plist-get record :project))) (list :root root :checkout root)))))
             (with-current-buffer buffer
               (agent-fleet-mode)
               (agent-fleet-dashboard-refresh)

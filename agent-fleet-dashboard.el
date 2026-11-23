@@ -20,6 +20,7 @@
 (defvar-local agent-fleet-dashboard--focus-project nil)
 (defvar-local agent-fleet-dashboard--project-labels nil)
 (defvar-local agent-fleet-dashboard--notes nil)
+(defvar-local agent-fleet-dashboard--checkout-headings nil)
 (defvar-local agent-fleet-dashboard--group-counts nil)
 (defvar-local agent-fleet-dashboard--layout-width nil)
 (defconst agent-fleet-dashboard--columns
@@ -77,20 +78,24 @@
     (or (cl-position (agent-fleet-status record) '("blocked" "error" "working" "idle" "done")
                      :test #'equal) 6)))
 
-(defun agent-fleet-dashboard--less-p (a b)
-  "Sort records A and B by Project, work status, name and address."
-  (let ((pa (gethash (plist-get a :address) agent-fleet-dashboard--projects))
-        (pb (gethash (plist-get b :address) agent-fleet-dashboard--projects)))
-    (if (equal pa pb)
-        (let ((sa (agent-fleet-dashboard--priority a)) (sb (agent-fleet-dashboard--priority b)))
-          (if (/= sa sb) (< sa sb)
-            (if (equal (agent-fleet-name a) (agent-fleet-name b))
-                (string< (plist-get a :address) (plist-get b :address))
-              (string< (agent-fleet-name a) (agent-fleet-name b)))))
-      (cond ((and pa (equal pa agent-fleet-dashboard--focus-project)) t)
-            ((and pb (equal pb agent-fleet-dashboard--focus-project)) nil)
-            ((null pa) nil) ((null pb) t)
-            (t (string< (prin1-to-string pa) (prin1-to-string pb)))))))
+(defun agent-fleet-dashboard--less-p (a b contexts)
+  "Order A and B by Project, checkout, status, name and address using CONTEXTS."
+  (let* ((ia (plist-get a :address)) (ib (plist-get b :address))
+         (pa (gethash ia agent-fleet-dashboard--projects))
+         (pb (gethash ib agent-fleet-dashboard--projects))
+         (ca (plist-get (gethash ia contexts) :checkout)) (cb (plist-get (gethash ib contexts) :checkout)))
+    (cond
+     ((not (equal pa pb))
+      (cond ((null pa) nil) ((null pb) t)
+            ((equal pa agent-fleet-dashboard--focus-project) t)
+            ((equal pb agent-fleet-dashboard--focus-project) nil)
+            (t (string< pa pb))))
+     ((not (equal ca cb))
+      (cond ((equal ca pa) t) ((equal cb pb) nil) (t (string< ca cb))))
+     ((/= (agent-fleet-dashboard--priority a) (agent-fleet-dashboard--priority b))
+      (< (agent-fleet-dashboard--priority a) (agent-fleet-dashboard--priority b)))
+     ((equal (agent-fleet-name a) (agent-fleet-name b)) (string< ia ib))
+     (t (string< (agent-fleet-name a) (agent-fleet-name b))))))
 
 (defun agent-fleet-dashboard--print-entry (id columns)
   "Print a Project heading when needed, then the agent ID and COLUMNS."
@@ -110,12 +115,67 @@
             (insert (agent-fleet-project--path-label project (max 1 remaining)))))
         (insert "\n"))
       (setq agent-fleet-dashboard--last-project project))
+    (when-let* ((heading (gethash id agent-fleet-dashboard--checkout-headings)))
+      (insert "   " heading "\n"))
     (tabulated-list-print-entry id columns)
     (when-let* ((note (and agent-fleet-dashboard--notes
                           (gethash id agent-fleet-dashboard--notes))))
       (let ((begin (point)))
         (insert "   " note "\n")
         (add-text-properties begin (point) (list 'tabulated-list-id id 'tabulated-list-entry columns))))))
+
+(defun agent-fleet-dashboard--entries (members)
+  "Build agent rows and headings from the visible subset of MEMBERS."
+  (let ((contexts (make-hash-table :test 'equal))
+        (by-project (make-hash-table :test 'equal))
+        (width (agent-fleet-dashboard--available-width))
+        visible entries last-checkout)
+    (setq agent-fleet-dashboard--projects (make-hash-table :test 'equal)
+          agent-fleet-dashboard--group-counts (make-hash-table :test 'equal)
+          agent-fleet-dashboard--checkout-headings (make-hash-table :test 'equal)
+          agent-fleet-dashboard--notes (make-hash-table :test 'equal))
+    (dolist (r members)
+      (let* ((id (plist-get r :address)) (context (agent-fleet-project--agent-context r))
+             (project (plist-get context :root)))
+        (puthash id project agent-fleet-dashboard--projects)
+        (when (and (or (null agent-fleet-dashboard--project) (equal project agent-fleet-dashboard--project))
+                   (or (null agent-fleet-dashboard--attention) (member (agent-fleet-status r) '("blocked" "error"))))
+          (push r visible)
+          (puthash id context contexts)
+          (cl-incf (gethash project agent-fleet-dashboard--group-counts 0))
+          (when project
+            (cl-pushnew (plist-get context :checkout) (gethash project by-project) :test #'equal)))))
+    (setq agent-fleet-dashboard--project-labels
+          (agent-fleet-project--short-labels (hash-table-values agent-fleet-dashboard--projects)))
+    ;; Only projects with a visible linked checkout need a second heading level.
+    (maphash (lambda (project paths)
+               (puthash project (unless (equal paths (list project))
+                                  (agent-fleet-project--short-labels paths)) by-project))
+             by-project)
+    (dolist (r (sort visible (lambda (a b) (agent-fleet-dashboard--less-p a b contexts))))
+      (let* ((id (plist-get r :address)) (project (gethash id agent-fleet-dashboard--projects))
+             (context (gethash id contexts)) (checkout (plist-get context :checkout))
+             (labels (gethash project by-project)) (indent (if labels "    " ""))
+             (relationship (when-let* ((parent (plist-get r :parent)))
+                             (propertize (format "%s %s"
+                                                 (if (equal (agent-fleet-label r "fleet.role") "agent")
+                                                     "Parent:" "Helper of") parent)
+                                         'face 'shadow)))
+             (directory (agent-fleet-project--directory-note
+                         r context (max 1 (- width 3 (length indent)
+                                             (if relationship (+ 5 (string-width relationship)) 0))))))
+        (when (and labels (not (equal last-checkout checkout)))
+          (let ((label (if (equal project checkout) "Main checkout" (gethash checkout labels))))
+            (puthash id (propertize (truncate-string-to-width label (max 1 (- width 3)) nil nil "…")
+                                    'face 'font-lock-type-face 'help-echo checkout)
+                     agent-fleet-dashboard--checkout-headings)))
+        (setq last-checkout checkout)
+        (when (or directory relationship)
+          (puthash id (concat indent (string-join (delq nil (list directory relationship)) "  ·  "))
+                   agent-fleet-dashboard--notes))
+        (push (list id (vector (concat indent (agent-fleet-name r))
+                               (agent-fleet-type r) (agent-fleet-dashboard--state-cell r) id)) entries)))
+    (nreverse entries)))
 
 (defun agent-fleet-dashboard-refresh (&optional rediscover)
   "Render the current cache without polling Core.
@@ -131,49 +191,7 @@ REDISCOVER, set by interactive refresh, also refreshes Project discovery."
       (let ((id (tabulated-list-get-id))
             (pending agent-fleet-dashboard--pending-focus)
             (members (agent-fleet-agents agent-fleet-dashboard--history)))
-        (setq agent-fleet-dashboard--projects (make-hash-table :test 'equal))
-        (dolist (record members)
-          (puthash (plist-get record :address) (agent-fleet-project-for-agent record)
-                   agent-fleet-dashboard--projects))
-        (setq agent-fleet-dashboard--project-labels
-              (agent-fleet-project--short-labels (hash-table-values agent-fleet-dashboard--projects))
-              agent-fleet-dashboard--notes (make-hash-table :test 'equal))
-        (dolist (record members)
-          (let* ((relationship
-                  (when-let* ((parent (plist-get record :parent)))
-                    (propertize (format "%s %s"
-                                        (if (equal (agent-fleet-label record "fleet.role") "agent")
-                                            "Parent:" "Helper of") parent)
-                                'face 'shadow)))
-                 (notes (delq nil
-                              (list (agent-fleet-project--directory-note
-                                     record (gethash (plist-get record :address) agent-fleet-dashboard--projects)
-                                     (max 1 (- (agent-fleet-dashboard--available-width) 3
-                                               (if relationship (+ 5 (string-width relationship)) 0))))
-                                    relationship))))
-            (puthash (plist-get record :address)
-                     (when notes (string-join notes "  ·  ")) agent-fleet-dashboard--notes)))
-        (setq members (sort members #'agent-fleet-dashboard--less-p))
-        (setq tabulated-list-entries
-              (mapcar
-               (lambda (r)
-                 (list (plist-get r :address)
-                       (vector (agent-fleet-name r)
-                               (agent-fleet-type r)
-                               (agent-fleet-dashboard--state-cell r)
-                               (plist-get r :address))))
-               (cl-remove-if-not
-                (lambda (r)
-                  (and (or (not agent-fleet-dashboard--project)
-                           (equal agent-fleet-dashboard--project
-                                  (gethash (plist-get r :address) agent-fleet-dashboard--projects)))
-                       (or (not agent-fleet-dashboard--attention)
-                           (member (agent-fleet-status r) '("blocked" "error")))))
-                members)))
-        (setq agent-fleet-dashboard--group-counts (make-hash-table :test 'equal))
-        (dolist (entry tabulated-list-entries)
-          (cl-incf (gethash (gethash (car entry) agent-fleet-dashboard--projects)
-                           agent-fleet-dashboard--group-counts 0)))
+        (setq tabulated-list-entries (agent-fleet-dashboard--entries members))
         (agent-fleet-dashboard--fit-columns)
         (setq agent-fleet-dashboard--summary
               (format "Core %s  %s %d/%d%s  Project: %s  h help"
@@ -381,6 +399,7 @@ With CONFIGURE, also ask for optional launch settings."
   (setq tabulated-list-format (copy-tree agent-fleet-dashboard--columns t))
   (setq tabulated-list-padding 1
         agent-fleet-dashboard--projects (make-hash-table :test 'equal)
+        agent-fleet-dashboard--checkout-headings (make-hash-table :test 'equal)
         agent-fleet-dashboard--group-counts (make-hash-table :test 'equal)
         agent-fleet-dashboard--last-project :unprinted
         tabulated-list-printer #'agent-fleet-dashboard--print-entry
