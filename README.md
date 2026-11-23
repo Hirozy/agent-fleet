@@ -229,10 +229,10 @@ Restart Emacs after upgrading to replace keymaps already loaded in the session.
 Agents are grouped by canonical Project, with disambiguated short headings.
 Linked worktrees share one group; absent Projects have a separate
 `— No Project` group. The current
-Project is placed first when opening from code or an attached agent. When
-a visible agent uses a linked worktree, checkout headings group the agents
-inside that Project. The main checkout appears first if it has visible agents.
-A Project with only main-checkout agents keeps its compact list. Within each
+Project is placed first when opening from code or an attached agent. Agents
+in the main checkout appear directly under the Project heading. Each linked
+worktree follows with its own heading and a muted checkout path beside its
+name when space permits. Within each
 checkout, status priority and name determine row order. Row highlighting and
 navigation always target agents, not headings. The Transient menu pins the
 selected agent identity when opened, so later events cannot redirect its actions.
@@ -248,7 +248,7 @@ Subdirectories get a muted location relative to the agent's checkout, such
 as `./frontend/`. Agents at the checkout root need no directory annotation.
 Hover over a checkout heading for its full path. Long paths
 retain their trailing components with a leading ellipsis; full paths remain
-available in tooltips and Details (`I`). A heading's path moves to its own line
+available in tooltips and Details (`I`). A Project heading's path moves to its own line
 when little space remains beside the title. `n` / `p` skips annotations and
 heading paths, while actions on an agent's annotation still target that agent.
 
