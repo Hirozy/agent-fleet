@@ -25,6 +25,7 @@
 (defvar-local agent-fleet-dashboard--layout-width nil)
 (defconst agent-fleet-dashboard--columns
   [("Agent" 32 nil) ("Type" 14 nil) ("Status" 18 nil) ("ID" 6 nil)])
+(defvar-local agent-fleet-dashboard--full-format nil)
 
 (defun agent-fleet-dashboard--available-width ()
   "Return the narrowest visible Dashboard width, or the opening window's width."
@@ -33,21 +34,32 @@
       (window-body-width (selected-window)))))
 
 (defun agent-fleet-dashboard--fit-columns ()
-  "Give names the available space without changing other column preferences."
+  "Hide the ID column before shortening agent names."
   (let* ((width (agent-fleet-dashboard--available-width))
-         (name-width 32)
-         (id-width (cadr (aref tabulated-list-format 3))))
+         (format (or agent-fleet-dashboard--full-format
+                     (setq agent-fleet-dashboard--full-format
+                           (copy-tree agent-fleet-dashboard--columns t))))
+         (type-width (cadr (aref format 1)))
+         (status-width (cadr (aref format 2)))
+         (id-width (cadr (aref format 3)))
+         (longest-name (length "Agent"))
+         (longest-status (length "Status")))
     (dolist (entry tabulated-list-entries)
-      (setq name-width (max name-width (string-width (aref (cadr entry) 0)))
+      (setq longest-name (max longest-name (string-width (aref (cadr entry) 0)))
+            longest-status (max longest-status (string-width (aref (cadr entry) 2)))
             id-width (max id-width (string-width (aref (cadr entry) 3)))))
-    (setq name-width
-          (max 12 (min name-width (- width tabulated-list-padding 3
-                                    (cadr (aref tabulated-list-format 1))
-                                    (cadr (aref tabulated-list-format 2)) id-width)))
-          agent-fleet-dashboard--layout-width width)
-    (unless (= name-width (cadr (aref tabulated-list-format 0)))
-      (setf (cadr (aref tabulated-list-format 0)) name-width)
-      (tabulated-list-init-header))))
+    (let* ((room (- width tabulated-list-padding type-width))
+           (wide-room (- room status-width id-width 3))
+           (wide (>= wide-room longest-name))
+           (name-width (max 1 (min (max 32 longest-name)
+                                   (if wide wide-room
+                                     (- room (min longest-status status-width) 2))))))
+      (setq agent-fleet-dashboard--layout-width width)
+      (unless (and (= (length tabulated-list-format) (if wide 4 3))
+                   (= (cadr (aref tabulated-list-format 0)) name-width))
+        (setf (cadr (aref format 0)) name-width)
+        (setq tabulated-list-format (if wide format (seq-take format 3)))
+        (tabulated-list-init-header)))))
 
 (defun agent-fleet-dashboard--resize (window)
   "Refit Dashboard text after WINDOW changes size, without changing its layout."
@@ -102,26 +114,26 @@
   (let ((project (gethash id agent-fleet-dashboard--projects)))
     (unless (equal project agent-fleet-dashboard--last-project)
       (let ((count (gethash project agent-fleet-dashboard--group-counts 0)))
-        (insert "\n "
-                (propertize (agent-fleet-dashboard--group-label project)
+        (unless (bobp) (insert "\n"))
+        (insert (propertize (agent-fleet-dashboard--group-label project)
                             'face '(bold font-lock-keyword-face)
                             'help-echo (agent-fleet-project--full-label project))
                 (propertize (format " · %d %s" count (if (= count 1) "agent" "agents")) 'face 'shadow))
         (when project
           (let ((remaining (- (agent-fleet-dashboard--available-width) (current-column) 2)))
             (if (>= remaining 16) (insert "  ")
-              (insert "\n   ")
-              (setq remaining (- (agent-fleet-dashboard--available-width) 3)))
+              (insert "\n  ")
+              (setq remaining (- (agent-fleet-dashboard--available-width) 2)))
             (insert (agent-fleet-project--path-label project (max 1 remaining)))))
         (insert "\n"))
       (setq agent-fleet-dashboard--last-project project))
     (when-let* ((heading (gethash id agent-fleet-dashboard--checkout-headings)))
-      (insert "   " heading "\n"))
+      (insert "  " heading "\n"))
     (tabulated-list-print-entry id columns)
     (when-let* ((note (and agent-fleet-dashboard--notes
                           (gethash id agent-fleet-dashboard--notes))))
       (let ((begin (point)))
-        (insert "   " note "\n")
+        (insert "    " note "\n")
         (add-text-properties begin (point) (list 'tabulated-list-id id 'tabulated-list-entry columns))))))
 
 (defun agent-fleet-dashboard--entries (members)
@@ -156,18 +168,18 @@
       (let* ((id (plist-get r :address)) (project (gethash id agent-fleet-dashboard--projects))
              (context (gethash id contexts)) (checkout (plist-get context :checkout))
              (labels (gethash project by-project))
-             (label (and labels (gethash checkout labels))) (indent (if label "    " ""))
+             (label (and labels (gethash checkout labels))) (indent (if label "  " ""))
              (relationship (when-let* ((parent (plist-get r :parent)))
                              (propertize (format "%s %s"
                                                  (if (equal (agent-fleet-label r "fleet.role") "agent")
                                                      "Parent:" "Helper of") parent)
                                          'face 'shadow)))
              (directory (agent-fleet-project--directory-note
-                         r context (max 1 (- width 3 (length indent)
+                         r context (max 1 (- width 4 (length indent)
                                              (if relationship (+ 5 (string-width relationship)) 0))))))
         (when (and label (not (equal last-checkout checkout)))
-          (let* ((title (truncate-string-to-width label (max 1 (- width 3)) nil nil "…"))
-                 (remaining (- width 3 (string-width title) 2)))
+          (let* ((title (truncate-string-to-width label (max 1 (- width 2)) nil nil "…"))
+                 (remaining (- width 2 (string-width title) 2)))
             (puthash id (concat (propertize title 'face 'font-lock-type-face 'help-echo checkout)
                                 (when (> remaining 1)
                                   (concat "  " (agent-fleet-project--path-label checkout remaining))))
@@ -187,10 +199,6 @@ REDISCOVER, set by interactive refresh, also refreshes Project discovery."
   (when rediscover (agent-fleet-project--clear-cache))
   (when-let* ((buffer (get-buffer "*Agent Fleet*")))
     (with-current-buffer buffer
-      (unless (equal (mapcar #'car (append tabulated-list-format nil))
-                     (mapcar #'car (append agent-fleet-dashboard--columns nil)))
-        (setq tabulated-list-format (copy-tree agent-fleet-dashboard--columns t))
-        (tabulated-list-init-header))
       (let ((id (tabulated-list-get-id))
             (pending agent-fleet-dashboard--pending-focus)
             (members (agent-fleet-agents agent-fleet-dashboard--history)))
@@ -399,8 +407,9 @@ With CONFIGURE, also ask for optional launch settings."
   (setq-local agent-fleet-target-function #'agent-fleet-dashboard--target)
   (setq-local agent-fleet-presentation-function #'agent-fleet-dashboard--visit)
   (setq-local truncate-string-ellipsis "…")
-  (setq tabulated-list-format (copy-tree agent-fleet-dashboard--columns t))
-  (setq tabulated-list-padding 1
+  (setq agent-fleet-dashboard--full-format (copy-tree agent-fleet-dashboard--columns t)
+        tabulated-list-format agent-fleet-dashboard--full-format)
+  (setq tabulated-list-padding 2
         agent-fleet-dashboard--projects (make-hash-table :test 'equal)
         agent-fleet-dashboard--checkout-headings (make-hash-table :test 'equal)
         agent-fleet-dashboard--group-counts (make-hash-table :test 'equal)

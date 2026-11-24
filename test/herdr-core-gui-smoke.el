@@ -143,16 +143,19 @@
             (let ((width (frame-width origin)))
               (unwind-protect
                   (progn
-                    (set-frame-width origin 60)
-                    (hc-live-until (lambda () (= agent-fleet-dashboard--layout-width
-                                                (window-body-width))))
-                    (should (or (string-match-p "remote-dev-skill-.*…" (buffer-string))
-                                (cl-loop for pos from (point-min) below (point-max)
-                                         thereis (equal (get-text-property pos 'display) "…"))))
-                    (should (equal (tabulated-list-get-id) address))
                     (set-frame-width origin 110)
-                    (hc-live-until (lambda () (= agent-fleet-dashboard--layout-width
-                                                (window-body-width))))
+                    (hc-live-until (lambda () (= (frame-width origin) 110)))
+                    (let ((right (split-window-right)))
+                      (set-window-buffer right origin-buffer)
+                      (redisplay t)
+                      (hc-live-until (lambda () (and (= (length tabulated-list-format) 3)
+                                                     (= agent-fleet-dashboard--layout-width
+                                                        (window-body-width)))))
+                      (should (string-match-p "remote-dev-skill-20261105" (buffer-string)))
+                      (should (equal (tabulated-list-get-id) address))
+                      (delete-window right))
+                    (redisplay t)
+                    (hc-live-until (lambda () (= (length tabulated-list-format) 4)))
                     (should (string-match-p "remote-dev-skill-20261105" (buffer-string)))
                     (should (equal (tabulated-list-get-id) address)))
                 (set-frame-width origin width)

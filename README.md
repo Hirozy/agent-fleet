@@ -237,6 +237,11 @@ checkout, status priority and name determine row order. Row highlighting and
 navigation always target agents, not headings. The Transient menu pins the
 selected agent identity when opened, so later events cannot redirect its actions.
 
+Project headings start at the left margin. Main checkout agents and linked
+worktree headings sit one level in, with each worktree's agents one level deeper.
+When a window is too narrow to fit agent names alongside Type, Status and ID,
+Dashboard hides ID first. Details (`I`) always includes the terminal ID.
+
 The connection banner shows stale/disconnected state independently of program
 state. Project identity follows the canonical Git common root across linked
 worktrees. Group headings use the project root's directory name; same-name
