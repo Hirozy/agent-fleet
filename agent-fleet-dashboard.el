@@ -69,14 +69,25 @@
                            (agent-fleet-dashboard--available-width))))
       (agent-fleet-dashboard-refresh))))
 
-(defun agent-fleet-dashboard--state-cell (r)
-  "Return a styled state cell for R."
-  (let* ((work (agent-fleet-status r))
-         (text (if (equal (plist-get r :state) "finished")
-                   (format "finished (%s)" (or (plist-get r :exit_code) (plist-get r :reason) "—"))
-                 (if (plist-get r :reason) (format "recovering: %s" (plist-get r :reason)) work))))
-    (propertize text 'face (cond ((member work '("blocked" "error")) 'warning)
-                                 ((equal work "done") 'success) (t 'default)))))
+(defun agent-fleet-dashboard--state-cell (record)
+  "Style RECORD's runtime outcome or current work status for Dashboard."
+  (let ((reason (plist-get record :reason))
+        (code (plist-get record :exit_code)))
+    (cond
+     ((equal (plist-get record :state) "finished")
+      (let ((label (format "finished (%s)" (or code reason "—"))))
+        (if (and (integerp code) (/= code 0))
+            (propertize (concat "× " label) 'face 'error)
+          (propertize label 'face 'shadow))))
+     (reason (propertize (format "! recovering: %s" reason) 'face 'warning))
+     (t (pcase (agent-fleet-status record)
+          ("blocked" (propertize "! blocked" 'face '(bold warning)))
+          ("error"   (propertize "× error" 'face '(bold error)))
+          ("working" (propertize "▶ working" 'face 'font-lock-keyword-face))
+          ("done"    (propertize "✓ done" 'face 'success))
+          ("idle"    (propertize "○ idle" 'face 'shadow))
+          ("unreported" (propertize "unreported" 'face 'shadow))
+          (other other))))))
 
 (defun agent-fleet-dashboard--group-label (project)
   "Return an unambiguous heading for canonical PROJECT."

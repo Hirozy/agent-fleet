@@ -175,6 +175,10 @@ points; prompt buffers retain their local submit, attach and return keys.
 The table shows Agent, Type, Status and ID. The name column uses up to the space
 available in the window, expanding for long names and shrinking in narrow views.
 Truncated names have an ellipsis; hover for the full text or open Details (`I`).
+Status pairs short markers with theme colors. Bold `! blocked` and `× error`
+stand out beside `▶ working`, `✓ done` and muted `○ idle`. Agents without a
+work report show `unreported`. In history, `× finished (1)`, for example,
+highlights a nonzero process exit.
 Type retains room for names such as `claude-code`. Role and parent information
 are in Details; a member with a parent also has a muted relationship annotation.
 Projects appear once as emphasized group headings with visible member counts

@@ -355,6 +355,25 @@
     (should (equal (agent-fleet-type (car case)) (cdr case))))
   (should (equal (agent-fleet-status '(:argv ["claude"])) "unreported")))
 
+(ert-deftest fleet-dashboard-status-distinguishes-work-from-runtime-outcomes ()
+  (dolist (case '(("blocked" "! blocked" (bold warning))
+                  ("error" "× error" (bold error))
+                  ("working" "▶ working" font-lock-keyword-face)
+                  ("done" "✓ done" success) ("idle" "○ idle" shadow)
+                  (nil "unreported" shadow) ("custom" "custom" nil)))
+    (let ((cell (agent-fleet-dashboard--state-cell
+                 (list :state "live" :status (list :state (car case))))))
+      (should (equal cell (nth 1 case)))
+      (should (equal (get-text-property 0 'face cell) (nth 2 case)))))
+  (dolist (case '(((:state "live" :reason "spawn_pending") "! recovering: spawn_pending" warning)
+                  ((:state "finished" :exit_code 0) "finished (0)" shadow)
+                  ((:state "finished" :exit_code 1) "× finished (1)" error)
+                  ((:state "finished" :reason "killed") "finished (killed)" shadow)))
+    (let ((cell (agent-fleet-dashboard--state-cell
+                 (append (car case) '(:status (:state "done"))))))
+      (should (equal cell (nth 1 case)))
+      (should (eq (get-text-property 0 'face cell) (nth 2 case))))))
+
 (ert-deftest fleet-dashboard-type-updates-with-reports-and-keeps-column-preferences ()
   (fleet-test-model (list (append (fleet-test-agent "t1") '(:argv ["claude"])))
     (let ((buffer (get-buffer-create "*Agent Fleet*")))
@@ -404,7 +423,7 @@
                 (should (equal (aref (tabulated-list-get-entry) 0) name))
                 (should (= (length tabulated-list-format) 3))
                 (should (looking-at (concat "  " (regexp-quote name))))
-                (should (string-match-p "claude-code +idle *$"
+                (should (string-match-p "claude-code +○ idle *$"
                                         (buffer-substring (line-beginning-position) (line-end-position))))
                 (setq width 42)
                 (agent-fleet-dashboard--resize (selected-window))
