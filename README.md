@@ -211,6 +211,13 @@ an action. Dashboard-only keys (directly and in the menu) are `/` (Project filte
 `H` (history), `g` (refresh) and `q` (return). Project filtering moved from `P`
 to `/` so `P` always means DWIM. Terminal `n/p` suffixes are unbound.
 
+Press `C-s` in Dashboard or its `h` menu to find an agent in the current
+view. Search by name, terminal ID, type, Project name or working directory.
+The minibuffer includes full names and IDs even in narrow windows. Press
+`RET` to select the matching row, then `a` to attach or `o` to read its
+output. `C-g` cancels the search. Enable history with `H` to include
+finished agents.
+
 Renaming uses a minibuffer prefilled with the current display name; `RET` saves
 and `C-g` cancels. Names may contain spaces and Unicode, but cannot be blank or
 contain control characters. Core persists the display name as `fleet.name`;

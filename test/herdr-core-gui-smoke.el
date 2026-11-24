@@ -152,6 +152,14 @@
                                                      (= agent-fleet-dashboard--layout-width
                                                         (window-body-width)))))
                       (should (string-match-p "remote-dev-skill-20261105" (buffer-string)))
+                      (goto-char (point-min))
+                      (should (eq (key-binding (kbd "C-s")) #'agent-fleet-dashboard-search))
+                      (minibuffer-with-setup-hook
+                          (lambda ()
+                            (should (equal (minibuffer-prompt) "Find agent: "))
+                            (insert (format "[%s]" address))
+                            (setq unread-command-events (list ?\t ?\r)))
+                        (execute-kbd-macro (kbd "h C-s")))
                       (should (equal (tabulated-list-get-id) address))
                       (delete-window right))
                     (redisplay t)
@@ -160,7 +168,7 @@
                     (should (equal (tabulated-list-get-id) address)))
                 (set-frame-width origin width)
                 (sit-for 0.2)))
-            (setq report (concat report "Dashboard columns refit real frame widths without losing row identity.\n"))
+            (setq report (concat report "Dashboard refits after a split and h C-s finds the row by its hidden ID.\n"))
             ;; The isolated fixture suppresses consumer hooks; restore the
             ;; production Dashboard subscription for this interaction.
             (let ((herdr-core-changed-hook '(agent-fleet-dashboard-refresh))

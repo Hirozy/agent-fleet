@@ -323,6 +323,34 @@ With CONFIGURE, also ask for optional launch settings."
   (interactive)
   (setq agent-fleet-dashboard--attention (not agent-fleet-dashboard--attention))
   (agent-fleet-dashboard-refresh))
+
+(defun agent-fleet-dashboard--search-label (record)
+  "Format RECORD with the full fields searchable from Dashboard."
+  (let* ((id (plist-get record :address))
+         (project (gethash id agent-fleet-dashboard--projects)))
+    (string-join (delq nil (list (format "%s [%s]" (agent-fleet-name record) id)
+                                 (agent-fleet-type record)
+                                 (agent-fleet-dashboard--group-label project)
+                                 (when-let* ((cwd (plist-get record :cwd)))
+                                   (propertize cwd 'face 'shadow))))
+                 "  ")))
+
+;;;###autoload
+(defun agent-fleet-dashboard-search ()
+  "Find an agent in the current Dashboard view and move to its row."
+  (interactive)
+  (unless (derived-mode-p 'agent-fleet-mode) (user-error "Open Dashboard first"))
+  (let ((records (cl-loop for (id) in tabulated-list-entries
+                          for record = (herdr-core-terminal id)
+                          when record collect record))
+        (completion-styles (cons 'substring completion-styles)))
+    (unless records (user-error "No agents in this view"))
+    (let* ((target (agent-fleet--read-target records "Find agent: "
+                                             #'agent-fleet-dashboard--search-label))
+           (id (plist-get (agent-fleet-resolve target) :address)))
+      (unless (agent-fleet-dashboard--goto id)
+        (user-error "Agent %s is no longer in this view" id)))))
+
 (defun agent-fleet-dashboard-quit ()
   "Return to the buffer and position from before Dashboard opened."
   (interactive)
@@ -360,6 +388,7 @@ With CONFIGURE, also ask for optional launch settings."
   "Show commands for the current Dashboard."
   :transient-non-suffix 'transient--do-exit
   [["View"
+    ("C-s" "Find agent" agent-fleet-dashboard-search)
     ("n" "Next agent" agent-fleet-dashboard-next :transient t)
     ("p" "Previous agent" agent-fleet-dashboard-previous :transient t)
     ("/" "Project filter" agent-fleet-dashboard-project)
@@ -389,7 +418,8 @@ With CONFIGURE, also ask for optional launch settings."
 (dolist (group agent-fleet--action-groups)
   (dolist (action (cdr group))
     (define-key agent-fleet-mode-map (kbd (car action)) (or (nth 3 action) (nth 2 action)))))
-(dolist (pair '(("/" . agent-fleet-dashboard-project) ("!" . agent-fleet-dashboard-attention)
+(dolist (pair '(("C-s" . agent-fleet-dashboard-search)
+                ("/" . agent-fleet-dashboard-project) ("!" . agent-fleet-dashboard-attention)
                 ("H" . agent-fleet-dashboard-history)))
   (define-key agent-fleet-mode-map (kbd (car pair)) (cdr pair)))
 (dolist (pair '(("a" . agent-fleet-dashboard-attach) ("RET" . agent-fleet-dashboard-attach)

@@ -115,18 +115,20 @@ A pinned FRESH target may precede its creation event in the cache."
           (user-error "Terminal identity changed during operation"))
         record))))
 
-(defun agent-fleet--read-target (records prompt)
-  "Select from RECORDS with PROMPT, retaining identity from before selection."
+(defun agent-fleet--read-target (records prompt &optional describe)
+  "Select from RECORDS with PROMPT, retaining identity from before selection.
+When supplied, DESCRIBE formats each record as a unique completion candidate."
   (let ((choices
          (mapcar
           (lambda (r)
             (let ((pinned (condition-case err
                               (list :reference (agent-fleet-reference r))
                             (error (list :error err)))))
-              (cons (format "%s [%s]  %s / %s%s"
-                            (agent-fleet-name r) (plist-get r :address)
-                            (plist-get r :state) (agent-fleet-status r)
-                            (if (plist-get pinned :error) " (unavailable)" ""))
+              (cons (concat (if describe (funcall describe r)
+                              (format "%s [%s]  %s / %s"
+                                      (agent-fleet-name r) (plist-get r :address)
+                                      (plist-get r :state) (agent-fleet-status r)))
+                            (when (plist-get pinned :error) " (unavailable)"))
                     pinned)))
           (cl-remove-if-not (lambda (r) (herdr-core-local-address-p (plist-get r :address))) records))))
     (unless choices (user-error "No terminals available"))
