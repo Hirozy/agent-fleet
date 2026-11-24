@@ -225,6 +225,14 @@ The minibuffer includes full names and IDs even in narrow windows. Press
 output. `C-g` cancels the search. Enable history with `H` to include
 finished agents.
 
+Press `A` to show all local Core terminals, including agents launched outside
+Fleet and ordinary shells. A leading `+` marks a terminal outside Fleet.
+Select its row with `n/p` or `C-s`, then press `+` to adopt it in place.
+Press `A` again to return to Fleet members. Each time you open Dashboard it
+starts with Fleet members only. Project, attention and history
+filters apply in both views. In the Fleet-only view, `+` opens the terminal
+picker.
+
 Renaming uses a minibuffer prefilled with the current display name; `RET` saves
 and `C-g` cancels. Names may contain spaces and Unicode, but cannot be blank or
 contain control characters. Core persists the display name as `fleet.name`;

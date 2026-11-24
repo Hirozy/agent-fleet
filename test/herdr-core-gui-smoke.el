@@ -133,11 +133,18 @@
                           "terminal.run"
                           (list :argv ["sh" "-c" "printf 'ready\n'; seq 1 100; sleep 60"] :cwd root
                                 :name "remote-dev-skill-20261105"
-                                :no_parent t :labels '(:fleet.role "agent"))))
+                                :no_parent t)))
                  (address (plist-get record :address)))
             (switch-to-buffer origin-buffer)
             (hc-live-until (lambda () (herdr-core-terminal address)))
             (agent-fleet)
+            (execute-kbd-macro (kbd "h A"))
+            (should (equal (tabulated-list-get-id) address))
+            (execute-kbd-macro (kbd "h +"))
+            (hc-live-until (lambda () (agent-fleet-managed-p (herdr-core-terminal address))))
+            (call-interactively (key-binding (kbd "A")))
+            (should (equal (tabulated-list-get-id) address))
+            (setq report (concat report "All-local Dashboard adopted the selected terminal through h +.\n"))
             (should (equal "Type" (car (aref tabulated-list-format 1))))
             (should (equal "sh" (aref (cadar tabulated-list-entries) 1)))
             (let ((width (frame-width origin)))

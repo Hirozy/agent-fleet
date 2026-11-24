@@ -11,6 +11,7 @@
   "Reported states announced in the echo area."
   :type '(repeat string) :group 'agent-fleet)
 (defvar-local agent-fleet-dashboard--history nil)
+(defvar-local agent-fleet-dashboard--all-local nil)
 (defvar-local agent-fleet-dashboard--project nil)
 (defvar-local agent-fleet-dashboard--attention nil)
 (defvar-local agent-fleet-dashboard--pending-focus nil)
@@ -129,7 +130,9 @@
         (insert (propertize (agent-fleet-dashboard--group-label project)
                             'face '(bold font-lock-keyword-face)
                             'help-echo (agent-fleet-project--full-label project))
-                (propertize (format " · %d %s" count (if (= count 1) "agent" "agents")) 'face 'shadow))
+                (propertize (format " · %d %s%s" count
+                                    (if agent-fleet-dashboard--all-local "terminal" "agent")
+                                    (if (= count 1) "" "s")) 'face 'shadow))
         (when project
           (let ((remaining (- (agent-fleet-dashboard--available-width) (current-column) 2)))
             (if (>= remaining 16) (insert "  ")
@@ -180,9 +183,10 @@
              (context (gethash id contexts)) (checkout (plist-get context :checkout))
              (labels (gethash project by-project))
              (label (and labels (gethash checkout labels))) (indent (if label "  " ""))
+             (external (and agent-fleet-dashboard--all-local (not (agent-fleet-managed-p r))))
              (relationship (when-let* ((parent (plist-get r :parent)))
                              (propertize (format "%s %s"
-                                                 (if (equal (agent-fleet-label r "fleet.role") "agent")
+                                                 (if (or external (equal (agent-fleet-label r "fleet.role") "agent"))
                                                      "Parent:" "Helper of") parent)
                                          'face 'shadow)))
              (directory (agent-fleet-project--directory-note
@@ -199,7 +203,8 @@
         (when (or directory relationship)
           (puthash id (concat indent (string-join (delq nil (list directory relationship)) "  ·  "))
                    agent-fleet-dashboard--notes))
-        (push (list id (vector (concat indent (agent-fleet-name r))
+        (push (list id (vector (concat indent (when external (propertize "+ " 'face 'font-lock-keyword-face))
+                                       (agent-fleet-name r))
                                (agent-fleet-type r) (agent-fleet-dashboard--state-cell r) id)) entries)))
     (nreverse entries)))
 
@@ -212,12 +217,13 @@ REDISCOVER, set by interactive refresh, also refreshes Project discovery."
     (with-current-buffer buffer
       (let ((id (tabulated-list-get-id))
             (pending agent-fleet-dashboard--pending-focus)
-            (members (agent-fleet-agents agent-fleet-dashboard--history)))
+            (members (agent-fleet-agents agent-fleet-dashboard--history agent-fleet-dashboard--all-local)))
         (setq tabulated-list-entries (agent-fleet-dashboard--entries members))
         (agent-fleet-dashboard--fit-columns)
         (setq agent-fleet-dashboard--summary
-              (format "Core %s  %s %d/%d%s  Project: %s  h help"
-                      herdr-core--state (if agent-fleet-dashboard--history "All records" "Live")
+              (format "Core %s  %s%s %d/%d%s  Project: %s  h help"
+                      herdr-core--state (if agent-fleet-dashboard--all-local "All local terminals  " "")
+                      (if agent-fleet-dashboard--history "All records" "Live")
                       (length tabulated-list-entries) (length members)
                       (if agent-fleet-dashboard--attention "   Attention only" "")
                       (if agent-fleet-dashboard--project
@@ -243,7 +249,9 @@ REDISCOVER, set by interactive refresh, also refreshes Project discovery."
                                  (when agent-fleet-dashboard--project "/ clears the Project filter. ")
                                  (when agent-fleet-dashboard--attention "! clears the attention filter. ")
                                  "H toggles history.\n")
-                       "No Fleet agents in this view. Press N to start an agent, or H to toggle history.\n")
+                       (if agent-fleet-dashboard--all-local
+                           "No local terminals in this view. N starts an agent. H toggles history.\n"
+                         "No Fleet agents in this view. A shows all local terminals. N starts an agent. H toggles history.\n"))
                      'face 'shadow))
             (goto-char (point-min)))))
       (set-buffer-modified-p nil)
@@ -321,6 +329,28 @@ With CONFIGURE, also ask for optional launch settings."
   (interactive)
   (setq agent-fleet-dashboard--history (not agent-fleet-dashboard--history))
   (agent-fleet-dashboard-refresh))
+
+;;;###autoload
+(defun agent-fleet-dashboard-all-local ()
+  "Toggle all local Core terminals in this Dashboard."
+  (interactive)
+  (unless (derived-mode-p 'agent-fleet-mode) (user-error "Open Dashboard first"))
+  (setq agent-fleet-dashboard--all-local (not agent-fleet-dashboard--all-local))
+  (agent-fleet-dashboard-refresh))
+
+;;;###autoload
+(defun agent-fleet-dashboard-adopt ()
+  "Include the selected terminal in all-local view, or open the usual picker."
+  (interactive)
+  (if (not agent-fleet-dashboard--all-local)
+      (call-interactively #'agent-fleet-adopt)
+    (let* ((target (agent-fleet-dashboard--target))
+           (record (agent-fleet-resolve target)))
+      (if (agent-fleet-managed-p record)
+          (message "%s is already in Fleet" (agent-fleet-name record))
+        (agent-fleet-adopt target)
+        (message "Included %s [%s] in Fleet" (agent-fleet-name record) (plist-get record :address))))))
+
 (defun agent-fleet-dashboard-project ()
   "Toggle the current row's Project filter."
   (interactive)
@@ -399,6 +429,7 @@ With CONFIGURE, also ask for optional launch settings."
   "Show commands for the current Dashboard."
   :transient-non-suffix 'transient--do-exit
   [["View"
+    ("A" "All local terminals" agent-fleet-dashboard-all-local)
     ("C-s" "Find agent" agent-fleet-dashboard-search)
     ("n" "Next agent" agent-fleet-dashboard-next :transient t)
     ("p" "Previous agent" agent-fleet-dashboard-previous :transient t)
@@ -430,6 +461,7 @@ With CONFIGURE, also ask for optional launch settings."
   (dolist (action (cdr group))
     (define-key agent-fleet-mode-map (kbd (car action)) (or (nth 3 action) (nth 2 action)))))
 (dolist (pair '(("C-s" . agent-fleet-dashboard-search)
+                ("A" . agent-fleet-dashboard-all-local)
                 ("/" . agent-fleet-dashboard-project) ("!" . agent-fleet-dashboard-attention)
                 ("H" . agent-fleet-dashboard-history)))
   (define-key agent-fleet-mode-map (kbd (car pair)) (cdr pair)))
@@ -479,6 +511,7 @@ With CONFIGURE, also ask for optional launch settings."
 
     (with-current-buffer buffer
       (unless (derived-mode-p 'agent-fleet-mode) (agent-fleet-mode))
+      (setq agent-fleet-dashboard--all-local nil)
       (unless (eq previous buffer)
         (setq agent-fleet-dashboard--focus-project project
               default-directory origin-directory)))

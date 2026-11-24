@@ -63,10 +63,13 @@
           (when-let* ((parent (herdr-core-terminal (plist-get terminal :parent))))
             (agent-fleet-managed-p parent (cons address seen)))))))
 
-(defun agent-fleet-agents (&optional all)
-  "Return Fleet members, including finished records when ALL."
+(defun agent-fleet-agents (&optional all include-unmanaged)
+  "Return Fleet members, including finished records when ALL.
+With INCLUDE-UNMANAGED, also return local Core terminals outside Fleet."
   (cl-remove-if-not
-   (lambda (r) (and (agent-fleet-managed-p r)
+   (lambda (r) (and (if include-unmanaged
+                        (herdr-core-local-address-p (plist-get r :address))
+                      (agent-fleet-managed-p r))
                     (or all (equal (plist-get r :state) "live"))))
    (herdr-core-terminals)))
 
@@ -709,7 +712,7 @@ are unchanged.  Revalidate the pinned identity after reading input."
      ("d" "Diff" agent-fleet-magit-diff)
      ("c" "Cleanup review" agent-fleet-cleanup)
      ("f" "Send file" agent-fleet-send-file)
-     ("+" "Include terminal" agent-fleet-adopt)))
+     ("+" "Include terminal" agent-fleet-adopt agent-fleet-dashboard-adopt)))
   "Shared terminal and Dashboard actions.
 Each entry is (KEY LABEL COMMAND [DASHBOARD-COMMAND DASHBOARD-LABEL]).
 Dashboard overrides supply launch defaults and its explicit `a' attach shortcut.")
