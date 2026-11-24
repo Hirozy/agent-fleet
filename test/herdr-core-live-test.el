@@ -291,7 +291,8 @@
 
 (ert-deftest hc-live-project-start-uses-linked-checkout ()
   (hc-live-isolated
-    (let* ((repo (expand-file-name "repo" root))
+    (let* ((agent-fleet-herdr-app-spaces t)
+           (repo (expand-file-name "repo" root))
            (worktree (expand-file-name "feature" root))
            (subdir (expand-file-name "frontend" worktree)))
       (make-directory repo)
@@ -306,6 +307,15 @@
       (hc-live-until (lambda () (agent-fleet-agents)))
       (let ((record (car (agent-fleet-agents))))
         (should (equal (directory-file-name (plist-get record :cwd)) (file-truename worktree)))
-        (should (equal (agent-fleet-project-for-agent record) (file-truename repo)))))))
+        (should (equal (agent-fleet-project-for-agent record) (file-truename repo)))
+        (should (equal (agent-fleet-label record "herdr.space")
+                       (agent-fleet-space--id (file-truename worktree))))
+        (agent-fleet-start '("sh" "-c" "sleep 60") :cwd repo)
+        (hc-live-until (lambda () (= (length (agent-fleet-agents)) 2)))
+        (let ((main (cl-find (file-truename repo) (agent-fleet-agents)
+                             :key (lambda (r) (agent-fleet-label r "fleet.space-root"))
+                             :test #'equal)))
+          (should (equal (agent-fleet-label main "herdr.space")
+                         (agent-fleet-space--id (file-truename repo)))))))))
 
 (provide 'herdr-core-live-test)

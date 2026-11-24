@@ -83,7 +83,10 @@ sent=false does not undo startup. A plain command's extra argv are arguments,
 not a task. Fleet refuses its initial-task option unless argv[0] is a template.
 
 For desktop grouping, the local Space ID is `sp` followed by the first 32 hex
-digits of SHA-256 over UTF-8 `agent-fleet:` plus the canonical root path.
+digits of SHA-256 over UTF-8 `agent-fleet:` plus the canonical checkout path
+(project root or working directory outside Git). The same path is recorded in
+`fleet.space-root`. Herdr App groups distinct Spaces by the Git common
+directory of their checkouts.
 Herdr App owns pane adoption and can enable keep after launch. Fleet reads
 the App's `herdr-app` Core document on adoption or reconnect. For a matching
 automatically assigned Space with an empty name, Fleet sets the name using

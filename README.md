@@ -146,10 +146,13 @@ termination impact; there is no separate Fleet Task lifecycle.
 ### Show Fleet agents in Herdr App
 
 Enable project spaces with `(setq agent-fleet-herdr-app-spaces t)`.
-Every launch entry point then places the new agent in a desktop Space
-for its canonical Project. Linked worktrees share that Space and keep
-their own working directories. Outside a Project, the canonical working
-directory supplies the Space identity. Dashboard still shows No Project.
+Each Git checkout gets a desktop Space. Agents started in subdirectories of
+the same checkout share its Space. When the main checkout also has a Space,
+Herdr App nests linked worktree Spaces beneath it. Fleet's Dashboard groups
+all checkouts under one Project. Agents already adopted by the app keep their
+existing placement. Outside Git, Fleet uses the project root when available.
+For ordinary directories it uses the working directory, and Dashboard shows
+`No Project`.
 Moving the primary project directory gives future launches a new Space ID.
 Lisp callers can choose an existing Space with
 `:labels '(:herdr.space "SPACE_ID")` to retain their own naming policy.

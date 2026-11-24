@@ -8,12 +8,12 @@
 (require 'seq)
 (require 'herdr-core)
 
-(declare-function agent-fleet-project-root-for-cwd "agent-fleet-project" (cwd))
+(declare-function agent-fleet-project-checkout-for-cwd "agent-fleet-project" (cwd &optional refresh))
 (declare-function agent-fleet-project--short-labels "agent-fleet-project" (roots))
 
 (defcustom agent-fleet-herdr-app-spaces nil
   "When non-nil, group newly launched agents into local Herdr App spaces.
-Linked worktrees share a space.  Outside projects, group by directory.
+Each Git checkout gets its own space.  Outside projects, group by directory.
 An explicit herdr.space launch label takes precedence."
   :type 'boolean :group 'agent-fleet)
 
@@ -28,7 +28,7 @@ An explicit herdr.space launch label takes precedence."
   (let ((result (plist-put (copy-sequence labels) :fleet.role "agent")))
     (when (and agent-fleet-herdr-app-spaces (not (plist-member labels :herdr.space)))
       (require 'agent-fleet-project)
-      (let ((root (or (agent-fleet-project-root-for-cwd cwd) (directory-file-name cwd))))
+      (let ((root (or (agent-fleet-project-checkout-for-cwd cwd t) (directory-file-name cwd))))
         (setq result (plist-put result :herdr.space (agent-fleet-space--id root))
               result (plist-put result :fleet.space-root root))))
     result))
