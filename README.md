@@ -228,8 +228,12 @@ finished agents.
 Press `A` to show all local Core terminals, including agents launched outside
 Fleet and ordinary shells. A leading `+` marks a terminal outside Fleet.
 Select its row with `n/p` or `C-s`, then press `+` to adopt it in place.
+Fleet checks that Core acknowledged the ownership label on the terminal you
+selected. If Core reconnects and the ID now belongs to another terminal,
+refresh the Dashboard and select the intended row again.
 Press `A` again to return to Fleet members. Each time you open Dashboard it
-starts with Fleet members only. Project, attention and history
+starts with Fleet members only. Each window keeps its own filters and selected
+row when returning from Details or another review. Project, attention and history
 filters apply in both views. In the Fleet-only view, `+` opens the terminal
 picker.
 
@@ -357,6 +361,11 @@ PTY resizing and placement of the live input viewport; Fleet does not restore
 the smaller window's scroll offset over it. History readers and explicit Fleet
 return positions remain protected. Live-input detection uses Ghostel's optional
 cursor-position helper; older versions without it retain position preservation.
+After a geometry change, Fleet coalesces redraws for 250 ms to allow hc's
+size sampling and the program's resize output to arrive. Hiding the terminal
+discards that display's pending viewport adjustment. Ordinary buffer
+arrivals do not shorten this delay. It sends no input and does not poll;
+output arriving later still relies on Ghostel's normal rendering.
 For reading history, use Ghostel's Emacs or copy mode; terminal input modes
 can follow the live cursor again when subsequent program output arrives.
 It can recover stale

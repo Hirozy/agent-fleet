@@ -23,7 +23,7 @@
 (defvar-local agent-fleet-operation-result nil)
 (declare-function agent-fleet-project-root-for-cwd "agent-fleet-project" (cwd))
 (declare-function agent-fleet-project-checkout-for-cwd "agent-fleet-project" (cwd &optional refresh))
-(declare-function agent-fleet-dashboard-focus "agent-fleet-dashboard" (address))
+(declare-function agent-fleet-dashboard-focus "agent-fleet-dashboard" (address &optional window))
 (declare-function agent-fleet-attach--reuse-visible "agent-fleet-attach" (target))
 (autoload 'agent-fleet "agent-fleet-dashboard" nil t)
 (autoload 'agent-fleet-attach "agent-fleet-attach" nil t)
@@ -229,6 +229,7 @@ a successfully started terminal."
       (user-error "Initial task requires a Core template"))
     (let* ((cwd (file-truename cwd))
            (name (or name (agent-fleet--name cwd)))
+           (window (frame-selected-window (agent-fleet-display-origin-frame)))
            (params (list :argv (vconcat argv (and task (list task))) :cwd cwd :name name
                          :no_parent t :wait :false :keep :false :rm :false
                          :labels (agent-fleet-space--launch-labels cwd labels))))
@@ -240,7 +241,7 @@ a successfully started terminal."
          (when (and (null err) (not (herdr-core--valid-terminal-p record)))
            (setq err (list 'herdr-core-uncertain :reason 'invalid-launch-response :response record)))
          (when (and (null err) (fboundp 'agent-fleet-dashboard-focus))
-           (agent-fleet-dashboard-focus (plist-get record :address)))
+           (agent-fleet-dashboard-focus (plist-get record :address) window))
          (if callback (funcall callback record err)
            (if err (message "Start %s: %s (not retried)" name (herdr-core-error-message err))
              (let ((first (plist-get record :first_message)))
@@ -255,9 +256,17 @@ TARGET may be an address or a pinned identity; interactive selection pins it."
   (interactive
    (progn (herdr-core-connect)
           (list (agent-fleet--read-target (herdr-core-terminals) "Include terminal: "))))
-  (let ((record (agent-fleet-resolve target t)))
-    (herdr-core-request "terminal.label"
-                       (list :terminal (plist-get record :address) :labels '(:fleet.role "agent")))))
+  (let* ((record (agent-fleet-resolve target t))
+         (identity (herdr-core-identity record))
+         (address (plist-get record :address))
+         (reply (herdr-core-request "terminal.label"
+                                    (list :terminal address :labels '(:fleet.role "agent")))))
+    (unless (and (herdr-core--valid-terminal-p reply)
+                 (equal (plist-get reply :address) address)
+                 (equal (herdr-core-identity reply) identity)
+                 (equal (agent-fleet-label reply "fleet.role") "agent"))
+      (signal 'herdr-core-uncertain (list :reason 'invalid-adopt-response :response reply)))
+    reply))
 
 ;;;###autoload
 (defun agent-fleet-send-file (target file)

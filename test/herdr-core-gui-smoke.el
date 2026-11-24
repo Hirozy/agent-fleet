@@ -18,6 +18,58 @@
 (defvar evil-want-keybinding)
 (defvar magit-display-buffer-function)
 
+(defun fleet-gui-check-quiet-resize (directory)
+  "Check rendered width after closing a right-hand Magit in DIRECTORY.
+The fixture emits a delayed resize frame and then stops producing output."
+  (let* ((record (herdr-core-request
+                  "terminal.run"
+                  (list :argv (vector (executable-find "python3")
+                                      (expand-file-name "resize-screen.py"
+                                                        (file-name-directory (locate-library "herdr-core-gui-smoke"))))
+                        :cwd directory :no_parent t :labels '(:fleet.role "agent"))))
+         (reference (agent-fleet-reference record)) viewer)
+    (unwind-protect
+        (progn
+          (agent-fleet-attach reference)
+          (setq viewer (current-buffer))
+          (let ((default-directory directory)) (call-process "git" nil nil nil "init" "-q"))
+          (dolist (close '(magit-mode-bury-buffer delete-window restore))
+            (let* ((window (selected-window))
+                   (full-size (with-current-buffer viewer (ghostel--desired-size)))
+                   (full-width (window-body-width window))
+                   (configuration (current-window-configuration))
+                   (process (get-buffer-process viewer))
+                   (magit-display-buffer-function
+                    (lambda (buffer)
+                      (display-buffer buffer `((display-buffer-in-direction) (direction . right) (window . ,window))))))
+              (magit-status directory)
+              (hc-live-until
+               (lambda ()
+                 (redisplay t)
+                 (with-current-buffer viewer
+                   (let ((size (ghostel--desired-size)))
+                     (and (< (window-body-width window) full-width)
+                          (< (car size) (car full-size))
+                          (string-match-p (format "SIZE %s %s" (car size) (cdr size)) (buffer-string)))))))
+              (pcase close
+                ('magit-mode-bury-buffer (magit-mode-bury-buffer))
+                ('delete-window (delete-window))
+                ('restore (set-window-configuration configuration)))
+              (select-window window)
+              (set-buffer viewer)
+              (ert-info ((format "Quiet resize after %s" close))
+                (hc-live-until
+                 (lambda ()
+                   (redisplay t)
+                   (and (= (window-body-width window) full-width)
+                        (equal (ghostel--desired-size) full-size)
+                        (string-match-p (format "INPUT %s %s" (car full-size) (cdr full-size)) (buffer-string))
+                        (string-match-p (concat "L" (make-string (- (car full-size) 2) ?-) "R") (buffer-string))))))
+              (should (eq process (get-buffer-process viewer))))))
+      (when (buffer-live-p viewer)
+        (let ((kill-buffer-query-functions nil)) (kill-buffer viewer)))
+      (herdr-core-request "terminal.kill" (list :terminal (plist-get record :address))))))
+
 (defun fleet-gui-check-viewer-refresh (viewer reference)
   "Check refresh entry points on a real VIEWER pinned to REFERENCE."
   (let* ((process (get-buffer-process viewer))
@@ -67,10 +119,15 @@
             (sit-for 0.2)
             (setq redraws 0)
             (agent-fleet-display-close-auxiliary-frame (selected-frame))
-            (hc-live-until
-             (lambda ()
-               (redisplay t)
-               (and (eq (frame-focus-state origin) t) (> redraws 0))))
+            ;; Focus changes arrive on the GUI input queue.  Waiting only for
+            ;; subprocess output can leave the frame switch unprocessed.
+            (let ((deadline (+ (float-time) 5)))
+              (while (and (not (and (eq (frame-focus-state origin) t) (> redraws 0)))
+                          (< (float-time) deadline))
+                (let ((event (read-event nil nil 0.05)))
+                  (when (eq (car-safe event) 'switch-frame) (handle-switch-frame event))))
+              (should (eq (frame-focus-state origin) t))
+              (should (> redraws 0)))
             (let ((after (herdr-core-request "terminal.get" (list :terminal address))))
               (should (equal (plist-get before :cols) (plist-get after :cols)))
               (should (equal (plist-get before :rows) (plist-get after :rows)))))
@@ -140,6 +197,23 @@
             (agent-fleet)
             (execute-kbd-macro (kbd "h A"))
             (should (equal (tabulated-list-get-id) address))
+            (let ((left (selected-window)) (right (split-window-right)))
+              (unwind-protect
+                  (progn
+                    (set-window-buffer right origin-buffer)
+                    (call-interactively (key-binding (kbd "I")))
+                    (should (derived-mode-p 'agent-fleet-details-mode))
+                    (select-window right)
+                    (agent-fleet)
+                    (should-not (assoc address tabulated-list-entries))
+                    (agent-fleet-dashboard--refresh-all)
+                    (select-window left)
+                    (call-interactively (key-binding (kbd "q")))
+                    (should agent-fleet-dashboard--all-local)
+                    (should (equal (tabulated-list-get-id) address)))
+                (select-window left)
+                (delete-window right)))
+            (setq report (concat report "Details returns to the external terminal after another window opens Dashboard.\n"))
             (execute-kbd-macro (kbd "h +"))
             (hc-live-until (lambda () (agent-fleet-managed-p (herdr-core-terminal address))))
             (call-interactively (key-binding (kbd "A")))
@@ -178,7 +252,7 @@
             (setq report (concat report "Dashboard refits after a split and h C-s finds the row by its hidden ID.\n"))
             ;; The isolated fixture suppresses consumer hooks; restore the
             ;; production Dashboard subscription for this interaction.
-            (let ((herdr-core-changed-hook '(agent-fleet-dashboard-refresh))
+            (let ((herdr-core-changed-hook '(agent-fleet-dashboard--refresh-all))
                   (minibuffer-setup-hook
                    (list (lambda ()
                            (delete-minibuffer-contents)
@@ -759,7 +833,12 @@
             (herdr-core-request "terminal.kill" (list :terminal address))
             (setq report (concat report "Centering, focus, repeated open, failure retention, attach, output geometry, parent resize and detach passed.\n"))
             (fleet-gui-check-launch-before-event)
-            (setq report (concat report "New terminal attaches before its creation event is cached and reuses the same viewer.\n"))))
+            (setq report (concat report "New terminal attaches before its creation event is cached and reuses the same viewer.\n"))
+            (if (and (executable-find "python3") (require 'magit nil t))
+                (progn
+                  (fleet-gui-check-quiet-resize root)
+                  (setq report (concat report "Quiet resize redraws full-width borders and input after Magit quit, deletion and window restoration.\n")))
+              (setq report (concat report "SKIPPED quiet resize: Python 3 and Magit required.\n")))))
       ((error quit)
        (setq code 1 report
              (concat report (format "FAILED: %S\nBuffer: %S Window: %S Focus: %S\n"

@@ -12,6 +12,7 @@
   :type '(repeat string) :group 'agent-fleet)
 (defvar-local agent-fleet-dashboard--history nil)
 (defvar-local agent-fleet-dashboard--all-local nil)
+(defvar-local agent-fleet-dashboard--owner nil)
 (defvar-local agent-fleet-dashboard--project nil)
 (defvar-local agent-fleet-dashboard--attention nil)
 (defvar-local agent-fleet-dashboard--pending-focus nil)
@@ -32,7 +33,8 @@
   "Return the narrowest visible Dashboard width, or the opening window's width."
   (let ((windows (get-buffer-window-list (current-buffer) nil 'visible)))
     (if windows (apply #'min (mapcar #'window-body-width windows))
-      (window-body-width (selected-window)))))
+      (window-body-width (if (window-live-p agent-fleet-dashboard--owner)
+                             agent-fleet-dashboard--owner (selected-window))))))
 
 (defun agent-fleet-dashboard--fit-columns ()
   "Hide the ID column before shortening agent names."
@@ -203,9 +205,10 @@
         (when (or directory relationship)
           (puthash id (concat indent (string-join (delq nil (list directory relationship)) "  ·  "))
                    agent-fleet-dashboard--notes))
-        (push (list id (vector (concat indent (when external (propertize "+ " 'face 'font-lock-keyword-face))
-                                       (agent-fleet-name r))
-                               (agent-fleet-type r) (agent-fleet-dashboard--state-cell r) id)) entries)))
+        (push (list (propertize id 'agent-fleet-reference (agent-fleet-reference r))
+                    (vector (concat indent (when external (propertize "+ " 'face 'font-lock-keyword-face))
+                                    (agent-fleet-name r))
+                            (agent-fleet-type r) (agent-fleet-dashboard--state-cell r) id)) entries)))
     (nreverse entries)))
 
 (defun agent-fleet-dashboard-refresh (&optional rediscover)
@@ -213,49 +216,84 @@
 REDISCOVER, set by interactive refresh, also refreshes Project discovery."
   (interactive (list t))
   (when rediscover (agent-fleet-project--clear-cache))
-  (when-let* ((buffer (get-buffer "*Agent Fleet*")))
-    (with-current-buffer buffer
-      (let ((id (tabulated-list-get-id))
-            (pending agent-fleet-dashboard--pending-focus)
-            (members (agent-fleet-agents agent-fleet-dashboard--history agent-fleet-dashboard--all-local)))
-        (setq tabulated-list-entries (agent-fleet-dashboard--entries members))
-        (agent-fleet-dashboard--fit-columns)
-        (setq agent-fleet-dashboard--summary
-              (format "Core %s  %s%s %d/%d%s  Project: %s  h help"
-                      herdr-core--state (if agent-fleet-dashboard--all-local "All local terminals  " "")
-                      (if agent-fleet-dashboard--history "All records" "Live")
-                      (length tabulated-list-entries) (length members)
-                      (if agent-fleet-dashboard--attention "   Attention only" "")
-                      (if agent-fleet-dashboard--project
-                          (propertize
-                           (truncate-string-to-width
-                            (agent-fleet-dashboard--group-label agent-fleet-dashboard--project) 30 nil nil "…")
-                           'help-echo (agent-fleet-project--full-label agent-fleet-dashboard--project))
-                        "All")))
-        (setq agent-fleet-dashboard--last-project :unprinted
-              tabulated-list-sort-key nil)
-        (tabulated-list-print t)
-        (let ((focused (agent-fleet-dashboard--goto pending)))
-          (when (or focused (and pending (herdr-core-terminal pending)))
-            (setq agent-fleet-dashboard--pending-focus nil))
-          (unless (or focused (agent-fleet-dashboard--goto id) (tabulated-list-get-id))
-            (unless (agent-fleet-dashboard--goto (caar tabulated-list-entries))
-              (goto-char (point-min)))))
-        (unless tabulated-list-entries
-          (let ((inhibit-read-only t))
-            (insert (propertize
-                     (if (or agent-fleet-dashboard--project agent-fleet-dashboard--attention)
-                         (concat "No agents match the current filters. "
-                                 (when agent-fleet-dashboard--project "/ clears the Project filter. ")
-                                 (when agent-fleet-dashboard--attention "! clears the attention filter. ")
-                                 "H toggles history.\n")
-                       (if agent-fleet-dashboard--all-local
-                           "No local terminals in this view. N starts an agent. H toggles history.\n"
-                         "No Fleet agents in this view. A shows all local terminals. N starts an agent. H toggles history.\n"))
-                     'face 'shadow))
-            (goto-char (point-min)))))
-      (set-buffer-modified-p nil)
-      (when (bound-and-true-p hl-line-mode) (hl-line-highlight)))))
+  (if (derived-mode-p 'agent-fleet-mode)
+      (agent-fleet-dashboard--render)
+    (agent-fleet-dashboard--refresh-all)))
+
+(defun agent-fleet-dashboard--render ()
+  "Render the current Dashboard's filters and selection."
+  (let* ((window (and (window-live-p agent-fleet-dashboard--owner)
+                      (eq (window-buffer agent-fleet-dashboard--owner) (current-buffer))
+                      agent-fleet-dashboard--owner))
+         (id (tabulated-list-get-id (if window (window-point window) (point))))
+         (pending agent-fleet-dashboard--pending-focus)
+         (members (agent-fleet-agents agent-fleet-dashboard--history agent-fleet-dashboard--all-local)))
+    (setq tabulated-list-entries (agent-fleet-dashboard--entries members))
+    (agent-fleet-dashboard--fit-columns)
+    (setq agent-fleet-dashboard--summary
+          (format "Core %s  %s%s %d/%d%s  Project: %s  h help"
+                  herdr-core--state (if agent-fleet-dashboard--all-local "All local terminals  " "")
+                  (if agent-fleet-dashboard--history "All records" "Live")
+                  (length tabulated-list-entries) (length members)
+                  (if agent-fleet-dashboard--attention "   Attention only" "")
+                  (if agent-fleet-dashboard--project
+                      (propertize
+                       (truncate-string-to-width
+                        (agent-fleet-dashboard--group-label agent-fleet-dashboard--project) 30 nil nil "…")
+                       'help-echo (agent-fleet-project--full-label agent-fleet-dashboard--project))
+                    "All")))
+    (setq agent-fleet-dashboard--last-project :unprinted
+          tabulated-list-sort-key nil)
+    (tabulated-list-print t)
+    (let ((focused (agent-fleet-dashboard--goto pending)))
+      (when (or focused (and pending (herdr-core-terminal pending)))
+        (setq agent-fleet-dashboard--pending-focus nil))
+      (unless (or focused (agent-fleet-dashboard--goto id) (tabulated-list-get-id))
+        (unless (agent-fleet-dashboard--goto (caar tabulated-list-entries))
+          (goto-char (point-min)))))
+    (unless tabulated-list-entries
+      (let ((inhibit-read-only t))
+        (insert (propertize
+                 (if (or agent-fleet-dashboard--project agent-fleet-dashboard--attention)
+                     (concat "No agents match the current filters. "
+                             (when agent-fleet-dashboard--project "/ clears the Project filter. ")
+                             (when agent-fleet-dashboard--attention "! clears the attention filter. ")
+                             "H toggles history.\n")
+                   (if agent-fleet-dashboard--all-local
+                       "No local terminals in this view. N starts an agent. H toggles history.\n"
+                     "No Fleet agents in this view. A shows all local terminals. N starts an agent. H toggles history.\n"))
+                 'face 'shadow))
+        (goto-char (point-min))))
+    (when window (set-window-point window (point))))
+  (set-buffer-modified-p nil)
+  (when (bound-and-true-p hl-line-mode) (hl-line-highlight)))
+
+(defun agent-fleet-dashboard--buffers ()
+  "Return the existing Dashboard views."
+  (seq-filter (lambda (buffer) (eq (buffer-local-value 'major-mode buffer) 'agent-fleet-mode))
+              (buffer-list)))
+
+(defun agent-fleet-dashboard--refresh-all ()
+  "Apply a Core update to every Dashboard, including hidden review origins."
+  (dolist (buffer (agent-fleet-dashboard--buffers))
+    (with-current-buffer buffer (agent-fleet-dashboard--render))))
+
+(defun agent-fleet-dashboard--for-window (window &optional create)
+  "Find WINDOW's Dashboard, creating or recycling a view when CREATE is set."
+  (let ((buffers (agent-fleet-dashboard--buffers)))
+    (or (seq-find (lambda (b) (eq window (buffer-local-value 'agent-fleet-dashboard--owner b)))
+                  buffers)
+        (when create
+          (let ((buffer (or (seq-find
+                             (lambda (b)
+                               (and (not (window-live-p (buffer-local-value 'agent-fleet-dashboard--owner b)))
+                                    (not (get-buffer-window b t))))
+                             buffers)
+                            (generate-new-buffer "*Agent Fleet*"))))
+            (with-current-buffer buffer
+              (agent-fleet-mode)
+              (setq agent-fleet-dashboard--owner window))
+            buffer)))))
 
 (defun agent-fleet-dashboard--goto (address)
   "Select visible ADDRESS, returning non-nil; leave point alone if absent."
@@ -266,11 +304,16 @@ REDISCOVER, set by interactive refresh, also refreshes Project discovery."
                              (forward-line 1))
                            (and (not (eobp)) (point)))))
       (goto-char position)
+      (when (and (window-live-p agent-fleet-dashboard--owner)
+                 (eq (window-buffer agent-fleet-dashboard--owner) (current-buffer)))
+        (set-window-point agent-fleet-dashboard--owner position))
       t)))
 
-(defun agent-fleet-dashboard-focus (address)
-  "Move an existing Dashboard to ADDRESS without stealing focus."
-  (when-let* ((buffer (get-buffer "*Agent Fleet*")))
+(defun agent-fleet-dashboard-focus (address &optional window)
+  "Move the Dashboard for WINDOW to ADDRESS without stealing focus."
+  (when-let* ((buffer (if (and (null window) (derived-mode-p 'agent-fleet-mode))
+                          (current-buffer)
+                        (agent-fleet-dashboard--for-window (or window (selected-window))))))
     (with-current-buffer buffer
       (setq agent-fleet-dashboard--pending-focus
             (unless (or (agent-fleet-dashboard--goto address) (herdr-core-terminal address))
@@ -282,9 +325,12 @@ REDISCOVER, set by interactive refresh, also refreshes Project discovery."
            transient-current-prefix)
       (or (plist-get (oref transient-current-prefix scope) :target)
           (user-error "No agent was selected when the menu opened"))
-    (let ((id (tabulated-list-get-id)))
-      (unless id (user-error "No agent on this row"))
-      (agent-fleet-reference (agent-fleet-resolve id)))))
+    (or (agent-fleet-dashboard--row-reference) (user-error "No agent on this row"))))
+
+(defun agent-fleet-dashboard--row-reference ()
+  "Return the terminal identity captured when the current row was rendered."
+  (when-let* ((id (tabulated-list-get-id)))
+    (get-text-property 0 'agent-fleet-reference id)))
 
 (defun agent-fleet-dashboard--visit (function &optional target)
   "Open FUNCTION for TARGET in the current review window."
@@ -409,8 +455,7 @@ With CONFIGURE, also ask for optional launch settings."
     (when (and (eq transient-current-command 'agent-fleet-dashboard-help)
                transient-current-prefix)
       (oset transient-current-prefix scope
-            (list :target (when-let* ((address (tabulated-list-get-id)))
-                            (agent-fleet-reference (agent-fleet-resolve address))))))))
+            (list :target (agent-fleet-dashboard--row-reference))))))
 
 ;;;###autoload
 (defun agent-fleet-dashboard-next ()
@@ -498,24 +543,25 @@ With CONFIGURE, also ask for optional launch settings."
   "Open Dashboard in the current window, retaining its previous view."
   (interactive)
   (herdr-core-connect)
-  (let ((buffer (get-buffer-create "*Agent Fleet*"))
-        (child (and (frame-parameter nil 'agent-fleet-auxiliary-frame) (selected-frame)))
-        (previous (current-buffer))
-        (origin-directory default-directory)
-        (project (unless (derived-mode-p 'agent-fleet-mode)
-                   (if agent-fleet-target
-                       (condition-case nil
-                           (agent-fleet-project-for-agent (agent-fleet-resolve agent-fleet-target))
-                         (error nil))
-                     (agent-fleet-project-root-for-cwd default-directory)))))
+  (let* ((child (and (frame-parameter nil 'agent-fleet-auxiliary-frame) (selected-frame)))
+         (window (if child (frame-selected-window (agent-fleet-display-origin-frame child))
+                   (selected-window)))
+         (buffer (agent-fleet-dashboard--for-window window t))
+         (previous (current-buffer))
+         (origin-directory default-directory)
+         (project (unless (derived-mode-p 'agent-fleet-mode)
+                    (if agent-fleet-target
+                        (condition-case nil
+                            (agent-fleet-project-for-agent (agent-fleet-resolve agent-fleet-target))
+                          (error nil))
+                      (agent-fleet-project-root-for-cwd default-directory)))))
 
     (with-current-buffer buffer
-      (unless (derived-mode-p 'agent-fleet-mode) (agent-fleet-mode))
       (setq agent-fleet-dashboard--all-local nil)
       (unless (eq previous buffer)
         (setq agent-fleet-dashboard--focus-project project
-              default-directory origin-directory)))
-    (agent-fleet-dashboard-refresh)
+              default-directory origin-directory))
+      (agent-fleet-dashboard-refresh))
     (when child
       (select-frame-set-input-focus (agent-fleet-display-origin-frame child))
       (agent-fleet-display-window-open previous))
@@ -530,7 +576,8 @@ With CONFIGURE, also ask for optional launch settings."
                 ((agent-fleet-managed-p record))
                 ((member (agent-fleet-status record) agent-fleet-notify-on)))
       (message "%s: %s" (agent-fleet-name record) (agent-fleet-status record)))))
-(add-hook 'herdr-core-changed-hook #'agent-fleet-dashboard-refresh)
+(remove-hook 'herdr-core-changed-hook #'agent-fleet-dashboard-refresh)
+(add-hook 'herdr-core-changed-hook #'agent-fleet-dashboard--refresh-all)
 (add-hook 'herdr-core-event-hook #'agent-fleet-dashboard--notify)
 (provide 'agent-fleet-dashboard)
 ;;; agent-fleet-dashboard.el ends here
